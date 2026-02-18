@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { Summary, SummaryResponse } from '@/types';
+import { Summary, SummaryResponse, ScreenshotData } from '@/types';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
@@ -31,6 +31,7 @@ export default function PageContent({
   totalCount,
   loadedCount,
   onLoadMore,
+  screenshots,
 }: {
   meeting: any;
   summaryData: Summary | null;
@@ -44,6 +45,8 @@ export default function PageContent({
   totalCount?: number;
   loadedCount?: number;
   onLoadMore?: () => void;
+  // Screenshot data
+  screenshots?: ScreenshotData[];
 }) {
   console.log('📄 PAGE CONTENT: Initializing with data:', {
     meetingId: meeting.id,
@@ -185,6 +188,7 @@ export default function PageContent({
           totalCount={totalCount}
           loadedCount={loadedCount}
           onLoadMore={onLoadMore}
+          screenshots={screenshots}
         />
         <SummaryPanel
           meeting={meeting}

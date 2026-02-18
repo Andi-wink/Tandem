@@ -1,10 +1,12 @@
 "use client";
 
-import { Transcript, TranscriptSegmentData } from '@/types';
+import { Transcript, TranscriptSegmentData, ScreenshotData, TimelineFilter } from '@/types';
 import { TranscriptView } from '@/components/TranscriptView';
 import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
+import { ScreenshotLightbox } from '@/components/ScreenshotLightbox';
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
+import { useTimeline } from '@/hooks/useTimeline';
 
 interface TranscriptPanelProps {
   transcripts: Transcript[];
@@ -23,6 +25,9 @@ interface TranscriptPanelProps {
   totalCount?: number;
   loadedCount?: number;
   onLoadMore?: () => void;
+
+  // Screenshot data from meeting folder
+  screenshots?: ScreenshotData[];
 }
 
 export function TranscriptPanel({
@@ -40,7 +45,11 @@ export function TranscriptPanel({
   totalCount,
   loadedCount,
   onLoadMore,
+  screenshots = [],
 }: TranscriptPanelProps) {
+  const [timelineFilter, setTimelineFilter] = useState<TimelineFilter>('all');
+  const [selectedScreenshot, setSelectedScreenshot] = useState<ScreenshotData | null>(null);
+
   // Convert transcripts to segments if pagination is not used but we want virtualization
   const convertedSegments = useMemo(() => {
     if (usePagination && segments) {
@@ -55,6 +64,11 @@ export function TranscriptPanel({
       confidence: t.confidence,
     }));
   }, [transcripts, usePagination, segments]);
+
+  // Build timeline items merging transcripts and screenshots
+  const timelineItems = useTimeline(convertedSegments, screenshots, timelineFilter);
+
+  const hasScreenshots = screenshots.length > 0;
 
   return (
     <div className="hidden md:flex md:w-1/4 lg:w-1/3 min-w-0 border-r border-gray-200 bg-white flex-col relative shrink-0">
@@ -83,6 +97,12 @@ export function TranscriptPanel({
           totalCount={totalCount}
           loadedCount={loadedCount}
           onLoadMore={onLoadMore}
+          // Screenshot timeline props
+          timelineItems={hasScreenshots ? timelineItems : undefined}
+          timelineFilter={timelineFilter}
+          onTimelineFilterChange={hasScreenshots ? setTimelineFilter : undefined}
+          screenshotCount={screenshots.length}
+          onScreenshotClick={setSelectedScreenshot}
         />
       </div>
 
@@ -96,6 +116,14 @@ export function TranscriptPanel({
             onChange={(e) => onPromptChange(e.target.value)}
           />
         </div>
+      )}
+
+      {/* Screenshot lightbox */}
+      {selectedScreenshot && (
+        <ScreenshotLightbox
+          screenshot={selectedScreenshot}
+          onClose={() => setSelectedScreenshot(null)}
+        />
       )}
     </div>
   );

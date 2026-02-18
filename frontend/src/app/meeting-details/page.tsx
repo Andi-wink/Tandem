@@ -37,6 +37,7 @@ function MeetingDetailsContent() {
     metadata,
     segments,
     transcripts,
+    screenshots,
     isLoading: isLoadingTranscripts,
     isLoadingMore,
     hasMore,
@@ -373,6 +374,8 @@ function MeetingDetailsContent() {
     totalCount={totalCount}
     loadedCount={loadedCount}
     onLoadMore={loadMore}
+    // Screenshot data from meeting folder
+    screenshots={screenshots}
   />;
 }
 

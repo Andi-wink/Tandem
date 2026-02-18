@@ -48,6 +48,7 @@ pub mod anthropic;
 pub mod groq;
 pub mod openrouter;
 pub mod parakeet_engine;
+pub mod screenshot;
 pub mod state;
 pub mod summary;
 pub mod tray;
@@ -405,6 +406,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(whisper_engine::parallel_commands::ParallelProcessorState::new())
         .manage(Arc::new(RwLock::new(
             None::<notifications::manager::NotificationManager<tauri::Wry>>,
@@ -417,6 +419,51 @@ pub fn run() {
             // Initialize system tray
             if let Err(e) = tray::create_tray(_app.handle()) {
                 log::error!("Failed to create system tray: {}", e);
+            }
+
+            // Register global shortcuts for screenshot capture
+            {
+                use tauri::Emitter as _;
+                use tauri_plugin_global_shortcut::{GlobalShortcutExt as _, Shortcut, ShortcutState};
+
+                let app_handle = _app.handle().clone();
+                let fullscreen_shortcut: Shortcut = "Alt+Shift+S".parse().expect("Invalid shortcut: Alt+Shift+S");
+                let region_shortcut: Shortcut = "Alt+Shift+R".parse().expect("Invalid shortcut: Alt+Shift+R");
+
+                app_handle.global_shortcut().on_shortcut(
+                    fullscreen_shortcut,
+                    {
+                        let app_handle = app_handle.clone();
+                        move |_app, _shortcut, event| {
+                            if let ShortcutState::Pressed = event.state {
+                                log::info!("Global shortcut pressed: Alt+Shift+S (fullscreen screenshot)");
+                                let app_for_task = app_handle.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    match screenshot::commands::take_screenshot(app_for_task).await {
+                                        Ok(data) => log::info!("Fullscreen screenshot via hotkey: {}", data.file_path),
+                                        Err(e) => log::error!("Hotkey screenshot failed: {}", e),
+                                    }
+                                });
+                            }
+                        }
+                    },
+                ).unwrap_or_else(|e| log::error!("Failed to register Alt+Shift+S shortcut: {}", e));
+
+                app_handle.global_shortcut().on_shortcut(
+                    region_shortcut,
+                    {
+                        let app_handle = app_handle.clone();
+                        move |_app, _shortcut, event| {
+                            if let ShortcutState::Pressed = event.state {
+                                log::info!("Global shortcut pressed: Alt+Shift+R (region screenshot)");
+                                // Emit event to frontend to show region selection overlay
+                                let _ = app_handle.emit("screenshot-region-select", ());
+                            }
+                        }
+                    },
+                ).unwrap_or_else(|e| log::error!("Failed to register Alt+Shift+R shortcut: {}", e));
+
+                log::info!("Screenshot global shortcuts registered (Alt+Shift+S, Alt+Shift+R)");
             }
 
             // Initialize notification system with proper defaults
@@ -696,6 +743,12 @@ pub fn run() {
             audio::permissions::check_screen_recording_permission_command,
             audio::permissions::request_screen_recording_permission_command,
             audio::permissions::trigger_system_audio_permission_command,
+            // Screenshot capture commands
+            screenshot::commands::take_screenshot,
+            screenshot::commands::take_region_screenshot,
+            screenshot::commands::capture_screen_preview,
+            screenshot::commands::save_screenshots_json,
+            screenshot::commands::load_screenshots_json,
             // Database import commands
             database::commands::check_first_launch,
             database::commands::select_legacy_database_path,

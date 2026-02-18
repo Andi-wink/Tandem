@@ -8,7 +8,9 @@ import { ConfidenceIndicator } from "./ConfidenceIndicator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { RecordingStatusBar } from "./RecordingStatusBar";
 import { motion, AnimatePresence } from "framer-motion";
-import { TranscriptSegmentData } from "@/types";
+import { TranscriptSegmentData, ScreenshotData, TimelineItem, TimelineFilter } from "@/types";
+import { TimelineFilterBar } from "./TimelineFilterBar";
+import { ScreenshotThumbnail } from "./ScreenshotThumbnail";
 
 export interface VirtualizedTranscriptViewProps {
     /** Transcript segments to display */
@@ -34,6 +36,13 @@ export interface VirtualizedTranscriptViewProps {
     totalCount?: number;
     loadedCount?: number;
     onLoadMore?: () => void;
+
+    // Timeline props (screenshots integration)
+    timelineItems?: TimelineItem[];
+    timelineFilter?: TimelineFilter;
+    onTimelineFilterChange?: (filter: TimelineFilter) => void;
+    screenshotCount?: number;
+    onScreenshotClick?: (screenshot: ScreenshotData) => void;
 }
 
 // Threshold for enabling virtualization (below this, use simple rendering)
@@ -124,6 +133,11 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     totalCount = 0,
     loadedCount = 0,
     onLoadMore,
+    timelineItems,
+    timelineFilter = 'all',
+    onTimelineFilterChange,
+    screenshotCount = 0,
+    onScreenshotClick,
 }) => {
     // Create scroll ref first - shared between virtualizer and auto-scroll hook
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -221,7 +235,9 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     }, [onLoadMore, hasMore, isLoadingMore, isRecording]);
 
     // Use simple rendering for small lists, virtualization for large lists
-    const useVirtualization = segments.length >= VIRTUALIZATION_THRESHOLD;
+    // When timeline items are present (has screenshots), use timeline rendering
+    const hasTimeline = timelineItems && timelineItems.length > 0;
+    const useVirtualization = !hasTimeline && segments.length >= VIRTUALIZATION_THRESHOLD;
 
     return (
         <div ref={scrollRef} className="flex flex-col h-full overflow-y-auto px-4 py-2">
@@ -234,9 +250,18 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                 )}
             </AnimatePresence>
 
+            {/* Timeline Filter Bar - shown when screenshots exist */}
+            {onTimelineFilterChange && (
+                <TimelineFilterBar
+                    filter={timelineFilter}
+                    onFilterChange={onTimelineFilterChange}
+                    screenshotCount={screenshotCount}
+                />
+            )}
+
             {/* Content - add padding when recording to prevent overlap */}
             <div className={isRecording ? 'pt-2' : ''}>
-            {segments.length === 0 ? (
+            {segments.length === 0 && (!timelineItems || timelineItems.length === 0) ? (
                 // Empty state
                 <motion.div
                     initial={{ opacity: 0 }}
@@ -262,6 +287,64 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                         </>
                     )}
                 </motion.div>
+            ) : hasTimeline ? (
+                // Timeline rendering (mixed transcripts + screenshots)
+                <>
+                    <div className="space-y-1">
+                        {timelineItems!.map((item) => {
+                            if (item.type === 'screenshot' && onScreenshotClick) {
+                                const ss = item.data as ScreenshotData;
+                                return (
+                                    <motion.div
+                                        key={item.id}
+                                        initial={{ opacity: 0, y: 5 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        transition={{ duration: 0.15 }}
+                                    >
+                                        <ScreenshotThumbnail
+                                            screenshot={ss}
+                                            onClick={onScreenshotClick}
+                                        />
+                                    </motion.div>
+                                );
+                            }
+
+                            // Transcript segment
+                            const seg = item.data as TranscriptSegmentData;
+                            const isStreamingSeg = streamingSegmentId === seg.id;
+                            return (
+                                <motion.div
+                                    key={item.id}
+                                    initial={{ opacity: 0, y: 5 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    transition={{ duration: 0.15 }}
+                                >
+                                    <TranscriptSegment
+                                        id={seg.id}
+                                        timestamp={seg.timestamp}
+                                        text={getDisplayText(seg)}
+                                        confidence={seg.confidence}
+                                        isStreaming={isStreamingSeg}
+                                        showConfidence={showConfidence}
+                                    />
+                                </motion.div>
+                            );
+                        })}
+                    </div>
+
+                    {/* Listening indicator when recording */}
+                    {!isStopping && isRecording && !isPaused && !isProcessing && (
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="flex items-center gap-2 mt-4 text-gray-500"
+                        >
+                            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                            <span className="text-sm">Listening...</span>
+                        </motion.div>
+                    )}
+                </>
             ) : useVirtualization ? (
                 // Virtualized rendering for large lists
                 <>
