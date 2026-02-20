@@ -2,31 +2,34 @@
 
 import { memo } from 'react';
 import { TimelineFilter } from '@/types';
-import { Camera, MessageSquare, Layers } from 'lucide-react';
+import { Camera, MessageSquare, Layers, Clipboard } from 'lucide-react';
 
 interface TimelineFilterBarProps {
   filter: TimelineFilter;
   onFilterChange: (filter: TimelineFilter) => void;
   screenshotCount: number;
+  clipboardCount?: number;
 }
-
-const filters: { value: TimelineFilter; label: string; icon: typeof Layers }[] = [
-  { value: 'all', label: 'All', icon: Layers },
-  { value: 'transcripts', label: 'Transcripts', icon: MessageSquare },
-  { value: 'screenshots', label: 'Screenshots', icon: Camera },
-];
 
 export const TimelineFilterBar = memo(function TimelineFilterBar({
   filter,
   onFilterChange,
   screenshotCount,
+  clipboardCount = 0,
 }: TimelineFilterBarProps) {
-  // Only show when there are screenshots to filter
-  if (screenshotCount === 0) return null;
+  // Only show when there is something beyond transcripts to filter
+  if (screenshotCount === 0 && clipboardCount === 0) return null;
+
+  const filters: { value: TimelineFilter; label: string; icon: typeof Layers; count?: number }[] = [
+    { value: 'all', label: 'All', icon: Layers },
+    { value: 'transcripts', label: 'Transcripts', icon: MessageSquare },
+    ...(screenshotCount > 0 ? [{ value: 'screenshots' as TimelineFilter, label: 'Screenshots', icon: Camera, count: screenshotCount }] : []),
+    ...(clipboardCount > 0 ? [{ value: 'clipboard' as TimelineFilter, label: 'Clips', icon: Clipboard, count: clipboardCount }] : []),
+  ];
 
   return (
     <div className="flex items-center gap-1 px-3 py-1.5 border-b border-gray-800/50">
-      {filters.map(({ value, label, icon: Icon }) => (
+      {filters.map(({ value, label, icon: Icon, count }) => (
         <button
           key={value}
           onClick={() => onFilterChange(value)}
@@ -38,9 +41,9 @@ export const TimelineFilterBar = memo(function TimelineFilterBar({
         >
           <Icon className="w-3 h-3" />
           {label}
-          {value === 'screenshots' && screenshotCount > 0 && (
+          {count !== undefined && count > 0 && (
             <span className="ml-0.5 text-[10px] bg-blue-600/30 px-1 rounded">
-              {screenshotCount}
+              {count}
             </span>
           )}
         </button>

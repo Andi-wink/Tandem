@@ -148,6 +148,9 @@ xcap = "0.8"                                       # Cross-platform screen captu
 image = { version = "0.25", features = ["png", "jpeg"] }   # Image processing for thumbnails + JPEG preview
 base64 = "0.22"                                    # Base64 encoding for thumbnail data
 
+# Clipboard integration
+arboard = "3"                                      # Cross-platform clipboard read/write (text + images)
+
 # Common Tauri configuration
 tauri = { version = "2.6.2", features = [ "macos-private-api", "protocol-asset", "tray-icon"] }
 tauri-plugin-fs = "2.4.0"

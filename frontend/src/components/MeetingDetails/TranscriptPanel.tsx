@@ -1,6 +1,6 @@
 "use client";
 
-import { Transcript, TranscriptSegmentData, ScreenshotData, TimelineFilter } from '@/types';
+import { Transcript, TranscriptSegmentData, ScreenshotData, ClipboardData, TimelineFilter } from '@/types';
 import { TranscriptView } from '@/components/TranscriptView';
 import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
 import { ScreenshotLightbox } from '@/components/ScreenshotLightbox';
@@ -28,6 +28,8 @@ interface TranscriptPanelProps {
 
   // Screenshot data from meeting folder
   screenshots?: ScreenshotData[];
+  // Clipboard items from meeting folder
+  clipboardItems?: ClipboardData[];
 }
 
 export function TranscriptPanel({
@@ -46,6 +48,7 @@ export function TranscriptPanel({
   loadedCount,
   onLoadMore,
   screenshots = [],
+  clipboardItems = [],
 }: TranscriptPanelProps) {
   const [timelineFilter, setTimelineFilter] = useState<TimelineFilter>('all');
   const [selectedScreenshot, setSelectedScreenshot] = useState<ScreenshotData | null>(null);
@@ -65,10 +68,10 @@ export function TranscriptPanel({
     }));
   }, [transcripts, usePagination, segments]);
 
-  // Build timeline items merging transcripts and screenshots
-  const timelineItems = useTimeline(convertedSegments, screenshots, timelineFilter);
+  // Build timeline items merging transcripts, screenshots, and clipboard items
+  const timelineItems = useTimeline(convertedSegments, screenshots, clipboardItems, timelineFilter);
 
-  const hasScreenshots = screenshots.length > 0;
+  const hasTimelineContent = screenshots.length > 0 || clipboardItems.length > 0;
 
   return (
     <div className="hidden md:flex md:w-1/4 lg:w-1/3 min-w-0 border-r border-gray-200 bg-white flex-col relative shrink-0">
@@ -97,12 +100,13 @@ export function TranscriptPanel({
           totalCount={totalCount}
           loadedCount={loadedCount}
           onLoadMore={onLoadMore}
-          // Screenshot timeline props
-          timelineItems={hasScreenshots ? timelineItems : undefined}
+          // Timeline props (screenshots + clipboard)
+          timelineItems={hasTimelineContent ? timelineItems : undefined}
           timelineFilter={timelineFilter}
-          onTimelineFilterChange={hasScreenshots ? setTimelineFilter : undefined}
+          onTimelineFilterChange={hasTimelineContent ? setTimelineFilter : undefined}
           screenshotCount={screenshots.length}
           onScreenshotClick={setSelectedScreenshot}
+          clipboardCount={clipboardItems.length}
         />
       </div>
 

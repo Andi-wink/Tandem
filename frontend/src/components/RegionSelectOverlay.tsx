@@ -2,48 +2,60 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { captureScreenPreview, ScreenPreview } from '@/services/screenshotService';
+import { convertFileSrc } from '@tauri-apps/api/core';
 
 interface RegionSelectOverlayProps {
+  previewPath: string;      // Absolute path to pre-captured JPEG on disk
+  monitorWidth: number;     // Physical pixel width of captured image
+  monitorHeight: number;    // Physical pixel height of captured image
   onSelect: (x: number, y: number, width: number, height: number) => void;
   onCancel: () => void;
 }
 
-export function RegionSelectOverlay({ onSelect, onCancel }: RegionSelectOverlayProps) {
+export function RegionSelectOverlay({
+  previewPath,
+  monitorWidth,
+  monitorHeight,
+  onSelect,
+  onCancel,
+}: RegionSelectOverlayProps) {
   const [startPos, setStartPos] = useState<{ x: number; y: number } | null>(null);
   const [currentPos, setCurrentPos] = useState<{ x: number; y: number } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [preview, setPreview] = useState<ScreenPreview | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [ready, setReady] = useState(false);
   const overlayRef = useRef<HTMLDivElement>(null);
   const wasFullscreenRef = useRef(false);
 
-  // On mount: capture desktop immediately (no hide), then go fullscreen with preview
+  // Convert local file path to Tauri asset URL
+  const previewSrc = convertFileSrc(previewPath);
+
+  // On mount: preload the preview image, then go fullscreen
+  // The screen was already captured by the Rust hotkey handler — no capture needed here
   useEffect(() => {
     let cancelled = false;
 
     const setup = async () => {
       try {
         const win = getCurrentWindow();
-
-        // Remember original fullscreen state
         wasFullscreenRef.current = await win.isFullscreen();
 
-        // Capture the desktop with app visible — viewport-sized JPEG for speed
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
-        const screenPreview = await captureScreenPreview(vw, vh);
-
-        if (cancelled) return;
-
-        setPreview(screenPreview);
-
-        // Go fullscreen with decorations hidden to show overlay
-        await win.setDecorations(false);
-        await win.setFullscreen(true);
-        await win.setFocus();
-
-        setIsLoading(false);
+        // Preload the JPEG from disk via asset protocol (typically ~5-10ms for local file)
+        const img = new Image();
+        img.onload = async () => {
+          if (cancelled) return;
+          await win.setDecorations(false);
+          await win.setFullscreen(true);
+          await win.setFocus();
+          if (!cancelled) setReady(true);
+        };
+        img.onerror = async () => {
+          console.error('Failed to load preview image:', previewPath);
+          if (!cancelled) {
+            await restoreWindow();
+            onCancel();
+          }
+        };
+        img.src = previewSrc;
       } catch (err) {
         console.error('Failed to setup region select:', err);
         if (!cancelled) {
@@ -103,20 +115,16 @@ export function RegionSelectOverlay({ onSelect, onCancel }: RegionSelectOverlayP
   );
 
   const handleMouseUp = useCallback(async () => {
-    if (startPos && currentPos && isDragging && preview) {
+    if (startPos && currentPos && isDragging) {
       const viewX = Math.min(startPos.x, currentPos.x);
       const viewY = Math.min(startPos.y, currentPos.y);
       const viewW = Math.abs(currentPos.x - startPos.x);
       const viewH = Math.abs(currentPos.y - startPos.y);
 
       if (viewW > 10 && viewH > 10) {
-        // Map viewport coordinates to actual screen coordinates
-        // preview.width/height are the ORIGINAL monitor dimensions
-        const viewportWidth = window.innerWidth;
-        const viewportHeight = window.innerHeight;
-
-        const scaleX = preview.width / viewportWidth;
-        const scaleY = preview.height / viewportHeight;
+        // Map viewport coordinates to physical screen pixels
+        const scaleX = monitorWidth / window.innerWidth;
+        const scaleY = monitorHeight / window.innerHeight;
 
         const screenX = Math.round(viewX * scaleX);
         const screenY = Math.round(viewY * scaleY);
@@ -132,9 +140,9 @@ export function RegionSelectOverlay({ onSelect, onCancel }: RegionSelectOverlayP
     setIsDragging(false);
     setStartPos(null);
     setCurrentPos(null);
-  }, [startPos, currentPos, isDragging, preview, restoreWindow, onSelect, handleCancel]);
+  }, [startPos, currentPos, isDragging, monitorWidth, monitorHeight, restoreWindow, onSelect, handleCancel]);
 
-  // Calculate selection rectangle
+  // Calculate selection rectangle in viewport coordinates
   const selectionRect =
     startPos && currentPos
       ? {
@@ -145,32 +153,28 @@ export function RegionSelectOverlay({ onSelect, onCancel }: RegionSelectOverlayP
         }
       : null;
 
-  if (isLoading) {
-    return (
-      <div className="fixed inset-0 z-[9999] bg-black flex items-center justify-center">
-        <div className="text-white text-sm">Capturing screen...</div>
-      </div>
-    );
-  }
+  // Don't render until fullscreen is ready (prevents flash of windowed content)
+  if (!ready) return null;
 
   return (
     <div
       ref={overlayRef}
       className="fixed inset-0 z-[9999] cursor-crosshair select-none"
       style={{
-        backgroundImage: preview ? `url(${preview.image_data})` : undefined,
-        backgroundSize: 'cover',
-        backgroundPosition: 'center',
+        backgroundImage: `url(${previewSrc})`,
+        backgroundSize: '100% 100%',     // Stretch full-res JPEG to fill viewport
+        backgroundPosition: 'top left',
+        backgroundRepeat: 'no-repeat',
       }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
     >
-      {/* Dark overlay for non-selected areas */}
-      {!isDragging && (
+      {/* Dark tint when no selection is active */}
+      {!selectionRect && (
         <div
           className="absolute inset-0 pointer-events-none"
-          style={{ backgroundColor: 'rgba(0, 0, 0, 0.2)' }}
+          style={{ backgroundColor: 'rgba(0, 0, 0, 0.25)' }}
         />
       )}
 
@@ -181,20 +185,22 @@ export function RegionSelectOverlay({ onSelect, onCancel }: RegionSelectOverlayP
         </div>
       )}
 
-      {/* Selection rectangle */}
+      {/* Selection rectangle with CSS cutout effect */}
       {selectionRect && (
         <div
-          className="absolute border-2 border-blue-400 bg-blue-400/10 pointer-events-none"
+          className="absolute border-2 border-blue-400 pointer-events-none"
           style={{
             left: selectionRect.left,
             top: selectionRect.top,
             width: selectionRect.width,
             height: selectionRect.height,
+            boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.4)',
           }}
         >
-          {/* Size indicator */}
+          {/* Size indicator showing physical pixel dimensions */}
           <div className="absolute -bottom-6 left-1/2 -translate-x-1/2 bg-black/80 text-white px-2 py-0.5 rounded text-xs whitespace-nowrap">
-            {Math.round(selectionRect.width)} x {Math.round(selectionRect.height)}
+            {Math.round(selectionRect.width * (monitorWidth / window.innerWidth))} x{' '}
+            {Math.round(selectionRect.height * (monitorHeight / window.innerHeight))}
           </div>
         </div>
       )}

@@ -3,12 +3,19 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { ScreenshotData } from '@/types';
-import { takeScreenshot, takeRegionScreenshot, saveScreenshotsJson } from '@/services/screenshotService';
+import { takeScreenshot, cropPreCapturedRegion, cancelRegionCapture, saveScreenshotsJson } from '@/services/screenshotService';
+
+export interface RegionSelectInfo {
+  previewPath: string;
+  monitorWidth: number;
+  monitorHeight: number;
+}
 
 interface ScreenshotContextType {
   screenshots: ScreenshotData[];
   selectedScreenshot: ScreenshotData | null;
   isRegionSelecting: boolean;
+  regionSelectInfo: RegionSelectInfo | null;
   isCapturing: boolean;
   captureFullscreen: () => Promise<void>;
   captureRegion: (x: number, y: number, width: number, height: number) => Promise<void>;
@@ -34,6 +41,7 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
   const [screenshots, setScreenshots] = useState<ScreenshotData[]>([]);
   const [selectedScreenshot, setSelectedScreenshot] = useState<ScreenshotData | null>(null);
   const [isRegionSelecting, setIsRegionSelecting] = useState(false);
+  const [regionSelectInfo, setRegionSelectInfo] = useState<RegionSelectInfo | null>(null);
   const [isCapturing, setIsCapturing] = useState(false);
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const unlistenRegionRef = useRef<UnlistenFn | null>(null);
@@ -56,8 +64,18 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
         }
       });
 
-      unlistenRegionRef.current = await listen('screenshot-region-select', () => {
+      // Region select event now carries pre-capture metadata from the hotkey handler
+      unlistenRegionRef.current = await listen<{
+        preview_path: string;
+        monitor_width: number;
+        monitor_height: number;
+      }>('screenshot-region-select', (event) => {
         if (mounted) {
+          setRegionSelectInfo({
+            previewPath: event.payload.preview_path,
+            monitorWidth: event.payload.monitor_width,
+            monitorHeight: event.payload.monitor_height,
+          });
           setIsRegionSelecting(true);
         }
       });
@@ -93,10 +111,8 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
   const captureFullscreen = useCallback(async () => {
     setIsCapturing(true);
     try {
-      const data = await takeScreenshot();
+      await takeScreenshot();
       // Event listener handles adding to state via screenshot-taken event
-      // But if invoked directly (not via hotkey), the event also fires,
-      // so we don't need to add manually here.
     } catch (err) {
       console.error('Failed to capture screenshot:', err);
     } finally {
@@ -104,14 +120,16 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
     }
   }, []);
 
+  // Crop from the pre-captured image stored in Rust memory
   const captureRegion = useCallback(async (x: number, y: number, width: number, height: number) => {
     setIsRegionSelecting(false);
+    setRegionSelectInfo(null);
     setIsCapturing(true);
     try {
-      await takeRegionScreenshot(x, y, width, height);
-      // Event listener handles adding to state
+      await cropPreCapturedRegion(x, y, width, height);
+      // screenshot-taken event listener handles adding to state
     } catch (err) {
-      console.error('Failed to capture region screenshot:', err);
+      console.error('Failed to crop pre-captured region:', err);
     } finally {
       setIsCapturing(false);
     }
@@ -121,8 +139,15 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
     setIsRegionSelecting(true);
   }, []);
 
-  const cancelRegionSelect = useCallback(() => {
+  // Cancel region selection and free the pre-captured image from Rust memory
+  const cancelRegionSelect = useCallback(async () => {
     setIsRegionSelecting(false);
+    setRegionSelectInfo(null);
+    try {
+      await cancelRegionCapture();
+    } catch (err) {
+      console.error('Failed to cancel region capture:', err);
+    }
   }, []);
 
   const openLightbox = useCallback((screenshot: ScreenshotData) => {
@@ -153,6 +178,7 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
         screenshots,
         selectedScreenshot,
         isRegionSelecting,
+        regionSelectInfo,
         isCapturing,
         captureFullscreen,
         captureRegion,

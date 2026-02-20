@@ -121,15 +121,28 @@ export interface ScreenshotData {
   capture_mode: 'fullscreen' | 'region';
 }
 
-// Unified timeline types (transcripts + screenshots)
-export type TimelineItemType = 'transcript' | 'screenshot';
+// Clipboard capture types
+export interface ClipboardData {
+  id: string;
+  content_type: 'text' | 'image';
+  text?: string;
+  file_path?: string;
+  thumbnail_base64?: string;
+  timestamp: string;
+  recording_elapsed_secs?: number;
+  width?: number;
+  height?: number;
+}
+
+// Unified timeline types (transcripts + screenshots + clipboard clips)
+export type TimelineItemType = 'transcript' | 'screenshot' | 'clipboard';
 
 export interface TimelineItem {
   type: TimelineItemType;
   id: string;
   recording_elapsed_secs: number;
   timestamp: string;
-  data: TranscriptSegmentData | ScreenshotData;
+  data: TranscriptSegmentData | ScreenshotData | ClipboardData;
 }
 
-export type TimelineFilter = 'all' | 'transcripts' | 'screenshots';
+export type TimelineFilter = 'all' | 'transcripts' | 'screenshots' | 'clipboard';

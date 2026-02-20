@@ -240,6 +240,46 @@ pub async fn load_screenshots_json(folder_path: String) -> Result<Vec<Screenshot
     Ok(results)
 }
 
+/// Crop a region from the pre-captured screen image (stored in memory by the hotkey handler).
+/// This avoids capturing the screen a second time — the image was already captured when the
+/// user pressed Alt+Shift+R.
+#[tauri::command]
+pub async fn crop_pre_captured_region<R: Runtime>(
+    app: AppHandle<R>,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<ScreenshotData, String> {
+    info!(
+        "Cropping pre-captured region at ({}, {}) {}x{}",
+        x, y, width, height
+    );
+
+    let screenshots_dir = get_screenshots_dir(&app)?;
+
+    let data =
+        capture::crop_from_pre_captured(x, y, width, height, &screenshots_dir).map_err(|e| {
+            error!("Failed to crop pre-captured region: {}", e);
+            format!("Region crop failed: {}", e)
+        })?;
+
+    if let Err(e) = app.emit("screenshot-taken", &data) {
+        error!("Failed to emit screenshot-taken event: {}", e);
+    }
+
+    info!("Region screenshot (pre-capture) saved: {}", data.file_path);
+    Ok(data)
+}
+
+/// Cancel region capture and free the pre-captured image from memory.
+#[tauri::command]
+pub async fn cancel_region_capture() -> Result<(), String> {
+    info!("Cancelling region capture, clearing pre-captured image");
+    capture::clear_pre_captured();
+    Ok(())
+}
+
 /// Determine the screenshots directory.
 /// Uses the current meeting folder if recording, otherwise app_data_dir/screenshots.
 fn get_screenshots_dir<R: Runtime>(app: &AppHandle<R>) -> Result<std::path::PathBuf, String> {

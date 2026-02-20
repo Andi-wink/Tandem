@@ -3,8 +3,12 @@ use base64::Engine;
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::{DynamicImage, ImageEncoder, RgbaImage};
+use log::{error, info};
+use serde::Serialize;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use uuid::Uuid;
 use xcap::Monitor;
 
@@ -12,6 +16,135 @@ use super::types::{CaptureMode, ScreenshotData};
 use crate::audio::recording_commands;
 
 const THUMBNAIL_MAX_WIDTH: u32 = 200;
+
+// ── Pre-capture storage for region screenshots ──────────────────────────────
+// The full-resolution RgbaImage is stored here after the hotkey fires.
+// The frontend shows its selection overlay while this image waits in memory.
+// When the user finishes drawing, we crop from this image instead of
+// capturing the screen a second time.
+
+static PRE_CAPTURED_IMAGE: LazyLock<Arc<StdMutex<Option<RgbaImage>>>> =
+    LazyLock::new(|| Arc::new(StdMutex::new(None)));
+
+static REGION_CAPTURE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PreCaptureResult {
+    pub preview_path: String,
+    pub monitor_width: u32,
+    pub monitor_height: u32,
+}
+
+/// Pre-capture the screen: store the raw image in memory and write a
+/// full-resolution JPEG preview to disk for the frontend to load via
+/// the asset protocol.  Returns the file path and monitor dimensions.
+pub fn pre_capture_screen(app_data_dir: &Path) -> Result<PreCaptureResult> {
+    // Guard against double-press
+    if REGION_CAPTURE_IN_PROGRESS
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        anyhow::bail!("Region capture already in progress");
+    }
+
+    let monitors = Monitor::all().context("Failed to enumerate monitors")?;
+    let monitor = monitors
+        .into_iter()
+        .next()
+        .context("No monitors found")?;
+
+    let raw_image = monitor
+        .capture_image()
+        .context("Failed to capture monitor image")?;
+
+    let monitor_width = raw_image.width();
+    let monitor_height = raw_image.height();
+
+    // Write full-resolution JPEG preview to a temp file
+    let preview_dir = app_data_dir.join("temp");
+    std::fs::create_dir_all(&preview_dir).context("Failed to create temp directory")?;
+    let preview_path = preview_dir.join("region_preview.jpg");
+
+    let dynamic = DynamicImage::ImageRgba8(raw_image.clone());
+    let rgb = dynamic.to_rgb8();
+    let mut file =
+        std::fs::File::create(&preview_path).context("Failed to create preview file")?;
+    let mut encoder = JpegEncoder::new_with_quality(&mut file, 85);
+    encoder
+        .encode(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .context("Failed to encode preview JPEG")?;
+
+    info!(
+        "Pre-captured screen: {}x{}, preview at {}",
+        monitor_width,
+        monitor_height,
+        preview_path.display()
+    );
+
+    // Store raw image for later cropping
+    let mut guard = PRE_CAPTURED_IMAGE
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+    *guard = Some(raw_image);
+
+    Ok(PreCaptureResult {
+        preview_path: preview_path.to_string_lossy().to_string(),
+        monitor_width,
+        monitor_height,
+    })
+}
+
+/// Crop a region from the pre-captured image, save as PNG, and return metadata.
+/// Consumes the stored image (sets it to None) and resets the in-progress flag.
+pub fn crop_from_pre_captured(
+    x: i32,
+    y: i32,
+    region_width: u32,
+    region_height: u32,
+    screenshots_dir: &Path,
+) -> Result<ScreenshotData> {
+    let mut guard = PRE_CAPTURED_IMAGE
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+
+    let raw_image = guard
+        .take()
+        .context("No pre-captured image available")?;
+
+    // Reset the in-progress flag
+    REGION_CAPTURE_IN_PROGRESS.store(false, Ordering::SeqCst);
+
+    let cropped = crop_image(&raw_image, x, y, region_width, region_height)?;
+    let w = cropped.width();
+    let h = cropped.height();
+
+    let dynamic = DynamicImage::ImageRgba8(cropped);
+    save_screenshot(dynamic, w, h, CaptureMode::Region, screenshots_dir)
+}
+
+/// Free the stored pre-captured image and reset the in-progress flag.
+/// Called when the user cancels region selection.
+pub fn clear_pre_captured() {
+    if let Ok(mut guard) = PRE_CAPTURED_IMAGE.lock() {
+        if guard.is_some() {
+            info!("Clearing pre-captured image from memory");
+        }
+        *guard = None;
+    } else {
+        error!("Failed to lock PRE_CAPTURED_IMAGE for cleanup");
+    }
+    REGION_CAPTURE_IN_PROGRESS.store(false, Ordering::SeqCst);
+}
+
+/// Check if a region capture is currently in progress.
+pub fn is_region_capture_in_progress() -> bool {
+    REGION_CAPTURE_IN_PROGRESS.load(Ordering::SeqCst)
+}
 
 /// Capture the primary monitor and return a JPEG preview downscaled to viewport size.
 /// Returns (data_uri, original_monitor_width, original_monitor_height) so the frontend

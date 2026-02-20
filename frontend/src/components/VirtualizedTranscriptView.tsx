@@ -8,9 +8,10 @@ import { ConfidenceIndicator } from "./ConfidenceIndicator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { RecordingStatusBar } from "./RecordingStatusBar";
 import { motion, AnimatePresence } from "framer-motion";
-import { TranscriptSegmentData, ScreenshotData, TimelineItem, TimelineFilter } from "@/types";
+import { TranscriptSegmentData, ScreenshotData, ClipboardData, TimelineItem, TimelineFilter } from "@/types";
 import { TimelineFilterBar } from "./TimelineFilterBar";
 import { ScreenshotThumbnail } from "./ScreenshotThumbnail";
+import { Clipboard } from "lucide-react";
 
 export interface VirtualizedTranscriptViewProps {
     /** Transcript segments to display */
@@ -37,12 +38,14 @@ export interface VirtualizedTranscriptViewProps {
     loadedCount?: number;
     onLoadMore?: () => void;
 
-    // Timeline props (screenshots integration)
+    // Timeline props (screenshots + clipboard integration)
     timelineItems?: TimelineItem[];
     timelineFilter?: TimelineFilter;
     onTimelineFilterChange?: (filter: TimelineFilter) => void;
     screenshotCount?: number;
     onScreenshotClick?: (screenshot: ScreenshotData) => void;
+    clipboardCount?: number;
+    onClipboardItemClick?: (item: ClipboardData) => void;
 }
 
 // Threshold for enabling virtualization (below this, use simple rendering)
@@ -138,6 +141,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     onTimelineFilterChange,
     screenshotCount = 0,
     onScreenshotClick,
+    clipboardCount = 0,
+    onClipboardItemClick,
 }) => {
     // Create scroll ref first - shared between virtualizer and auto-scroll hook
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -250,12 +255,13 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                 )}
             </AnimatePresence>
 
-            {/* Timeline Filter Bar - shown when screenshots exist */}
+            {/* Timeline Filter Bar - shown when screenshots or clipboard clips exist */}
             {onTimelineFilterChange && (
                 <TimelineFilterBar
                     filter={timelineFilter}
                     onFilterChange={onTimelineFilterChange}
                     screenshotCount={screenshotCount}
+                    clipboardCount={clipboardCount}
                 />
             )}
 
@@ -305,6 +311,53 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                             screenshot={ss}
                                             onClick={onScreenshotClick}
                                         />
+                                    </motion.div>
+                                );
+                            }
+
+                            if (item.type === 'clipboard') {
+                                const clip = item.data as ClipboardData;
+                                return (
+                                    <motion.div
+                                        key={item.id}
+                                        initial={{ opacity: 0, y: 5 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        transition={{ duration: 0.15 }}
+                                        className="px-3 py-1"
+                                    >
+                                        {clip.content_type === 'image' && clip.thumbnail_base64 ? (
+                                            // Image clip — reuse screenshot thumbnail style
+                                            <div
+                                                className={`cursor-pointer ${onClipboardItemClick ? 'hover:opacity-90' : ''}`}
+                                                onClick={() => onClipboardItemClick?.(clip)}
+                                            >
+                                                <ScreenshotThumbnail
+                                                    screenshot={{
+                                                        id: clip.id,
+                                                        file_path: clip.file_path ?? '',
+                                                        thumbnail_base64: clip.thumbnail_base64,
+                                                        timestamp: clip.timestamp,
+                                                        recording_elapsed_secs: clip.recording_elapsed_secs,
+                                                        width: clip.width ?? 0,
+                                                        height: clip.height ?? 0,
+                                                        capture_mode: 'fullscreen',
+                                                    }}
+                                                    onClick={() => onClipboardItemClick?.(clip)}
+                                                />
+                                            </div>
+                                        ) : (
+                                            // Text clip — compact preview card
+                                            <div
+                                                className={`flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs ${onClipboardItemClick ? 'cursor-pointer hover:bg-amber-100' : ''}`}
+                                                onClick={() => onClipboardItemClick?.(clip)}
+                                            >
+                                                <Clipboard className="w-3.5 h-3.5 text-amber-500 mt-0.5 shrink-0" />
+                                                <div className="min-w-0">
+                                                    <span className="text-amber-600 font-medium mr-2">{clip.timestamp}</span>
+                                                    <span className="text-gray-700 line-clamp-2">{clip.text}</span>
+                                                </div>
+                                            </div>
+                                        )}
                                     </motion.div>
                                 );
                             }

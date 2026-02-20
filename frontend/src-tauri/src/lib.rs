@@ -38,6 +38,7 @@ pub(crate) use perf_trace;
 pub mod analytics;
 pub mod api;
 pub mod audio;
+pub mod clipboard;
 pub mod console_utils;
 pub mod database;
 pub mod notifications;
@@ -406,7 +407,90 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin({
+            use tauri_plugin_global_shortcut::{Shortcut, ShortcutState};
+            let fullscreen_shortcut: Shortcut = "Alt+Shift+S".parse().expect("Invalid shortcut: Alt+Shift+S");
+            let region_shortcut: Shortcut = "Alt+Shift+R".parse().expect("Invalid shortcut: Alt+Shift+R");
+            let clipboard_shortcut: Shortcut = "Alt+Shift+V".parse().expect("Invalid shortcut: Alt+Shift+V");
+
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(move |app, shortcut, event| {
+                    if let ShortcutState::Pressed = event.state {
+                        if shortcut == &clipboard_shortcut {
+                            log::info!("Global shortcut pressed: Alt+Shift+V (clipboard capture)");
+                            let app_for_task = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                match clipboard::commands::read_clipboard_content(app_for_task).await {
+                                    Ok(data) => log::info!("Clipboard captured via hotkey: {:?}", data.content_type),
+                                    Err(e) => log::error!("Clipboard hotkey capture failed: {}", e),
+                                }
+                            });
+                        } else if shortcut == &fullscreen_shortcut {
+                            log::info!("Global shortcut pressed: Alt+Shift+S (fullscreen screenshot)");
+                            let app_for_task = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                match screenshot::commands::take_screenshot(app_for_task).await {
+                                    Ok(data) => log::info!("Fullscreen screenshot via hotkey: {}", data.file_path),
+                                    Err(e) => log::error!("Hotkey screenshot failed: {}", e),
+                                }
+                            });
+                        } else if shortcut == &region_shortcut {
+                            log::info!("Global shortcut pressed: Alt+Shift+R (region screenshot)");
+
+                            // Guard against double-press
+                            if screenshot::capture::is_region_capture_in_progress() {
+                                log::warn!("Region capture already in progress, ignoring");
+                                return;
+                            }
+
+                            // Pre-capture the screen, then emit event with preview path
+                            let app_for_task = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                use tauri::Emitter as _;
+                                let app_data_dir = match app_for_task.path().app_data_dir() {
+                                    Ok(dir) => dir,
+                                    Err(e) => {
+                                        log::error!("Failed to get app data dir: {}", e);
+                                        return;
+                                    }
+                                };
+
+                                match tokio::task::spawn_blocking(move || {
+                                    screenshot::capture::pre_capture_screen(&app_data_dir)
+                                })
+                                .await
+                                {
+                                    Ok(Ok(result)) => {
+                                        log::info!(
+                                            "Pre-captured screen: {}x{}, preview at {}",
+                                            result.monitor_width,
+                                            result.monitor_height,
+                                            result.preview_path
+                                        );
+                                        let _ = app_for_task.emit(
+                                            "screenshot-region-select",
+                                            serde_json::json!({
+                                                "preview_path": result.preview_path,
+                                                "monitor_width": result.monitor_width,
+                                                "monitor_height": result.monitor_height,
+                                            }),
+                                        );
+                                    }
+                                    Ok(Err(e)) => {
+                                        log::error!("Pre-capture failed: {}", e);
+                                        screenshot::capture::clear_pre_captured();
+                                    }
+                                    Err(e) => {
+                                        log::error!("Pre-capture task panicked: {}", e);
+                                        screenshot::capture::clear_pre_captured();
+                                    }
+                                }
+                            });
+                        }
+                    }
+                })
+                .build()
+        })
         .manage(whisper_engine::parallel_commands::ParallelProcessorState::new())
         .manage(Arc::new(RwLock::new(
             None::<notifications::manager::NotificationManager<tauri::Wry>>,
@@ -423,47 +507,32 @@ pub fn run() {
 
             // Register global shortcuts for screenshot capture
             {
-                use tauri::Emitter as _;
-                use tauri_plugin_global_shortcut::{GlobalShortcutExt as _, Shortcut, ShortcutState};
+                use tauri_plugin_global_shortcut::{GlobalShortcutExt as _, Shortcut};
 
-                let app_handle = _app.handle().clone();
-                let fullscreen_shortcut: Shortcut = "Alt+Shift+S".parse().expect("Invalid shortcut: Alt+Shift+S");
-                let region_shortcut: Shortcut = "Alt+Shift+R".parse().expect("Invalid shortcut: Alt+Shift+R");
+                let gs = _app.handle().global_shortcut();
 
-                app_handle.global_shortcut().on_shortcut(
-                    fullscreen_shortcut,
-                    {
-                        let app_handle = app_handle.clone();
-                        move |_app, _shortcut, event| {
-                            if let ShortcutState::Pressed = event.state {
-                                log::info!("Global shortcut pressed: Alt+Shift+S (fullscreen screenshot)");
-                                let app_for_task = app_handle.clone();
-                                tauri::async_runtime::spawn(async move {
-                                    match screenshot::commands::take_screenshot(app_for_task).await {
-                                        Ok(data) => log::info!("Fullscreen screenshot via hotkey: {}", data.file_path),
-                                        Err(e) => log::error!("Hotkey screenshot failed: {}", e),
-                                    }
-                                });
-                            }
-                        }
-                    },
-                ).unwrap_or_else(|e| log::error!("Failed to register Alt+Shift+S shortcut: {}", e));
+                let fullscreen: Shortcut = "Alt+Shift+S".parse().unwrap();
+                let region: Shortcut = "Alt+Shift+R".parse().unwrap();
 
-                app_handle.global_shortcut().on_shortcut(
-                    region_shortcut,
-                    {
-                        let app_handle = app_handle.clone();
-                        move |_app, _shortcut, event| {
-                            if let ShortcutState::Pressed = event.state {
-                                log::info!("Global shortcut pressed: Alt+Shift+R (region screenshot)");
-                                // Emit event to frontend to show region selection overlay
-                                let _ = app_handle.emit("screenshot-region-select", ());
-                            }
-                        }
-                    },
-                ).unwrap_or_else(|e| log::error!("Failed to register Alt+Shift+R shortcut: {}", e));
+                // Unregister first in case they're still registered from a previous crash
+                let _ = gs.unregister(fullscreen.clone());
+                let _ = gs.unregister(region.clone());
 
-                log::info!("Screenshot global shortcuts registered (Alt+Shift+S, Alt+Shift+R)");
+                if let Err(e) = gs.register(fullscreen) {
+                    log::error!("Failed to register Alt+Shift+S: {}", e);
+                }
+                if let Err(e) = gs.register(region) {
+                    log::error!("Failed to register Alt+Shift+R: {}", e);
+                }
+
+                // Also register clipboard capture shortcut
+                let clipboard: Shortcut = "Alt+Shift+V".parse().unwrap();
+                let _ = gs.unregister(clipboard.clone());
+                if let Err(e) = gs.register(clipboard) {
+                    log::error!("Failed to register Alt+Shift+V: {}", e);
+                }
+
+                log::info!("Global shortcuts registered (Alt+Shift+S, Alt+Shift+R, Alt+Shift+V)");
             }
 
             // Initialize notification system with proper defaults
@@ -747,8 +816,14 @@ pub fn run() {
             screenshot::commands::take_screenshot,
             screenshot::commands::take_region_screenshot,
             screenshot::commands::capture_screen_preview,
+            screenshot::commands::crop_pre_captured_region,
+            screenshot::commands::cancel_region_capture,
             screenshot::commands::save_screenshots_json,
             screenshot::commands::load_screenshots_json,
+            // Clipboard capture commands
+            clipboard::commands::read_clipboard_content,
+            clipboard::commands::save_clipboard_json,
+            clipboard::commands::load_clipboard_json,
             // Database import commands
             database::commands::check_first_launch,
             database::commands::select_legacy_database_path,

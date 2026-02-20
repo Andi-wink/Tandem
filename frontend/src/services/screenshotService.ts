@@ -42,3 +42,16 @@ export async function loadScreenshotsJson(
 ): Promise<ScreenshotData[]> {
   return invoke<ScreenshotData[]>('load_screenshots_json', { folderPath });
 }
+
+export async function cropPreCapturedRegion(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): Promise<ScreenshotData> {
+  return invoke<ScreenshotData>('crop_pre_captured_region', { x, y, width, height });
+}
+
+export async function cancelRegionCapture(): Promise<void> {
+  return invoke<void>('cancel_region_capture');
+}

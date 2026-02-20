@@ -3,11 +3,12 @@ import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptVie
 import { PermissionWarning } from '@/components/PermissionWarning';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, GlobeIcon, Camera, Scan } from 'lucide-react';
+import { Copy, GlobeIcon, Camera, Scan, Clipboard } from 'lucide-react';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useScreenshots } from '@/contexts/ScreenshotContext';
+import { useClipboard } from '@/contexts/ClipboardContext';
 import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { useTimeline } from '@/hooks/useTimeline';
 import { ModalType } from '@/hooks/useModalState';
@@ -45,6 +46,7 @@ export function TranscriptPanel({
     screenshots,
     selectedScreenshot,
     isRegionSelecting,
+    regionSelectInfo,
     captureFullscreen,
     captureRegion,
     startRegionSelect,
@@ -52,6 +54,7 @@ export function TranscriptPanel({
     openLightbox,
     closeLightbox,
   } = useScreenshots();
+  const { clipboardItems, captureClipboard } = useClipboard();
   const isLinux = useIsLinux();
 
   const [timelineFilter, setTimelineFilter] = useState<TimelineFilter>('all');
@@ -68,8 +71,9 @@ export function TranscriptPanel({
     [transcripts]
   );
 
-  // Merge into timeline when screenshots exist
-  const timelineItems = useTimeline(segments, screenshots, timelineFilter);
+  // Merge into timeline when screenshots or clipboard items exist
+  const timelineItems = useTimeline(segments, screenshots, clipboardItems, timelineFilter);
+  const hasTimelineContent = screenshots.length > 0 || clipboardItems.length > 0;
 
   const handleScreenshotClick = (screenshot: ScreenshotData) => {
     openLightbox(screenshot);
@@ -131,6 +135,17 @@ export function TranscriptPanel({
                     Region
                   </span>
                 </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={captureClipboard}
+                  title="Capture Clipboard (Alt+Shift+V)"
+                >
+                  <Clipboard className="w-4 h-4" />
+                  <span className='hidden md:inline'>
+                    Clip
+                  </span>
+                </Button>
               </ButtonGroup>
             </div>
           </div>
@@ -161,11 +176,12 @@ export function TranscriptPanel({
               isStopping={isStopping}
               enableStreaming={isRecording}
               showConfidence={true}
-              timelineItems={screenshots.length > 0 ? timelineItems : undefined}
+              timelineItems={hasTimelineContent ? timelineItems : undefined}
               timelineFilter={timelineFilter}
-              onTimelineFilterChange={screenshots.length > 0 ? setTimelineFilter : undefined}
+              onTimelineFilterChange={hasTimelineContent ? setTimelineFilter : undefined}
               screenshotCount={screenshots.length}
               onScreenshotClick={handleScreenshotClick}
+              clipboardCount={clipboardItems.length}
             />
           </div>
         </div>
@@ -180,8 +196,11 @@ export function TranscriptPanel({
       )}
 
       {/* Region Selection Overlay */}
-      {isRegionSelecting && (
+      {isRegionSelecting && regionSelectInfo && (
         <RegionSelectOverlay
+          previewPath={regionSelectInfo.previewPath}
+          monitorWidth={regionSelectInfo.monitorWidth}
+          monitorHeight={regionSelectInfo.monitorHeight}
           onSelect={captureRegion}
           onCancel={cancelRegionSelect}
         />
