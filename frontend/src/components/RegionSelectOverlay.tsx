@@ -2,10 +2,9 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { convertFileSrc } from '@tauri-apps/api/core';
 
 interface RegionSelectOverlayProps {
-  previewPath: string;      // Absolute path to pre-captured JPEG on disk
+  previewDataUri: string;   // Base64 data URI of the pre-captured JPEG
   monitorWidth: number;     // Physical pixel width of captured image
   monitorHeight: number;    // Physical pixel height of captured image
   onSelect: (x: number, y: number, width: number, height: number) => void;
@@ -13,7 +12,7 @@ interface RegionSelectOverlayProps {
 }
 
 export function RegionSelectOverlay({
-  previewPath,
+  previewDataUri,
   monitorWidth,
   monitorHeight,
   onSelect,
@@ -26,10 +25,7 @@ export function RegionSelectOverlay({
   const overlayRef = useRef<HTMLDivElement>(null);
   const wasFullscreenRef = useRef(false);
 
-  // Convert local file path to Tauri asset URL
-  const previewSrc = convertFileSrc(previewPath);
-
-  // On mount: preload the preview image, then go fullscreen
+  // On mount: preload the data URI image, then go fullscreen
   // The screen was already captured by the Rust hotkey handler — no capture needed here
   useEffect(() => {
     let cancelled = false;
@@ -39,7 +35,7 @@ export function RegionSelectOverlay({
         const win = getCurrentWindow();
         wasFullscreenRef.current = await win.isFullscreen();
 
-        // Preload the JPEG from disk via asset protocol (typically ~5-10ms for local file)
+        // Preload the base64 data URI (decodes in-process, no asset protocol needed)
         const img = new Image();
         img.onload = async () => {
           if (cancelled) return;
@@ -49,13 +45,13 @@ export function RegionSelectOverlay({
           if (!cancelled) setReady(true);
         };
         img.onerror = async () => {
-          console.error('Failed to load preview image:', previewPath);
+          console.error('Failed to decode preview data URI (length:', previewDataUri.length, ')');
           if (!cancelled) {
             await restoreWindow();
             onCancel();
           }
         };
-        img.src = previewSrc;
+        img.src = previewDataUri;
       } catch (err) {
         console.error('Failed to setup region select:', err);
         if (!cancelled) {
@@ -161,8 +157,8 @@ export function RegionSelectOverlay({
       ref={overlayRef}
       className="fixed inset-0 z-[9999] cursor-crosshair select-none"
       style={{
-        backgroundImage: `url(${previewSrc})`,
-        backgroundSize: '100% 100%',     // Stretch full-res JPEG to fill viewport
+        backgroundImage: `url(${previewDataUri})`,
+        backgroundSize: '100% 100%',     // Stretch JPEG to fill viewport
         backgroundPosition: 'top left',
         backgroundRepeat: 'no-repeat',
       }}

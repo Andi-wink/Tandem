@@ -198,7 +198,7 @@ export function TranscriptPanel({
       {/* Region Selection Overlay */}
       {isRegionSelecting && regionSelectInfo && (
         <RegionSelectOverlay
-          previewPath={regionSelectInfo.previewPath}
+          previewDataUri={regionSelectInfo.previewDataUri}
           monitorWidth={regionSelectInfo.monitorWidth}
           monitorHeight={regionSelectInfo.monitorHeight}
           onSelect={captureRegion}

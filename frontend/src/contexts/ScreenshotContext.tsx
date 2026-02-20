@@ -6,7 +6,7 @@ import { ScreenshotData } from '@/types';
 import { takeScreenshot, cropPreCapturedRegion, cancelRegionCapture, saveScreenshotsJson } from '@/services/screenshotService';
 
 export interface RegionSelectInfo {
-  previewPath: string;
+  previewDataUri: string;
   monitorWidth: number;
   monitorHeight: number;
 }
@@ -66,13 +66,13 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
 
       // Region select event now carries pre-capture metadata from the hotkey handler
       unlistenRegionRef.current = await listen<{
-        preview_path: string;
+        preview_data_uri: string;
         monitor_width: number;
         monitor_height: number;
       }>('screenshot-region-select', (event) => {
         if (mounted) {
           setRegionSelectInfo({
-            previewPath: event.payload.preview_path,
+            previewDataUri: event.payload.preview_data_uri,
             monitorWidth: event.payload.monitor_width,
             monitorHeight: event.payload.monitor_height,
           });

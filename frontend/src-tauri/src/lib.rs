@@ -437,40 +437,35 @@ pub fn run() {
                         } else if shortcut == &region_shortcut {
                             log::info!("Global shortcut pressed: Alt+Shift+R (region screenshot)");
 
-                            // Guard against double-press
+                            // Self-healing guard: if a previous capture left the flag stuck
+                            // (e.g. overlay failed to mount or user dismissed it unexpectedly),
+                            // clear the stale state and allow a fresh capture.
                             if screenshot::capture::is_region_capture_in_progress() {
-                                log::warn!("Region capture already in progress, ignoring");
-                                return;
+                                log::warn!("Region capture flag still set — clearing stale state");
+                                screenshot::capture::clear_pre_captured();
                             }
 
-                            // Pre-capture the screen, then emit event with preview path
+                            // Pre-capture the screen, then emit event with data URI
                             let app_for_task = app.clone();
                             tauri::async_runtime::spawn(async move {
                                 use tauri::Emitter as _;
-                                let app_data_dir = match app_for_task.path().app_data_dir() {
-                                    Ok(dir) => dir,
-                                    Err(e) => {
-                                        log::error!("Failed to get app data dir: {}", e);
-                                        return;
-                                    }
-                                };
 
                                 match tokio::task::spawn_blocking(move || {
-                                    screenshot::capture::pre_capture_screen(&app_data_dir)
+                                    screenshot::capture::pre_capture_screen()
                                 })
                                 .await
                                 {
                                     Ok(Ok(result)) => {
                                         log::info!(
-                                            "Pre-captured screen: {}x{}, preview at {}",
+                                            "Pre-captured screen: {}x{}, data URI len={}",
                                             result.monitor_width,
                                             result.monitor_height,
-                                            result.preview_path
+                                            result.preview_data_uri.len()
                                         );
                                         let _ = app_for_task.emit(
                                             "screenshot-region-select",
                                             serde_json::json!({
-                                                "preview_path": result.preview_path,
+                                                "preview_data_uri": result.preview_data_uri,
                                                 "monitor_width": result.monitor_width,
                                                 "monitor_height": result.monitor_height,
                                             }),

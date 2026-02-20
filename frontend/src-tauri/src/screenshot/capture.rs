@@ -30,15 +30,15 @@ static REGION_CAPTURE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PreCaptureResult {
-    pub preview_path: String,
+    pub preview_data_uri: String,
     pub monitor_width: u32,
     pub monitor_height: u32,
 }
 
-/// Pre-capture the screen: store the raw image in memory and write a
-/// full-resolution JPEG preview to disk for the frontend to load via
-/// the asset protocol.  Returns the file path and monitor dimensions.
-pub fn pre_capture_screen(app_data_dir: &Path) -> Result<PreCaptureResult> {
+/// Pre-capture the screen: store the raw image in memory and encode a
+/// JPEG preview as a base64 data URI for the frontend.
+/// Returns the data URI and monitor dimensions.
+pub fn pre_capture_screen() -> Result<PreCaptureResult> {
     // Guard against double-press
     if REGION_CAPTURE_IN_PROGRESS
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -60,16 +60,11 @@ pub fn pre_capture_screen(app_data_dir: &Path) -> Result<PreCaptureResult> {
     let monitor_width = raw_image.width();
     let monitor_height = raw_image.height();
 
-    // Write full-resolution JPEG preview to a temp file
-    let preview_dir = app_data_dir.join("temp");
-    std::fs::create_dir_all(&preview_dir).context("Failed to create temp directory")?;
-    let preview_path = preview_dir.join("region_preview.jpg");
-
+    // Encode JPEG preview to base64 in memory (bypasses asset protocol entirely)
     let dynamic = DynamicImage::ImageRgba8(raw_image.clone());
     let rgb = dynamic.to_rgb8();
-    let mut file =
-        std::fs::File::create(&preview_path).context("Failed to create preview file")?;
-    let mut encoder = JpegEncoder::new_with_quality(&mut file, 85);
+    let mut buf = Cursor::new(Vec::new());
+    let mut encoder = JpegEncoder::new_with_quality(&mut buf, 75);
     encoder
         .encode(
             rgb.as_raw(),
@@ -79,11 +74,14 @@ pub fn pre_capture_screen(app_data_dir: &Path) -> Result<PreCaptureResult> {
         )
         .context("Failed to encode preview JPEG")?;
 
+    let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
+    let preview_data_uri = format!("data:image/jpeg;base64,{}", b64);
+
     info!(
-        "Pre-captured screen: {}x{}, preview at {}",
+        "Pre-captured screen: {}x{}, preview data URI length: {}",
         monitor_width,
         monitor_height,
-        preview_path.display()
+        preview_data_uri.len()
     );
 
     // Store raw image for later cropping
@@ -93,7 +91,7 @@ pub fn pre_capture_screen(app_data_dir: &Path) -> Result<PreCaptureResult> {
     *guard = Some(raw_image);
 
     Ok(PreCaptureResult {
-        preview_path: preview_path.to_string_lossy().to_string(),
+        preview_data_uri,
         monitor_width,
         monitor_height,
     })
