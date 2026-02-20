@@ -52,6 +52,10 @@ export async function cropPreCapturedRegion(
   return invoke<ScreenshotData>('crop_pre_captured_region', { x, y, width, height });
 }
 
+export async function startRegionCapture(): Promise<void> {
+  return invoke<void>('start_region_capture');
+}
+
 export async function cancelRegionCapture(): Promise<void> {
   return invoke<void>('cancel_region_capture');
 }

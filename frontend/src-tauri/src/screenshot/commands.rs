@@ -272,6 +272,43 @@ pub async fn crop_pre_captured_region<R: Runtime>(
     Ok(data)
 }
 
+/// Start region capture: pre-capture the screen and emit the selection overlay event.
+/// Called from the UI button (the hotkey handler does this inline).
+#[tauri::command]
+pub async fn start_region_capture<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    info!("Starting region capture from UI button");
+
+    // Self-healing: clear stale state if previous capture didn't finish
+    if capture::is_region_capture_in_progress() {
+        info!("Clearing stale region capture state");
+        capture::clear_pre_captured();
+    }
+
+    let result = tokio::task::spawn_blocking(|| capture::pre_capture_screen())
+        .await
+        .map_err(|e| format!("Pre-capture task failed: {}", e))?
+        .map_err(|e| format!("Pre-capture failed: {}", e))?;
+
+    info!(
+        "Pre-captured screen via button: {}x{}, data URI len={}",
+        result.monitor_width,
+        result.monitor_height,
+        result.preview_data_uri.len()
+    );
+
+    app.emit(
+        "screenshot-region-select",
+        serde_json::json!({
+            "preview_data_uri": result.preview_data_uri,
+            "monitor_width": result.monitor_width,
+            "monitor_height": result.monitor_height,
+        }),
+    )
+    .map_err(|e| format!("Failed to emit region select event: {}", e))?;
+
+    Ok(())
+}
+
 /// Cancel region capture and free the pre-captured image from memory.
 #[tauri::command]
 pub async fn cancel_region_capture() -> Result<(), String> {

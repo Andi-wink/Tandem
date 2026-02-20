@@ -414,6 +414,8 @@ pub fn run() {
             let clipboard_shortcut: Shortcut = "Alt+Shift+V".parse().expect("Invalid shortcut: Alt+Shift+V");
 
             tauri_plugin_global_shortcut::Builder::new()
+                .with_shortcuts(["Alt+Shift+S", "Alt+Shift+R", "Alt+Shift+V"])
+                .expect("Failed to parse global shortcuts")
                 .with_handler(move |app, shortcut, event| {
                     if let ShortcutState::Pressed = event.state {
                         if shortcut == &clipboard_shortcut {
@@ -500,35 +502,8 @@ pub fn run() {
                 log::error!("Failed to create system tray: {}", e);
             }
 
-            // Register global shortcuts for screenshot capture
-            {
-                use tauri_plugin_global_shortcut::{GlobalShortcutExt as _, Shortcut};
-
-                let gs = _app.handle().global_shortcut();
-
-                let fullscreen: Shortcut = "Alt+Shift+S".parse().unwrap();
-                let region: Shortcut = "Alt+Shift+R".parse().unwrap();
-
-                // Unregister first in case they're still registered from a previous crash
-                let _ = gs.unregister(fullscreen.clone());
-                let _ = gs.unregister(region.clone());
-
-                if let Err(e) = gs.register(fullscreen) {
-                    log::error!("Failed to register Alt+Shift+S: {}", e);
-                }
-                if let Err(e) = gs.register(region) {
-                    log::error!("Failed to register Alt+Shift+R: {}", e);
-                }
-
-                // Also register clipboard capture shortcut
-                let clipboard: Shortcut = "Alt+Shift+V".parse().unwrap();
-                let _ = gs.unregister(clipboard.clone());
-                if let Err(e) = gs.register(clipboard) {
-                    log::error!("Failed to register Alt+Shift+V: {}", e);
-                }
-
-                log::info!("Global shortcuts registered (Alt+Shift+S, Alt+Shift+R, Alt+Shift+V)");
-            }
+            // Global shortcuts are registered via .with_shortcuts() on the plugin builder
+            log::info!("Global shortcuts registered via plugin builder (Alt+Shift+S, Alt+Shift+R, Alt+Shift+V)");
 
             // Initialize notification system with proper defaults
             log::info!("Initializing notification system...");
@@ -812,6 +787,7 @@ pub fn run() {
             screenshot::commands::take_region_screenshot,
             screenshot::commands::capture_screen_preview,
             screenshot::commands::crop_pre_captured_region,
+            screenshot::commands::start_region_capture,
             screenshot::commands::cancel_region_capture,
             screenshot::commands::save_screenshots_json,
             screenshot::commands::load_screenshots_json,

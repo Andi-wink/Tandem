@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { ScreenshotData } from '@/types';
-import { takeScreenshot, cropPreCapturedRegion, cancelRegionCapture, saveScreenshotsJson } from '@/services/screenshotService';
+import { takeScreenshot, cropPreCapturedRegion, startRegionCapture, cancelRegionCapture, saveScreenshotsJson } from '@/services/screenshotService';
 
 export interface RegionSelectInfo {
   previewDataUri: string;
@@ -135,8 +135,14 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
     }
   }, []);
 
-  const startRegionSelect = useCallback(() => {
-    setIsRegionSelecting(true);
+  const startRegionSelect = useCallback(async () => {
+    try {
+      await startRegionCapture();
+      // The Rust command emits 'screenshot-region-select' event,
+      // which our listener handles to set regionSelectInfo and isRegionSelecting
+    } catch (err) {
+      console.error('Failed to start region capture:', err);
+    }
   }, []);
 
   // Cancel region selection and free the pre-captured image from Rust memory
