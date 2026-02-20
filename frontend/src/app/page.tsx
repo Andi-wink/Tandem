@@ -266,7 +266,7 @@ export default function Home() {
           sidebarCollapsed={sidebarCollapsed}
         />
 
-        {/* Claude Code toggle button */}
+        {/* AI Assistant toggle button */}
         {!isPanelOpen && (
           <button
             onClick={async () => {
@@ -283,7 +283,7 @@ export default function Home() {
               );
             }}
             className="fixed right-4 top-4 z-30 bg-white border border-gray-200 rounded-full p-2 shadow-md hover:shadow-lg hover:bg-gray-50 transition-all"
-            title="Open Claude Code"
+            title="Open AI Assistant"
           >
             <Bot className="w-5 h-5 text-gray-600" />
           </button>
