@@ -1,5 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { ChevronRight, ChevronDown } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { ClaudeMessage, ClaudeToolCall } from '@/contexts/ClaudeContext';
 
 interface ConversationViewProps {
@@ -81,8 +83,8 @@ export function ConversationView({ messages, isStreaming }: ConversationViewProp
           ) : (
             <div className="max-w-[95%]">
               {msg.text && (
-                <div className="text-sm whitespace-pre-wrap break-words prose prose-sm max-w-none">
-                  {msg.text}
+                <div className="text-sm break-words prose prose-sm max-w-none">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
                   {isStreaming && msg === messages[messages.length - 1] && (
                     <span className="inline-block w-1.5 h-4 bg-gray-400 ml-0.5 animate-pulse" />
                   )}
