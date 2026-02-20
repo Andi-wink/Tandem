@@ -87,6 +87,8 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
   const streamingToolCallsRef = useRef<ClaudeToolCall[]>([]);
   // AbortController for the current SSE stream
   const abortRef = useRef<AbortController | null>(null);
+  // RAF batching for text_delta updates
+  const rafPendingRef = useRef(false);
 
   // ── Event handler for SSE events (same logic as before) ────────────────
   const handleStreamEvent = useCallback((event: ClaudeFrontendEvent) => {
@@ -98,14 +100,21 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       case 'text_delta':
         if (event.text) {
           streamingTextRef.current += event.text;
-          setState(prev => {
-            const conv = [...prev.conversation];
-            const lastMsg = conv[conv.length - 1];
-            if (lastMsg && lastMsg.role === 'assistant') {
-              conv[conv.length - 1] = { ...lastMsg, text: streamingTextRef.current };
-            }
-            return { ...prev, conversation: conv };
-          });
+          // Batch UI updates to animation frame rate (~60fps)
+          if (!rafPendingRef.current) {
+            rafPendingRef.current = true;
+            requestAnimationFrame(() => {
+              rafPendingRef.current = false;
+              setState(prev => {
+                const conv = [...prev.conversation];
+                const lastMsg = conv[conv.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant') {
+                  conv[conv.length - 1] = { ...lastMsg, text: streamingTextRef.current };
+                }
+                return { ...prev, conversation: conv };
+              });
+            });
+          }
         }
         break;
 
@@ -165,6 +174,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         streamingTextRef.current = '';
         streamingToolCallsRef.current = [];
         abortRef.current = null;
+        rafPendingRef.current = false;
         break;
 
       case 'error':
@@ -182,6 +192,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         streamingTextRef.current = '';
         streamingToolCallsRef.current = [];
         abortRef.current = null;
+        rafPendingRef.current = false;
         break;
     }
   }, []);
