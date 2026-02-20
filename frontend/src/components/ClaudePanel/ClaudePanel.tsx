@@ -52,8 +52,8 @@ export function ClaudePanel() {
     const text = inputText.trim();
     if (!text || isStreaming) return;
 
-    // If no session yet and no project dir set, show modal
-    if (!sessionId && !projectDir && meetingId && meetingTitle) {
+    // Show setup modal if no session yet (need API key + project dir)
+    if ((!sessionId && !projectDir && meetingId && meetingTitle) || !hasApiKey) {
       setPendingFirstMessage(text);
       setShowProjectModal(true);
       return;
@@ -71,26 +71,22 @@ export function ClaudePanel() {
     }
   };
 
-  const handleProjectDirConfirm = async (dir: string) => {
+  // Send pending message once projectDir is available (replaces setTimeout race)
+  useEffect(() => {
+    if (pendingFirstMessage && projectDir) {
+      const msg = pendingFirstMessage;
+      setPendingFirstMessage(null);
+      setInputText('');
+      sendMessage(msg).catch(err => {
+        console.error('Failed to send first message:', err);
+      });
+    }
+  }, [pendingFirstMessage, projectDir, sendMessage]);
+
+  const handleProjectDirConfirm = (dir: string) => {
     setShowProjectModal(false);
     if (meetingId && meetingTitle) {
-      // Re-open with the chosen directory
       openPanel(meetingId, meetingTitle, dir);
-
-      // Send the pending message
-      if (pendingFirstMessage) {
-        const msg = pendingFirstMessage;
-        setPendingFirstMessage(null);
-        setInputText('');
-        // Small delay to let state update
-        setTimeout(async () => {
-          try {
-            await sendMessage(msg);
-          } catch (err) {
-            console.error('Failed to send first message:', err);
-          }
-        }, 100);
-      }
     }
   };
 
