@@ -48,10 +48,18 @@ function ToolCallBlock({ call }: { call: ClaudeToolCall }) {
 
 export function ConversationView({ messages, isStreaming }: ConversationViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const isNearBottomRef = useRef(true);
 
-  // Auto-scroll to bottom when new messages arrive
-  useEffect(() => {
+  const handleScroll = () => {
     if (scrollRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+      isNearBottomRef.current = scrollHeight - scrollTop - clientHeight < 100;
+    }
+  };
+
+  // Auto-scroll to bottom when new messages arrive (only if user is near bottom)
+  useEffect(() => {
+    if (scrollRef.current && isNearBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
@@ -68,7 +76,7 @@ export function ConversationView({ messages, isStreaming }: ConversationViewProp
   }
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-3">
+    <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-3 space-y-3">
       {messages.map(msg => (
         <div key={msg.id} className={`${msg.role === 'user' ? 'flex justify-end' : ''}`}>
           {msg.role === 'user' ? (
