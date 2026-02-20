@@ -4,6 +4,8 @@ import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
+import { useScreenshots } from '@/contexts/ScreenshotContext';
+import { useClipboard } from '@/contexts/ClipboardContext';
 import { recordingService } from '@/services/recordingService';
 import Analytics from '@/lib/analytics';
 import { showRecordingNotification } from '@/lib/recordingNotification';
@@ -36,6 +38,8 @@ export function useRecordingStart(
   const { setIsMeetingActive } = useSidebar();
   const { selectedDevices } = useConfig();
   const { setStatus } = useRecordingState();
+  const { clearScreenshots } = useScreenshots();
+  const { clearClipboard } = useClipboard();
 
   // Generate meeting title with timestamp
   const generateMeetingTitle = useCallback(() => {
@@ -128,6 +132,8 @@ export function useRecordingStart(
       console.log('Setting isRecordingState to true');
       setIsRecording(true); // This will also update the sidebar via the useEffect
       clearTranscripts(); // Clear previous transcripts when starting new recording
+      clearScreenshots();
+      clearClipboard();
       setIsMeetingActive(true);
       Analytics.trackButtonClick('start_recording', 'home_page');
 
@@ -141,7 +147,7 @@ export function useRecordingStart(
       // Re-throw so RecordingControls can handle device-specific errors
       throw error;
     }
-  }, [generateMeetingTitle, setMeetingTitle, setIsRecording, clearTranscripts, setIsMeetingActive, checkParakeetReady, checkIfModelDownloading, selectedDevices, showModal, setStatus]);
+  }, [generateMeetingTitle, setMeetingTitle, setIsRecording, clearTranscripts, clearScreenshots, clearClipboard, setIsMeetingActive, checkParakeetReady, checkIfModelDownloading, selectedDevices, showModal, setStatus]);
 
   // Check for autoStartRecording flag and start recording automatically
   useEffect(() => {
@@ -197,6 +203,8 @@ export function useRecordingStart(
             setMeetingTitle(generatedMeetingTitle);
             setIsRecording(true);
             clearTranscripts();
+            clearScreenshots();
+            clearClipboard();
             setIsMeetingActive(true);
             Analytics.trackButtonClick('start_recording', 'sidebar_auto');
 
@@ -223,6 +231,8 @@ export function useRecordingStart(
     setMeetingTitle,
     setIsRecording,
     clearTranscripts,
+    clearScreenshots,
+    clearClipboard,
     setIsMeetingActive,
     checkParakeetReady,
     checkIfModelDownloading,
@@ -284,6 +294,8 @@ export function useRecordingStart(
         setMeetingTitle(generatedMeetingTitle);
         setIsRecording(true);
         clearTranscripts();
+        clearScreenshots();
+        clearClipboard();
         setIsMeetingActive(true);
         Analytics.trackButtonClick('start_recording', 'sidebar_direct');
 
@@ -312,6 +324,8 @@ export function useRecordingStart(
     setMeetingTitle,
     setIsRecording,
     clearTranscripts,
+    clearScreenshots,
+    clearClipboard,
     setIsMeetingActive,
     checkParakeetReady,
     checkIfModelDownloading,

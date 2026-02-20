@@ -38,6 +38,9 @@ pub use super::transcription::TranscriptUpdate;
 // Simple recording state tracking
 static IS_RECORDING: AtomicBool = AtomicBool::new(false);
 
+// Tracks when recording started (for screenshot elapsed-time calculation)
+static RECORDING_START_TIME: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
 // Global recording manager and transcription task to keep them alive during recording
 static RECORDING_MANAGER: Mutex<Option<RecordingManager>> = Mutex::new(None);
 static TRANSCRIPTION_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
@@ -242,9 +245,12 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         *global_manager = Some(manager);
     }
 
-    // Set recording flag and reset speech detection flag
+    // Set recording flag, start time, and reset speech detection flag
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
     IS_RECORDING.store(true, Ordering::SeqCst);
+    if let Ok(mut start_time) = RECORDING_START_TIME.lock() {
+        *start_time = Some(std::time::Instant::now());
+    }
     reset_speech_detected_flag(); // Reset for new recording session
 
     // Start optimized parallel transcription task and store handle
@@ -410,9 +416,12 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         *global_manager = Some(manager);
     }
 
-    // Set recording flag and reset speech detection flag
+    // Set recording flag, start time, and reset speech detection flag
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
     IS_RECORDING.store(true, Ordering::SeqCst);
+    if let Ok(mut start_time) = RECORDING_START_TIME.lock() {
+        *start_time = Some(std::time::Instant::now());
+    }
     reset_speech_detected_flag(); // Reset for new recording session
 
     // Start optimized parallel transcription task and store handle
@@ -840,9 +849,12 @@ pub async fn stop_recording<R: Runtime>(
         (None, None)
     };
 
-    // Set recording flag to false
+    // Set recording flag to false and clear start time
     info!("🔍 Setting IS_RECORDING to false");
     IS_RECORDING.store(false, Ordering::SeqCst);
+    if let Ok(mut start_time) = RECORDING_START_TIME.lock() {
+        *start_time = None;
+    }
 
     // Step 4.5: Prepare metadata for frontend (NO database save)
     // NOTE: We do NOT save to database here. The frontend will save after all transcripts are displayed.
@@ -1209,4 +1221,26 @@ pub async fn attempt_device_reconnect(
             Err(e.to_string())
         }
     }
+}
+
+// ============================================================================
+// PUBLIC HELPERS (for use by other modules, e.g. screenshot)
+// ============================================================================
+
+/// Get elapsed seconds since recording started, or None if not recording.
+pub fn get_recording_elapsed_secs() -> Option<f64> {
+    if !IS_RECORDING.load(Ordering::Relaxed) {
+        return None;
+    }
+    RECORDING_START_TIME
+        .lock()
+        .ok()?
+        .as_ref()
+        .map(|start| start.elapsed().as_secs_f64())
+}
+
+/// Get the current meeting folder path, or None if not recording or no folder set.
+pub fn get_current_meeting_folder() -> Option<std::path::PathBuf> {
+    let manager_guard = RECORDING_MANAGER.lock().ok()?;
+    manager_guard.as_ref()?.get_meeting_folder()
 }

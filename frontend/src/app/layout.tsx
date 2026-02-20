@@ -21,6 +21,8 @@ import { OnboardingFlow } from '@/components/onboarding'
 import { DownloadProgressToastProvider } from '@/components/shared/DownloadProgressToast'
 import { UpdateCheckProvider } from '@/components/UpdateCheckProvider'
 import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcessingProvider'
+import { ScreenshotProvider } from '@/contexts/ScreenshotContext'
+import { ClipboardProvider } from '@/contexts/ClipboardContext'
 
 const sourceSans3 = Source_Sans_3({
   subsets: ['latin'],
@@ -110,6 +112,8 @@ export default function RootLayout({
                       <SidebarProvider>
                         <TooltipProvider>
                           <RecordingPostProcessingProvider>
+                          <ClipboardProvider>
+                          <ScreenshotProvider>
                             {/* Download progress toast provider - listens for background downloads */}
                             <DownloadProgressToastProvider />
 
@@ -122,6 +126,8 @@ export default function RootLayout({
                                 <MainContent>{children}</MainContent>
                               </div>
                             )}
+                          </ScreenshotProvider>
+                          </ClipboardProvider>
                           </RecordingPostProcessingProvider>
                         </TooltipProvider>
                       </SidebarProvider>

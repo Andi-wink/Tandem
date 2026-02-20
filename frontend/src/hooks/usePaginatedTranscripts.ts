@@ -1,6 +1,8 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Transcript, MeetingMetadata, PaginatedTranscriptsResponse, TranscriptSegmentData } from "@/types";
+import { Transcript, MeetingMetadata, PaginatedTranscriptsResponse, TranscriptSegmentData, ScreenshotData, ClipboardData } from "@/types";
+import { loadScreenshotsJson } from "@/services/screenshotService";
+import { loadClipboardJson } from "@/services/clipboardService";
 
 const DEFAULT_PAGE_SIZE = 100;
 
@@ -14,6 +16,8 @@ interface UsePaginatedTranscriptsReturn {
     metadata: MeetingMetadata | null;
     segments: TranscriptSegmentData[];
     transcripts: Transcript[];
+    screenshots: ScreenshotData[];
+    clipboardItems: ClipboardData[];
     isLoading: boolean;
     isLoadingMore: boolean;
     hasMore: boolean;
@@ -45,6 +49,8 @@ export function usePaginatedTranscripts({
 }: UsePaginatedTranscriptsProps): UsePaginatedTranscriptsReturn {
     const [metadata, setMetadata] = useState<MeetingMetadata | null>(null);
     const [transcripts, setTranscripts] = useState<Transcript[]>([]);
+    const [screenshots, setScreenshots] = useState<ScreenshotData[]>([]);
+    const [clipboardItems, setClipboardItems] = useState<ClipboardData[]>([]);
     const [totalCount, setTotalCount] = useState(0);
     const [isLoading, setIsLoading] = useState(true);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -60,6 +66,8 @@ export function usePaginatedTranscripts({
     const reset = useCallback(() => {
         setMetadata(null);
         setTranscripts([]);
+        setScreenshots([]);
+        setClipboardItems([]);
         setTotalCount(0);
         setIsLoading(true);
         setIsLoadingMore(false);
@@ -167,8 +175,24 @@ export function usePaginatedTranscripts({
         const loadInitial = async () => {
             setIsLoading(true);
             try {
-                await loadMetadata();
+                const meta = await loadMetadata();
                 await loadTranscriptsAtOffset(0, false);
+
+                // Load screenshots and clipboard items from meeting folder if available
+                if (meta?.folder_path) {
+                    try {
+                        const loadedScreenshots = await loadScreenshotsJson(meta.folder_path);
+                        setScreenshots(loadedScreenshots);
+                    } catch (err) {
+                        console.warn('Failed to load screenshots:', err);
+                    }
+                    try {
+                        const loadedClips = await loadClipboardJson(meta.folder_path);
+                        setClipboardItems(loadedClips);
+                    } catch (err) {
+                        console.warn('Failed to load clipboard items:', err);
+                    }
+                }
             } finally {
                 setIsLoading(false);
             }
@@ -187,6 +211,8 @@ export function usePaginatedTranscripts({
         metadata,
         segments,
         transcripts,
+        screenshots,
+        clipboardItems,
         isLoading,
         isLoadingMore,
         hasMore,

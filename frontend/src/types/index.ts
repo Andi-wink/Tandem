@@ -108,3 +108,41 @@ export interface TranscriptSegmentData {
   text: string;
   confidence?: number;
 }
+
+// Screenshot capture types
+export interface ScreenshotData {
+  id: string;
+  file_path: string;
+  thumbnail_base64: string;
+  timestamp: string;              // Wall-clock time (e.g., "14:30:05")
+  recording_elapsed_secs?: number; // Seconds from recording start
+  width: number;
+  height: number;
+  capture_mode: 'fullscreen' | 'region';
+}
+
+// Clipboard capture types
+export interface ClipboardData {
+  id: string;
+  content_type: 'text' | 'image';
+  text?: string;
+  file_path?: string;
+  thumbnail_base64?: string;
+  timestamp: string;
+  recording_elapsed_secs?: number;
+  width?: number;
+  height?: number;
+}
+
+// Unified timeline types (transcripts + screenshots + clipboard clips)
+export type TimelineItemType = 'transcript' | 'screenshot' | 'clipboard';
+
+export interface TimelineItem {
+  type: TimelineItemType;
+  id: string;
+  recording_elapsed_secs: number;
+  timestamp: string;
+  data: TranscriptSegmentData | ScreenshotData | ClipboardData;
+}
+
+export type TimelineFilter = 'all' | 'transcripts' | 'screenshots' | 'clipboard';

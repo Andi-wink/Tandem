@@ -38,6 +38,7 @@ pub(crate) use perf_trace;
 pub mod analytics;
 pub mod api;
 pub mod audio;
+pub mod clipboard;
 pub mod console_utils;
 pub mod database;
 pub mod notifications;
@@ -48,6 +49,7 @@ pub mod anthropic;
 pub mod groq;
 pub mod openrouter;
 pub mod parakeet_engine;
+pub mod screenshot;
 pub mod state;
 pub mod summary;
 pub mod tray;
@@ -405,6 +407,87 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin({
+            use tauri_plugin_global_shortcut::{Shortcut, ShortcutState};
+            let fullscreen_shortcut: Shortcut = "Alt+Shift+S".parse().expect("Invalid shortcut: Alt+Shift+S");
+            let region_shortcut: Shortcut = "Alt+Shift+R".parse().expect("Invalid shortcut: Alt+Shift+R");
+            let clipboard_shortcut: Shortcut = "Alt+Shift+V".parse().expect("Invalid shortcut: Alt+Shift+V");
+
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_shortcuts(["Alt+Shift+S", "Alt+Shift+R", "Alt+Shift+V"])
+                .expect("Failed to parse global shortcuts")
+                .with_handler(move |app, shortcut, event| {
+                    if let ShortcutState::Pressed = event.state {
+                        if shortcut == &clipboard_shortcut {
+                            log::info!("Global shortcut pressed: Alt+Shift+V (clipboard capture)");
+                            let app_for_task = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                match clipboard::commands::read_clipboard_content(app_for_task).await {
+                                    Ok(data) => log::info!("Clipboard captured via hotkey: {:?}", data.content_type),
+                                    Err(e) => log::error!("Clipboard hotkey capture failed: {}", e),
+                                }
+                            });
+                        } else if shortcut == &fullscreen_shortcut {
+                            log::info!("Global shortcut pressed: Alt+Shift+S (fullscreen screenshot)");
+                            let app_for_task = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                match screenshot::commands::take_screenshot(app_for_task).await {
+                                    Ok(data) => log::info!("Fullscreen screenshot via hotkey: {}", data.file_path),
+                                    Err(e) => log::error!("Hotkey screenshot failed: {}", e),
+                                }
+                            });
+                        } else if shortcut == &region_shortcut {
+                            log::info!("Global shortcut pressed: Alt+Shift+R (region screenshot)");
+
+                            // Self-healing guard: if a previous capture left the flag stuck
+                            // (e.g. overlay failed to mount or user dismissed it unexpectedly),
+                            // clear the stale state and allow a fresh capture.
+                            if screenshot::capture::is_region_capture_in_progress() {
+                                log::warn!("Region capture flag still set — clearing stale state");
+                                screenshot::capture::clear_pre_captured();
+                            }
+
+                            // Pre-capture the screen, then emit event with data URI
+                            let app_for_task = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                use tauri::Emitter as _;
+
+                                match tokio::task::spawn_blocking(move || {
+                                    screenshot::capture::pre_capture_screen()
+                                })
+                                .await
+                                {
+                                    Ok(Ok(result)) => {
+                                        log::info!(
+                                            "Pre-captured screen: {}x{}, data URI len={}",
+                                            result.monitor_width,
+                                            result.monitor_height,
+                                            result.preview_data_uri.len()
+                                        );
+                                        let _ = app_for_task.emit(
+                                            "screenshot-region-select",
+                                            serde_json::json!({
+                                                "preview_data_uri": result.preview_data_uri,
+                                                "monitor_width": result.monitor_width,
+                                                "monitor_height": result.monitor_height,
+                                            }),
+                                        );
+                                    }
+                                    Ok(Err(e)) => {
+                                        log::error!("Pre-capture failed: {}", e);
+                                        screenshot::capture::clear_pre_captured();
+                                    }
+                                    Err(e) => {
+                                        log::error!("Pre-capture task panicked: {}", e);
+                                        screenshot::capture::clear_pre_captured();
+                                    }
+                                }
+                            });
+                        }
+                    }
+                })
+                .build()
+        })
         .manage(whisper_engine::parallel_commands::ParallelProcessorState::new())
         .manage(Arc::new(RwLock::new(
             None::<notifications::manager::NotificationManager<tauri::Wry>>,
@@ -418,6 +501,9 @@ pub fn run() {
             if let Err(e) = tray::create_tray(_app.handle()) {
                 log::error!("Failed to create system tray: {}", e);
             }
+
+            // Global shortcuts are registered via .with_shortcuts() on the plugin builder
+            log::info!("Global shortcuts registered via plugin builder (Alt+Shift+S, Alt+Shift+R, Alt+Shift+V)");
 
             // Initialize notification system with proper defaults
             log::info!("Initializing notification system...");
@@ -696,6 +782,19 @@ pub fn run() {
             audio::permissions::check_screen_recording_permission_command,
             audio::permissions::request_screen_recording_permission_command,
             audio::permissions::trigger_system_audio_permission_command,
+            // Screenshot capture commands
+            screenshot::commands::take_screenshot,
+            screenshot::commands::take_region_screenshot,
+            screenshot::commands::capture_screen_preview,
+            screenshot::commands::crop_pre_captured_region,
+            screenshot::commands::start_region_capture,
+            screenshot::commands::cancel_region_capture,
+            screenshot::commands::save_screenshots_json,
+            screenshot::commands::load_screenshots_json,
+            // Clipboard capture commands
+            clipboard::commands::read_clipboard_content,
+            clipboard::commands::save_clipboard_json,
+            clipboard::commands::load_clipboard_json,
             // Database import commands
             database::commands::check_first_launch,
             database::commands::select_legacy_database_path,

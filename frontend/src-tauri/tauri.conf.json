@@ -32,7 +32,8 @@
             "assetProtocol": {
                 "enable": true,
                 "scope": [
-                    "$APPDATA/**"
+                    "$APPDATA/**",
+                    "$AUDIO/**"
                 ]
             },
             "capabilities": [
@@ -60,11 +61,20 @@
                         "core:menu:default",
                         "core:tray:default",
                         "core:window:allow-set-title",
+                        "core:window:allow-set-fullscreen",
+                        "core:window:allow-set-decorations",
+                        "core:window:allow-hide",
+                        "core:window:allow-show",
+                        "core:window:allow-set-focus",
+                        "core:window:allow-is-fullscreen",
                         "store:default",
                         "notification:default",
                         "notification:allow-is-permission-granted",
                         "updater:default",
                         "process:default",
+                        "global-shortcut:allow-register",
+                        "global-shortcut:allow-unregister",
+                        "global-shortcut:allow-is-registered",
                         {
                             "identifier": "fs:scope",
                             "allow": [

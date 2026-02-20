@@ -1,15 +1,22 @@
+import { useState } from 'react';
 import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
 import { PermissionWarning } from '@/components/PermissionWarning';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, GlobeIcon } from 'lucide-react';
+import { Copy, GlobeIcon, Camera, Scan, Clipboard } from 'lucide-react';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { useScreenshots } from '@/contexts/ScreenshotContext';
+import { useClipboard } from '@/contexts/ClipboardContext';
 import { usePermissionCheck } from '@/hooks/usePermissionCheck';
+import { useTimeline } from '@/hooks/useTimeline';
 import { ModalType } from '@/hooks/useModalState';
 import { useIsLinux } from '@/hooks/usePlatform';
 import { useMemo } from 'react';
+import { TimelineFilter, ScreenshotData } from '@/types';
+import { ScreenshotLightbox } from '@/components/ScreenshotLightbox';
+import { RegionSelectOverlay } from '@/components/RegionSelectOverlay';
 
 /**
  * TranscriptPanel Component
@@ -35,7 +42,22 @@ export function TranscriptPanel({
   const { transcriptModelConfig } = useConfig();
   const { isRecording, isPaused } = useRecordingState();
   const { checkPermissions, isChecking, hasSystemAudio, hasMicrophone } = usePermissionCheck();
+  const {
+    screenshots,
+    selectedScreenshot,
+    isRegionSelecting,
+    regionSelectInfo,
+    captureFullscreen,
+    captureRegion,
+    startRegionSelect,
+    cancelRegionSelect,
+    openLightbox,
+    closeLightbox,
+  } = useScreenshots();
+  const { clipboardItems, captureClipboard } = useClipboard();
   const isLinux = useIsLinux();
+
+  const [timelineFilter, setTimelineFilter] = useState<TimelineFilter>('all');
 
   // Convert transcripts to segments for virtualized view
   const segments = useMemo(() =>
@@ -48,6 +70,14 @@ export function TranscriptPanel({
     })),
     [transcripts]
   );
+
+  // Merge into timeline when screenshots or clipboard items exist
+  const timelineItems = useTimeline(segments, screenshots, clipboardItems, timelineFilter);
+  const hasTimelineContent = screenshots.length > 0 || clipboardItems.length > 0;
+
+  const handleScreenshotClick = (screenshot: ScreenshotData) => {
+    openLightbox(screenshot);
+  };
 
   return (
     <div ref={transcriptContainerRef} className="w-full border-r border-gray-200 bg-white flex flex-col overflow-y-auto">
@@ -83,6 +113,39 @@ export function TranscriptPanel({
                     </span>
                   </Button>
                 }
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={captureFullscreen}
+                  title="Screenshot (Alt+Shift+S)"
+                >
+                  <Camera className="w-4 h-4" />
+                  <span className='hidden md:inline'>
+                    Screenshot
+                  </span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={startRegionSelect}
+                  title="Region Screenshot (Alt+Shift+R)"
+                >
+                  <Scan className="w-4 h-4" />
+                  <span className='hidden md:inline'>
+                    Region
+                  </span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={captureClipboard}
+                  title="Capture Clipboard (Alt+Shift+V)"
+                >
+                  <Clipboard className="w-4 h-4" />
+                  <span className='hidden md:inline'>
+                    Clip
+                  </span>
+                </Button>
               </ButtonGroup>
             </div>
           </div>
@@ -113,10 +176,35 @@ export function TranscriptPanel({
               isStopping={isStopping}
               enableStreaming={isRecording}
               showConfidence={true}
+              timelineItems={hasTimelineContent ? timelineItems : undefined}
+              timelineFilter={timelineFilter}
+              onTimelineFilterChange={hasTimelineContent ? setTimelineFilter : undefined}
+              screenshotCount={screenshots.length}
+              onScreenshotClick={handleScreenshotClick}
+              clipboardCount={clipboardItems.length}
             />
           </div>
         </div>
       </div>
+
+      {/* Screenshot Lightbox */}
+      {selectedScreenshot && (
+        <ScreenshotLightbox
+          screenshot={selectedScreenshot}
+          onClose={closeLightbox}
+        />
+      )}
+
+      {/* Region Selection Overlay */}
+      {isRegionSelecting && regionSelectInfo && (
+        <RegionSelectOverlay
+          previewDataUri={regionSelectInfo.previewDataUri}
+          monitorWidth={regionSelectInfo.monitorWidth}
+          monitorHeight={regionSelectInfo.monitorHeight}
+          onSelect={captureRegion}
+          onCancel={cancelRegionSelect}
+        />
+      )}
     </div>
   );
 }
