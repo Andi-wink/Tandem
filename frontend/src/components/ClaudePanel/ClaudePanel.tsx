@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Send, Trash2, AlertCircle } from 'lucide-react';
+import { X, Send, Trash2, AlertCircle, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useClaude } from '@/contexts/ClaudeContext';
 import { ContextBasket } from './ContextBasket';
@@ -10,18 +10,19 @@ export function ClaudePanel() {
   const {
     isPanelOpen,
     isStreaming,
-    isCliAvailable,
     sessionId,
     projectDir,
     meetingId,
     meetingTitle,
     conversation,
     contextBasket,
+    apiKey,
     closePanel,
     removeFromBasket,
     clearBasket,
     sendMessage,
     clearSession,
+    cancelStream,
     openPanel,
   } = useClaude();
 
@@ -29,6 +30,8 @@ export function ClaudePanel() {
   const [showProjectModal, setShowProjectModal] = useState(false);
   const [pendingFirstMessage, setPendingFirstMessage] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const hasApiKey = !!apiKey;
 
   // Auto-focus input when panel opens
   useEffect(() => {
@@ -109,7 +112,7 @@ export function ClaudePanel() {
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50 flex-shrink-0">
           <div className="flex-1 min-w-0">
-            <div className="font-semibold text-sm truncate">{meetingTitle || 'Claude Code'}</div>
+            <div className="font-semibold text-sm truncate">{meetingTitle || 'AI Assistant'}</div>
             {projectDir && (
               <div className="text-xs text-gray-400 truncate">{projectDir}</div>
             )}
@@ -133,13 +136,12 @@ export function ClaudePanel() {
           </div>
         </div>
 
-        {/* CLI not available warning */}
-        {isCliAvailable === false && (
+        {/* API key not set warning */}
+        {!hasApiKey && (
           <div className="px-3 py-2 bg-amber-50 border-b border-amber-200 flex items-start gap-2 flex-shrink-0">
             <AlertCircle className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
             <div className="text-xs text-amber-700">
-              Claude CLI not found. Install it with{' '}
-              <code className="bg-amber-100 px-1 rounded">npm i -g @anthropic-ai/claude-code</code>
+              Anthropic API key not set. It will be requested when you send your first message.
             </div>
           </div>
         )}
@@ -167,22 +169,34 @@ export function ClaudePanel() {
               value={inputText}
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
-              placeholder={isCliAvailable === false ? 'Claude CLI not installed...' : 'Ask Claude about this meeting...'}
-              disabled={isStreaming || isCliAvailable === false}
+              placeholder="Ask about this meeting..."
+              disabled={isStreaming}
               rows={1}
               className="flex-1 resize-none border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:bg-gray-50"
             />
-            <Button
-              size="sm"
-              onClick={handleSend}
-              disabled={!inputText.trim() || isStreaming || isCliAvailable === false}
-              className="flex-shrink-0"
-            >
-              <Send className="w-4 h-4" />
-            </Button>
+            {isStreaming ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={cancelStream}
+                className="flex-shrink-0"
+                title="Stop"
+              >
+                <Square className="w-4 h-4" />
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                onClick={handleSend}
+                disabled={!inputText.trim()}
+                className="flex-shrink-0"
+              >
+                <Send className="w-4 h-4" />
+              </Button>
+            )}
           </div>
           {isStreaming && (
-            <div className="text-xs text-gray-400 mt-1 animate-pulse">Claude is thinking...</div>
+            <div className="text-xs text-gray-400 mt-1 animate-pulse">AI is thinking...</div>
           )}
         </div>
       </div>

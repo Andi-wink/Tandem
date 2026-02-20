@@ -1,5 +1,13 @@
-import { invoke } from '@tauri-apps/api/core';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
+/**
+ * Claude AI Assistant service — communicates with the FastAPI backend
+ * via fetch() + ReadableStream (SSE) instead of Tauri invoke/events.
+ */
+
+const BACKEND = 'http://localhost:5167';
+
+// ---------------------------------------------------------------------------
+// Types (unchanged from before, kept for compat)
+// ---------------------------------------------------------------------------
 
 export interface ClaudeSessionState {
   meeting_id: string;
@@ -18,58 +26,92 @@ export interface ClaudeFrontendEvent {
   meeting_id: string;
 }
 
-export async function startClaudeSession(
-  meetingId: string,
-  meetingTitle: string,
-  projectDir: string,
-  message: string,
-  contextBlock?: string,
-): Promise<void> {
-  return invoke<void>('start_claude_session', {
-    meetingId,
-    meetingTitle,
-    projectDir,
-    contextBlock: contextBlock || null,
-    message,
-  });
+// ---------------------------------------------------------------------------
+// SSE streaming helper
+// ---------------------------------------------------------------------------
+
+/**
+ * POST to an SSE endpoint and call `onEvent` for each parsed SSE line.
+ * Returns an AbortController so the caller can cancel mid-stream.
+ */
+export function streamClaudeSession(
+  endpoint: '/api/claude/start' | '/api/claude/message',
+  body: Record<string, unknown>,
+  onEvent: (event: ClaudeFrontendEvent) => void,
+  onError?: (err: Error) => void,
+): AbortController {
+  const controller = new AbortController();
+
+  (async () => {
+    try {
+      const res = await fetch(`${BACKEND}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        throw new Error(`Backend returned ${res.status}: ${res.statusText}`);
+      }
+
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error('No response body');
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete SSE lines (each ends with \n\n)
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // keep the incomplete tail
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+          const jsonStr = trimmed.slice(6); // strip "data: "
+          try {
+            const event: ClaudeFrontendEvent = JSON.parse(jsonStr);
+            onEvent(event);
+          } catch {
+            // ignore malformed lines
+          }
+        }
+      }
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return; // expected on cancel
+      onError?.(err as Error);
+    }
+  })();
+
+  return controller;
 }
 
-export async function sendClaudeMessage(
-  meetingId: string,
-  projectDir: string,
-  message: string,
-  contextBlock?: string,
-): Promise<void> {
-  return invoke<void>('send_claude_message', {
-    meetingId,
-    projectDir,
-    contextBlock: contextBlock || null,
-    message,
-  });
-}
+// ---------------------------------------------------------------------------
+// REST helpers
+// ---------------------------------------------------------------------------
 
 export async function getClaudeSession(
-  projectDir: string,
+  meetingId: string,
 ): Promise<ClaudeSessionState | null> {
-  return invoke<ClaudeSessionState | null>('get_claude_session', { projectDir });
+  const res = await fetch(`${BACKEND}/api/claude/session/${encodeURIComponent(meetingId)}`);
+  if (!res.ok) return null;
+  return res.json();
 }
 
-export async function clearClaudeSession(projectDir: string): Promise<void> {
-  return invoke<void>('clear_claude_session', { projectDir });
+export async function clearClaudeSession(meetingId: string): Promise<void> {
+  await fetch(`${BACKEND}/api/claude/session/${encodeURIComponent(meetingId)}`, {
+    method: 'DELETE',
+  });
 }
 
-export async function checkClaudeCliAvailable(): Promise<boolean> {
-  return invoke<boolean>('check_claude_cli_available');
-}
-
-export function listenClaudeStreamEvent(
-  callback: (event: ClaudeFrontendEvent) => void,
-): Promise<UnlistenFn> {
-  return listen<ClaudeFrontendEvent>('claude-stream-event', (e) => callback(e.payload));
-}
-
-export function listenClaudeSessionReady(
-  callback: (data: { meeting_id: string; project_dir: string; resuming: boolean }) => void,
-): Promise<UnlistenFn> {
-  return listen('claude-session-ready', (e) => callback(e.payload as any));
+export async function cancelClaudeSession(meetingId: string): Promise<void> {
+  await fetch(`${BACKEND}/api/claude/cancel/${encodeURIComponent(meetingId)}`, {
+    method: 'POST',
+  });
 }

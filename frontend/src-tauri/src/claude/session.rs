@@ -98,11 +98,38 @@ answer questions, and help with follow-up actions.
     Ok(())
 }
 
-/// Check if the `claude` CLI is available on PATH
+/// Check if the `claude` CLI is available on PATH or in well-known locations
 pub fn check_claude_cli() -> Result<PathBuf, String> {
-    which::which("claude").map_err(|_| {
-        "Claude CLI not found on PATH. Install it with: npm install -g @anthropic-ai/claude-code".to_string()
-    })
+    // First try PATH
+    if let Ok(path) = which::which("claude") {
+        return Ok(path);
+    }
+
+    // Check well-known locations (Claude Desktop bundles the CLI here)
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        let claude_dir = PathBuf::from(appdata).join("Claude").join("claude-code");
+        if claude_dir.exists() {
+            // Find the latest version directory
+            if let Ok(entries) = std::fs::read_dir(&claude_dir) {
+                let mut versions: Vec<PathBuf> = entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect();
+                // Sort descending so latest version is first
+                versions.sort_by(|a, b| b.cmp(a));
+                for ver_dir in versions {
+                    let exe = ver_dir.join("claude.exe");
+                    if exe.exists() {
+                        info!("Found claude CLI at well-known location: {:?}", exe);
+                        return Ok(exe);
+                    }
+                }
+            }
+        }
+    }
+
+    Err("Claude CLI not found on PATH. Install it with: npm install -g @anthropic-ai/claude-code".to_string())
 }
 
 /// Spawn the Claude CLI process and stream events to the frontend.
@@ -122,6 +149,8 @@ pub async fn run_claude_session<R: Runtime>(
 
     let mut cmd = Command::new(claude_path);
     cmd.current_dir(project_dir);
+    // Remove CLAUDECODE env var to allow spawning from within a Claude Code session
+    cmd.env_remove("CLAUDECODE");
     cmd.arg("-p").arg(message);
     cmd.arg("--output-format").arg("stream-json");
 
