@@ -87,8 +87,8 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
   const streamingToolCallsRef = useRef<ClaudeToolCall[]>([]);
   // AbortController for the current SSE stream
   const abortRef = useRef<AbortController | null>(null);
-  // RAF batching for text_delta updates
-  const rafPendingRef = useRef(false);
+  // RAF batching for text_delta updates (stores RAF handle for cancellation)
+  const rafIdRef = useRef<number | null>(null);
   // Track current meeting ID for event filtering
   const meetingIdRef = useRef<string | null>(null);
 
@@ -96,6 +96,26 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     meetingIdRef.current = state.meetingId;
   }, [state.meetingId]);
+
+  // Cancel any pending RAF and flush the latest streamed text into state
+  const flushPendingRaf = () => {
+    if (rafIdRef.current !== null) {
+      cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null;
+      // Flush the accumulated text so nothing is lost
+      const finalText = streamingTextRef.current;
+      if (finalText) {
+        setState(prev => {
+          const conv = [...prev.conversation];
+          const lastMsg = conv[conv.length - 1];
+          if (lastMsg && lastMsg.role === 'assistant') {
+            conv[conv.length - 1] = { ...lastMsg, text: finalText };
+          }
+          return { ...prev, conversation: conv };
+        });
+      }
+    }
+  };
 
   // ── Event handler for SSE events ────────────────────────────────────────
   const handleStreamEvent = useCallback((event: ClaudeFrontendEvent) => {
@@ -113,10 +133,9 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         if (event.text) {
           streamingTextRef.current += event.text;
           // Batch UI updates to animation frame rate (~60fps)
-          if (!rafPendingRef.current) {
-            rafPendingRef.current = true;
-            requestAnimationFrame(() => {
-              rafPendingRef.current = false;
+          if (rafIdRef.current === null) {
+            rafIdRef.current = requestAnimationFrame(() => {
+              rafIdRef.current = null;
               setState(prev => {
                 const conv = [...prev.conversation];
                 const lastMsg = conv[conv.length - 1];
@@ -167,6 +186,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         break;
 
       case 'done':
+        flushPendingRaf();
         setState(prev => {
           const conv = [...prev.conversation];
           const lastMsg = conv[conv.length - 1];
@@ -186,10 +206,10 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         streamingTextRef.current = '';
         streamingToolCallsRef.current = [];
         abortRef.current = null;
-        rafPendingRef.current = false;
         break;
 
       case 'error':
+        flushPendingRaf();
         setState(prev => {
           const conv = [...prev.conversation];
           const lastMsg = conv[conv.length - 1];
@@ -204,7 +224,6 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         streamingTextRef.current = '';
         streamingToolCallsRef.current = [];
         abortRef.current = null;
-        rafPendingRef.current = false;
         break;
     }
   }, []);
@@ -350,6 +369,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
   }, [state.projectDir, state.meetingId, state.meetingTitle, state.sessionId, state.isStreaming, state.contextBasket, state.apiKey, handleStreamEvent]);
 
   const cancelStream = useCallback(() => {
+    flushPendingRaf();
     if (abortRef.current) {
       abortRef.current.abort();
       abortRef.current = null;
