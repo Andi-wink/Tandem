@@ -146,3 +146,14 @@ export interface TimelineItem {
 }
 
 export type TimelineFilter = 'all' | 'transcripts' | 'screenshots' | 'clipboard';
+
+// Transcript chunk for Claude context basket (5-minute windows)
+export interface TranscriptChunk {
+  id: string;
+  startSecs: number;
+  endSecs: number;
+  label: string;         // e.g. "00:00–05:00"
+  preview: string;       // first 60 chars
+  fullText: string;      // concatenated segment text
+  segmentCount: number;
+}

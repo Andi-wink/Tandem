@@ -23,6 +23,8 @@ import { UpdateCheckProvider } from '@/components/UpdateCheckProvider'
 import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcessingProvider'
 import { ScreenshotProvider } from '@/contexts/ScreenshotContext'
 import { ClipboardProvider } from '@/contexts/ClipboardContext'
+import { ClaudeProvider } from '@/contexts/ClaudeContext'
+import { ClaudePanel } from '@/components/ClaudePanel'
 
 const sourceSans3 = Source_Sans_3({
   subsets: ['latin'],
@@ -114,6 +116,7 @@ export default function RootLayout({
                           <RecordingPostProcessingProvider>
                           <ClipboardProvider>
                           <ScreenshotProvider>
+                          <ClaudeProvider>
                             {/* Download progress toast provider - listens for background downloads */}
                             <DownloadProgressToastProvider />
 
@@ -124,8 +127,10 @@ export default function RootLayout({
                               <div className="flex">
                                 <Sidebar />
                                 <MainContent>{children}</MainContent>
+                                <ClaudePanel />
                               </div>
                             )}
+                          </ClaudeProvider>
                           </ScreenshotProvider>
                           </ClipboardProvider>
                           </RecordingPostProcessingProvider>

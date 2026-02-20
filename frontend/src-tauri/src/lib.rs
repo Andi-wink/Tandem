@@ -38,6 +38,7 @@ pub(crate) use perf_trace;
 pub mod analytics;
 pub mod api;
 pub mod audio;
+pub mod claude;
 pub mod clipboard;
 pub mod console_utils;
 pub mod database;
@@ -795,6 +796,12 @@ pub fn run() {
             clipboard::commands::read_clipboard_content,
             clipboard::commands::save_clipboard_json,
             clipboard::commands::load_clipboard_json,
+            // Claude Code panel commands
+            claude::commands::start_claude_session,
+            claude::commands::send_claude_message,
+            claude::commands::get_claude_session,
+            claude::commands::clear_claude_session,
+            claude::commands::check_claude_cli_available,
             // Database import commands
             database::commands::check_first_launch,
             database::commands::select_legacy_database_path,
