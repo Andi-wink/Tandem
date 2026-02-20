@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import {
   streamClaudeSession,
   getClaudeSession,
@@ -89,9 +89,21 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
   const abortRef = useRef<AbortController | null>(null);
   // RAF batching for text_delta updates
   const rafPendingRef = useRef(false);
+  // Track current meeting ID for event filtering
+  const meetingIdRef = useRef<string | null>(null);
 
-  // ── Event handler for SSE events (same logic as before) ────────────────
+  // Keep meetingIdRef in sync with state
+  useEffect(() => {
+    meetingIdRef.current = state.meetingId;
+  }, [state.meetingId]);
+
+  // ── Event handler for SSE events ────────────────────────────────────────
   const handleStreamEvent = useCallback((event: ClaudeFrontendEvent) => {
+    // Ignore events from other meetings
+    if (event.meeting_id && meetingIdRef.current && event.meeting_id !== meetingIdRef.current) {
+      return;
+    }
+
     switch (event.event_type) {
       case 'session_init':
         setState(prev => ({ ...prev, sessionId: event.session_id }));
@@ -368,7 +380,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     }));
   }, [state.meetingId]);
 
-  const value: ClaudeContextValue = {
+  const value = useMemo<ClaudeContextValue>(() => ({
     ...state,
     openPanel,
     closePanel,
@@ -379,7 +391,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     clearSession: clearSessionAction,
     cancelStream,
     setApiKey,
-  };
+  }), [state, openPanel, closePanel, addToBasket, removeFromBasket, clearBasket, sendMessage, clearSessionAction, cancelStream, setApiKey]);
 
   return (
     <ClaudeContext.Provider value={value}>
