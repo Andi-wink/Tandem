@@ -10,7 +10,10 @@ import asyncio
 import json
 import logging
 import os
-from dataclasses import dataclass
+import queue
+import sys
+from dataclasses import dataclass, field
+from threading import Event, Thread
 from typing import AsyncIterator, Optional
 
 from claude_agent_sdk import (
@@ -36,7 +39,7 @@ class SessionState:
     meeting_id: str
     project_dir: str
     session_id: Optional[str] = None
-    running_task: Optional[asyncio.Task] = None
+    cancel_event: Event = field(default_factory=Event)
 
 
 # In-memory store: meeting_id -> SessionState
@@ -49,14 +52,14 @@ def get_session(meeting_id: str) -> Optional[SessionState]:
 
 def clear_session(meeting_id: str) -> None:
     session = _sessions.pop(meeting_id, None)
-    if session and session.running_task and not session.running_task.done():
-        session.running_task.cancel()
+    if session:
+        session.cancel_event.set()
 
 
 async def cancel_session(meeting_id: str) -> bool:
     session = _sessions.get(meeting_id)
-    if session and session.running_task and not session.running_task.done():
-        session.running_task.cancel()
+    if session and not session.cancel_event.is_set():
+        session.cancel_event.set()
         return True
     return False
 
@@ -101,7 +104,7 @@ answer questions, and help with follow-up actions.
 
 
 # ---------------------------------------------------------------------------
-# Streaming query
+# Streaming query with Windows ProactorEventLoop bridge
 # ---------------------------------------------------------------------------
 
 def _build_options(
@@ -114,7 +117,12 @@ def _build_options(
         allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
         permission_mode="acceptEdits",
         cwd=project_dir,
-        env={"ANTHROPIC_API_KEY": api_key},
+        env={
+            "ANTHROPIC_API_KEY": api_key,
+            # Unset CLAUDECODE to avoid "nested session" detection when
+            # the backend itself runs inside a Claude Code environment.
+            "CLAUDECODE": "",
+        },
         include_partial_messages=True,
     )
     if session_id:
@@ -124,10 +132,10 @@ def _build_options(
     return opts
 
 
-def _make_event(meeting_id: str, **kwargs) -> dict:
+def _make_event(meeting_id: str, *, event_type: str, **kwargs) -> dict:
     """Build a flat SSE event dict matching ClaudeFrontendEvent shape."""
-    base = {
-        "event_type": "error",
+    return {
+        "event_type": event_type,
         "text": None,
         "tool_name": None,
         "tool_input": None,
@@ -135,9 +143,72 @@ def _make_event(meeting_id: str, **kwargs) -> dict:
         "session_id": None,
         "cost_usd": None,
         "meeting_id": meeting_id,
+        **kwargs,
     }
-    base.update(kwargs)
-    return base
+
+
+# Sentinel to signal end of stream from the thread
+_STREAM_END = object()
+
+
+def _run_query_in_proactor(
+    prompt: str, options: ClaudeAgentOptions, q: queue.Queue, cancel: Event,
+) -> None:
+    """Thread target: run SDK query() on a ProactorEventLoop (Windows subprocess support)."""
+    if sys.platform == "win32":
+        loop = asyncio.ProactorEventLoop()
+    else:
+        loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    async def _collect():
+        try:
+            async for msg in query(prompt=prompt, options=options):
+                if cancel.is_set():
+                    break
+                q.put(msg)
+        except Exception as e:
+            q.put(e)
+        finally:
+            q.put(_STREAM_END)
+
+    try:
+        loop.run_until_complete(_collect())
+    except Exception as e:
+        q.put(e)
+        q.put(_STREAM_END)
+    finally:
+        loop.close()
+
+
+async def _query_bridge(
+    prompt: str, options: ClaudeAgentOptions, cancel: Event,
+) -> AsyncIterator:
+    """
+    Async generator that runs SDK query() in a dedicated thread with
+    ProactorEventLoop (required on Windows for subprocess support) and
+    bridges results back to the caller's event loop via a queue.
+    """
+    q: queue.Queue = queue.Queue()
+    thread = Thread(
+        target=_run_query_in_proactor,
+        args=(prompt, options, q, cancel),
+        daemon=True,
+    )
+    thread.start()
+
+    loop = asyncio.get_event_loop()
+    while True:
+        item = await loop.run_in_executor(None, q.get)
+        if item is _STREAM_END:
+            break
+        if isinstance(item, Exception):
+            raise item
+        if cancel.is_set():
+            break
+        yield item
+
+    thread.join(timeout=5)
 
 
 async def stream_session(
@@ -188,11 +259,14 @@ async def stream_session(
         system_prompt=system_prompt,
     )
 
+    # Reset cancel flag for this run
+    session.cancel_event.clear()
+
     session_init_sent = False
     tool_call_map: dict[str, str] = {}  # tool_use_id -> tool_name
 
     try:
-        async for msg in query(prompt=prompt, options=options):
+        async for msg in _query_bridge(prompt, options, session.cancel_event):
 
             # --- StreamEvent: real-time partial updates -----------------
             if isinstance(msg, StreamEvent):
@@ -278,4 +352,4 @@ async def stream_session(
             text=str(e),
         )
     finally:
-        session.running_task = None
+        session.cancel_event.clear()

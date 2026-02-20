@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import uvicorn
 from typing import Optional, List
 import logging
@@ -641,14 +641,14 @@ class ClaudeStartRequest(BaseModel):
     project_dir: str
     message: str
     context_block: Optional[str] = None
-    api_key: str
+    api_key: str = Field(repr=False)
 
 class ClaudeMessageRequest(BaseModel):
     meeting_id: str
     project_dir: str
     message: str
     context_block: Optional[str] = None
-    api_key: str
+    api_key: str = Field(repr=False)
 
 
 async def _sse_generator(meeting_id: str, project_dir: str, message: str,
