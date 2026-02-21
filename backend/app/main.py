@@ -642,6 +642,7 @@ class ClaudeStartRequest(BaseModel):
     message: str
     context_block: Optional[str] = None
     api_key: str = Field(repr=False)
+    model: str = "claude-opus-4-6"
 
 class ClaudeMessageRequest(BaseModel):
     meeting_id: str
@@ -649,11 +650,12 @@ class ClaudeMessageRequest(BaseModel):
     message: str
     context_block: Optional[str] = None
     api_key: str = Field(repr=False)
+    model: str = "claude-opus-4-6"
 
 
 async def _sse_generator(meeting_id: str, project_dir: str, message: str,
                          api_key: str, context_block: Optional[str],
-                         meeting_title: Optional[str]):
+                         meeting_title: Optional[str], model: str = "claude-opus-4-6"):
     """Wrap stream_session as an SSE byte stream."""
     async for event in claude_agent.stream_session(
         meeting_id=meeting_id,
@@ -662,6 +664,7 @@ async def _sse_generator(meeting_id: str, project_dir: str, message: str,
         api_key=api_key,
         context_block=context_block,
         meeting_title=meeting_title,
+        model=model,
     ):
         yield f"data: {json.dumps(event)}\n\n"
 
@@ -678,6 +681,7 @@ async def claude_start(req: ClaudeStartRequest):
             api_key=req.api_key,
             context_block=req.context_block,
             meeting_title=req.meeting_title,
+            model=req.model,
         ),
         media_type="text/event-stream",
         headers={
@@ -700,6 +704,7 @@ async def claude_message(req: ClaudeMessageRequest):
             api_key=req.api_key,
             context_block=req.context_block,
             meeting_title=None,
+            model=req.model,
         ),
         media_type="text/event-stream",
         headers={

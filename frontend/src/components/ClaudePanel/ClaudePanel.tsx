@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Send, Trash2, AlertCircle, Square } from 'lucide-react';
+import { X, Send, Trash2, AlertCircle, Square, ChevronUp, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { useClaude } from '@/contexts/ClaudeContext';
+import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
+import { useClaude, MODEL_OPTIONS } from '@/contexts/ClaudeContext';
 import { ContextBasket } from './ContextBasket';
 import { ConversationView } from './ConversationView';
 import { ProjectDirModal } from './ProjectDirModal';
@@ -24,6 +25,8 @@ export function ClaudePanel() {
     clearSession,
     cancelStream,
     openPanel,
+    selectedModel,
+    setModel,
   } = useClaude();
 
   const [inputText, setInputText] = useState('');
@@ -160,6 +163,29 @@ export function ClaudePanel() {
         {/* Input */}
         <div className="border-t border-gray-200 p-3 flex-shrink-0">
           <div className="flex items-end gap-2">
+            <Popover>
+              <PopoverTrigger asChild>
+                <button
+                  className="flex items-center gap-0.5 text-[10px] text-gray-400 hover:text-gray-600 pb-2 flex-shrink-0"
+                  title="Select model"
+                >
+                  <ChevronUp className="w-3 h-3" />
+                  <span className="max-w-[60px] truncate">{MODEL_OPTIONS.find(m => m.id === selectedModel)?.label ?? 'Model'}</span>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="start" side="top" className="w-48 p-1">
+                {MODEL_OPTIONS.map(m => (
+                  <button
+                    key={m.id}
+                    onClick={() => setModel(m.id)}
+                    className="flex items-center justify-between w-full px-2 py-1.5 text-xs rounded hover:bg-gray-100"
+                  >
+                    <span>{m.label}</span>
+                    {m.id === selectedModel && <Check className="w-3 h-3 text-blue-500" />}
+                  </button>
+                ))}
+              </PopoverContent>
+            </Popover>
             <textarea
               ref={inputRef}
               value={inputText}

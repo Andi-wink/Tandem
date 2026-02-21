@@ -49,7 +49,16 @@ interface ClaudeState {
   conversation: ClaudeMessage[];
   contextBasket: ContextBasketItem[];
   apiKey: string | null;
+  selectedModel: string;
 }
+
+const MODEL_OPTIONS = [
+  { id: 'claude-opus-4-6', label: 'Opus 4.6' },
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
+] as const;
+
+export { MODEL_OPTIONS };
 
 interface ClaudeContextValue extends ClaudeState {
   openPanel: (meetingId: string, meetingTitle: string, defaultProjectDir: string) => void;
@@ -61,11 +70,14 @@ interface ClaudeContextValue extends ClaudeState {
   clearSession: () => Promise<void>;
   cancelStream: () => void;
   setApiKey: (key: string) => void;
+  setModel: (model: string) => void;
 }
 
 const ClaudeContext = createContext<ClaudeContextValue | null>(null);
 
-const API_KEY_STORAGE_KEY = 'tandem_anthropic_api_key';
+const BACKEND = 'http://localhost:5167';
+const MODEL_STORAGE_KEY = 'tandem_claude_model';
+const DEFAULT_MODEL = 'claude-opus-4-6';
 
 // ─── Provider ───────────────────────────────────────────────────────────────
 
@@ -79,8 +91,32 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     meetingTitle: null,
     conversation: [],
     contextBasket: [],
-    apiKey: typeof window !== 'undefined' ? localStorage.getItem(API_KEY_STORAGE_KEY) : null,
+    apiKey: null,
+    selectedModel: typeof window !== 'undefined'
+      ? (localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_MODEL)
+      : DEFAULT_MODEL,
   }));
+
+  // Load persisted API key from backend on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${BACKEND}/get-api-key`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: 'claude' }),
+        });
+        if (res.ok) {
+          const key = await res.json();
+          if (key && typeof key === 'string' && key.length > 0) {
+            setState(prev => ({ ...prev, apiKey: key }));
+          }
+        }
+      } catch {
+        // Backend not available, key stays null
+      }
+    })();
+  }, []);
 
   // Track the current streaming message being assembled
   const streamingTextRef = useRef('');
@@ -271,8 +307,18 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const setApiKey = useCallback((key: string) => {
-    localStorage.setItem(API_KEY_STORAGE_KEY, key);
     setState(prev => ({ ...prev, apiKey: key }));
+    // Persist to backend SQLite
+    fetch(`${BACKEND}/save-model-config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'claude', model: 'claude-sonnet-4-20250514', whisperModel: 'large-v3', apiKey: key }),
+    }).catch(() => {});
+  }, []);
+
+  const setModel = useCallback((model: string) => {
+    localStorage.setItem(MODEL_STORAGE_KEY, model);
+    setState(prev => ({ ...prev, selectedModel: model }));
   }, []);
 
   const sendMessage = useCallback(async (message: string) => {
@@ -341,6 +387,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       message,
       api_key: state.apiKey,
       context_block: contextBlock || null,
+      model: state.selectedModel,
     };
     if (!isResume) {
       body.meeting_title = state.meetingTitle;
@@ -366,7 +413,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       },
     );
     abortRef.current = controller;
-  }, [state.projectDir, state.meetingId, state.meetingTitle, state.sessionId, state.isStreaming, state.contextBasket, state.apiKey, handleStreamEvent]);
+  }, [state.projectDir, state.meetingId, state.meetingTitle, state.sessionId, state.isStreaming, state.contextBasket, state.apiKey, state.selectedModel, handleStreamEvent]);
 
   const cancelStream = useCallback(() => {
     flushPendingRaf();
@@ -411,7 +458,8 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     clearSession: clearSessionAction,
     cancelStream,
     setApiKey,
-  }), [state, openPanel, closePanel, addToBasket, removeFromBasket, clearBasket, sendMessage, clearSessionAction, cancelStream, setApiKey]);
+    setModel,
+  }), [state, openPanel, closePanel, addToBasket, removeFromBasket, clearBasket, sendMessage, clearSessionAction, cancelStream, setApiKey, setModel]);
 
   return (
     <ClaudeContext.Provider value={value}>

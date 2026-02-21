@@ -112,8 +112,10 @@ def _build_options(
     project_dir: str,
     session_id: Optional[str] = None,
     system_prompt: Optional[str] = None,
+    model: str = "claude-opus-4-6",
 ) -> ClaudeAgentOptions:
     opts = ClaudeAgentOptions(
+        model=model,
         allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
         permission_mode="acceptEdits",
         cwd=project_dir,
@@ -218,6 +220,7 @@ async def stream_session(
     api_key: str,
     context_block: Optional[str] = None,
     meeting_title: Optional[str] = None,
+    model: str = "claude-opus-4-6",
 ) -> AsyncIterator[dict]:
     """
     Stream an AI assistant session, yielding SSE-compatible event dicts.
@@ -257,6 +260,7 @@ async def stream_session(
         project_dir=project_dir,
         session_id=session.session_id,
         system_prompt=system_prompt,
+        model=model,
     )
 
     # Reset cancel flag for this run
