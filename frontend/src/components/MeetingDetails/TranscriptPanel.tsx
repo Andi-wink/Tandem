@@ -4,9 +4,10 @@ import { Transcript, TranscriptSegmentData, ScreenshotData, ClipboardData, Timel
 import { TranscriptView } from '@/components/TranscriptView';
 import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
 import { ScreenshotLightbox } from '@/components/ScreenshotLightbox';
+import { TranscriptChunks } from '@/components/TranscriptChunks';
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
 import { useMemo, useState } from 'react';
-import { useTimeline } from '@/hooks/useTimeline';
+import { useTimeline, useTranscriptChunks } from '@/hooks/useTimeline';
 
 interface TranscriptPanelProps {
   transcripts: Transcript[];
@@ -70,6 +71,7 @@ export function TranscriptPanel({
 
   // Build timeline items merging transcripts, screenshots, and clipboard items
   const timelineItems = useTimeline(convertedSegments, screenshots, clipboardItems, timelineFilter);
+  const transcriptChunks = useTranscriptChunks(convertedSegments);
 
   const hasTimelineContent = screenshots.length > 0 || clipboardItems.length > 0;
 
@@ -83,6 +85,9 @@ export function TranscriptPanel({
           onOpenMeetingFolder={onOpenMeetingFolder}
         />
       </div>
+
+      {/* Transcript chunks for AI context basket */}
+      <TranscriptChunks chunks={transcriptChunks} />
 
       {/* Transcript content - use virtualized view for better performance */}
       <div className="flex-1 overflow-hidden pb-4">

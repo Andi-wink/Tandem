@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { TranscriptSegmentData, ScreenshotData, ClipboardData, TimelineItem, TimelineFilter } from '@/types';
+import { TranscriptSegmentData, ScreenshotData, ClipboardData, TimelineItem, TimelineFilter, TranscriptChunk } from '@/types';
 
 export function useTimeline(
   segments: TranscriptSegmentData[],
@@ -58,4 +58,53 @@ function formatSecsToTime(secs: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const s = totalSeconds % 60;
   return `${minutes.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+/**
+ * Groups transcript segments into 5-minute chunks for the Claude context basket.
+ */
+const CHUNK_WINDOW_SECS = 300; // 5 minutes
+
+export function useTranscriptChunks(segments: TranscriptSegmentData[]): TranscriptChunk[] {
+  return useMemo(() => {
+    if (segments.length === 0) return [];
+
+    const chunks: TranscriptChunk[] = [];
+    let chunkStart = 0;
+    let chunkSegments: TranscriptSegmentData[] = [];
+
+    for (const seg of segments) {
+      const windowEnd = chunkStart + CHUNK_WINDOW_SECS;
+
+      if (seg.timestamp >= windowEnd && chunkSegments.length > 0) {
+        // Flush current chunk
+        chunks.push(buildChunk(chunkSegments, chunkStart));
+        chunkStart = Math.floor(seg.timestamp / CHUNK_WINDOW_SECS) * CHUNK_WINDOW_SECS;
+        chunkSegments = [seg];
+      } else {
+        chunkSegments.push(seg);
+      }
+    }
+
+    // Flush final chunk
+    if (chunkSegments.length > 0) {
+      chunks.push(buildChunk(chunkSegments, chunkStart));
+    }
+
+    return chunks;
+  }, [segments]);
+}
+
+function buildChunk(segs: TranscriptSegmentData[], startSecs: number): TranscriptChunk {
+  const endSecs = startSecs + CHUNK_WINDOW_SECS;
+  const fullText = segs.map(s => s.text).join(' ');
+  return {
+    id: `chunk-${startSecs}-${endSecs}`,
+    startSecs,
+    endSecs,
+    label: `${formatSecsToTime(startSecs)}–${formatSecsToTime(endSecs)}`,
+    preview: fullText.slice(0, 60) + (fullText.length > 60 ? '...' : ''),
+    fullText,
+    segmentCount: segs.length,
+  };
 }

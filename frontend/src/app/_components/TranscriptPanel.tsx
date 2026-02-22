@@ -10,12 +10,13 @@ import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useScreenshots } from '@/contexts/ScreenshotContext';
 import { useClipboard } from '@/contexts/ClipboardContext';
 import { usePermissionCheck } from '@/hooks/usePermissionCheck';
-import { useTimeline } from '@/hooks/useTimeline';
+import { useTimeline, useTranscriptChunks } from '@/hooks/useTimeline';
 import { ModalType } from '@/hooks/useModalState';
 import { useIsLinux } from '@/hooks/usePlatform';
 import { useMemo } from 'react';
 import { TimelineFilter, ScreenshotData } from '@/types';
 import { ScreenshotLightbox } from '@/components/ScreenshotLightbox';
+import { TranscriptChunks } from '@/components/TranscriptChunks';
 import { RegionSelectOverlay } from '@/components/RegionSelectOverlay';
 
 /**
@@ -73,6 +74,7 @@ export function TranscriptPanel({
 
   // Merge into timeline when screenshots or clipboard items exist
   const timelineItems = useTimeline(segments, screenshots, clipboardItems, timelineFilter);
+  const transcriptChunks = useTranscriptChunks(segments);
   const hasTimelineContent = screenshots.length > 0 || clipboardItems.length > 0;
 
   const handleScreenshotClick = (screenshot: ScreenshotData) => {
@@ -151,6 +153,9 @@ export function TranscriptPanel({
           </div>
         </div>
       </div>
+
+      {/* Transcript chunks for AI context basket */}
+      <TranscriptChunks chunks={transcriptChunks} />
 
       {/* Permission Warning - Not needed on Linux */}
       {!isRecording && !isChecking && !isLinux && (

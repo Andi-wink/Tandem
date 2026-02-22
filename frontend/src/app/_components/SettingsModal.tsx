@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { ModelConfig } from "@/components/ModelSettingsModal";
 import { PreferenceSettings } from "@/components/PreferenceSettings";
 import { DeviceSelection } from "@/components/DeviceSelection";
@@ -7,6 +8,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { toast } from "sonner";
 import { useConfig } from "@/contexts/ConfigContext";
 import { useRecordingState } from "@/contexts/RecordingStateContext";
+import { useClaude } from "@/contexts/ClaudeContext";
 
 type modalType = "modelSettings" | "deviceSettings" | "languageSettings" | "modelSelector" | "errorAlert" | "chunkDropWarning";
 
@@ -57,6 +59,9 @@ export function SettingsModals({
   } = useConfig();
 
   const { isRecording } = useRecordingState();
+  const { apiKey, setApiKey } = useClaude();
+  const [apiKeyInput, setApiKeyInput] = useState(apiKey ?? '');
+  const [apiKeyVisible, setApiKeyVisible] = useState(false);
 
   return <>
     {/* Legacy Settings Modal */}
@@ -148,6 +153,54 @@ export function SettingsModals({
                     </div>
                   </div>
                 )}
+              </div>
+            </div>
+
+            {/* AI Assistant API Key Section */}
+            <div className="border-t pt-8">
+              <h4 className="text-lg font-semibold text-gray-900 mb-1">AI Assistant (Claude)</h4>
+              <p className="text-sm text-gray-500 mb-4">
+                API key for the in-app AI assistant panel. Stored locally in the app database.
+              </p>
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Anthropic API Key
+                  </label>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <input
+                        type={apiKeyVisible ? 'text' : 'password'}
+                        value={apiKeyInput}
+                        onChange={(e) => setApiKeyInput(e.target.value)}
+                        placeholder="sk-ant-..."
+                        className="w-full px-3 py-2 text-sm bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 pr-10"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setApiKeyVisible(!apiKeyVisible)}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs"
+                      >
+                        {apiKeyVisible ? 'Hide' : 'Show'}
+                      </button>
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (apiKeyInput.trim()) {
+                          setApiKey(apiKeyInput.trim());
+                          toast.success('API key saved');
+                        }
+                      }}
+                      disabled={!apiKeyInput.trim() || apiKeyInput.trim() === apiKey}
+                      className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                    >
+                      Save
+                    </button>
+                  </div>
+                  {apiKey && (
+                    <p className="mt-1.5 text-xs text-green-600">Key is set and saved.</p>
+                  )}
+                </div>
               </div>
             </div>
           </div>

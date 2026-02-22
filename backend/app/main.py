@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 import uvicorn
 from typing import Optional, List
 import logging
@@ -11,6 +11,7 @@ import json
 from threading import Lock
 from transcript_processor import TranscriptProcessor
 import time
+import claude_agent
 
 # Load environment variables
 load_dotenv()
@@ -40,14 +41,19 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Configure CORS
+# B014: Restrict CORS to localhost and Tauri origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],     # Allow all origins for testing
+    allow_origins=[
+        "http://localhost:3118",
+        "http://127.0.0.1:3118",
+        "tauri://localhost",
+        "https://tauri.localhost",
+    ],
     allow_credentials=True,
-    allow_methods=["*"],     # Allow all methods
-    allow_headers=["*"],     # Allow all headers
-    max_age=3600,            # Cache preflight requests for 1 hour
+    allow_methods=["*"],
+    allow_headers=["*"],
+    max_age=3600,
 )
 
 # Global database manager instance for meeting management endpoints
@@ -630,6 +636,126 @@ async def search_transcripts(request: SearchRequest):
         logger.error(f"Error searching transcripts: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ---------------------------------------------------------------------------
+# AI Assistant (Claude Agent SDK) endpoints
+# ---------------------------------------------------------------------------
+
+class ClaudeStartRequest(BaseModel):
+    meeting_id: str
+    meeting_title: str
+    project_dir: str
+    message: str
+    context_block: Optional[str] = None
+    api_key: str = Field(repr=False)
+    model: str = "claude-opus-4-6"
+
+class ClaudeMessageRequest(BaseModel):
+    meeting_id: str
+    project_dir: str
+    message: str
+    context_block: Optional[str] = None
+    api_key: str = Field(repr=False)
+    model: str = "claude-opus-4-6"
+
+
+async def _sse_generator(meeting_id: str, project_dir: str, message: str,
+                         api_key: str, context_block: Optional[str],
+                         meeting_title: Optional[str], model: str = "claude-opus-4-6"):
+    """Wrap stream_session as an SSE byte stream. B008: Cancel on client disconnect."""
+    try:
+        async for event in claude_agent.stream_session(
+            meeting_id=meeting_id,
+            project_dir=project_dir,
+            message=message,
+            api_key=api_key,
+            context_block=context_block,
+            meeting_title=meeting_title,
+            model=model,
+        ):
+            yield f"data: {json.dumps(event)}\n\n"
+    except asyncio.CancelledError:
+        # B008: Client disconnected mid-stream — cancel the agent to stop wasting API credits
+        logger.info("SSE client disconnected for meeting %s, cancelling agent", meeting_id)
+        await claude_agent.cancel_session(meeting_id)
+        raise
+
+
+@app.post("/api/claude/start")
+async def claude_start(req: ClaudeStartRequest):
+    """Start a new AI assistant session. Returns an SSE stream."""
+    logger.info(f"Starting AI assistant session for meeting {req.meeting_id}")
+    return StreamingResponse(
+        _sse_generator(
+            meeting_id=req.meeting_id,
+            project_dir=req.project_dir,
+            message=req.message,
+            api_key=req.api_key,
+            context_block=req.context_block,
+            meeting_title=req.meeting_title,
+            model=req.model,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/api/claude/message")
+async def claude_message(req: ClaudeMessageRequest):
+    """Send a follow-up message in an existing session. Returns an SSE stream."""
+    logger.info(f"Resuming AI assistant session for meeting {req.meeting_id}")
+    return StreamingResponse(
+        _sse_generator(
+            meeting_id=req.meeting_id,
+            project_dir=req.project_dir,
+            message=req.message,
+            api_key=req.api_key,
+            context_block=req.context_block,
+            meeting_title=None,
+            model=req.model,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/claude/session/{meeting_id}")
+async def claude_get_session(meeting_id: str):
+    """Get the current session state for a meeting."""
+    session = claude_agent.get_session(meeting_id)
+    if session is None:
+        return JSONResponse(content=None)
+    return {
+        "meeting_id": session.meeting_id,
+        "session_id": session.session_id,
+        "project_dir": session.project_dir,
+    }
+
+
+@app.delete("/api/claude/session/{meeting_id}")
+async def claude_clear_session(meeting_id: str):
+    """Clear the AI assistant session for a meeting."""
+    claude_agent.clear_session(meeting_id)
+    logger.info(f"Cleared AI assistant session for meeting {meeting_id}")
+    return {"status": "ok"}
+
+
+@app.post("/api/claude/cancel/{meeting_id}")
+async def claude_cancel(meeting_id: str):
+    """Cancel a running AI assistant query."""
+    cancelled = await claude_agent.cancel_session(meeting_id)
+    return {"cancelled": cancelled}
+
+
+# ---------------------------------------------------------------------------
+
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on API shutdown"""
@@ -643,4 +769,4 @@ async def shutdown_event():
 if __name__ == "__main__":
     import multiprocessing
     multiprocessing.freeze_support()
-    uvicorn.run("main:app", host="0.0.0.0", port=5167, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=5167, reload=True)

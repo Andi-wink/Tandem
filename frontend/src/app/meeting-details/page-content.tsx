@@ -17,6 +17,8 @@ import { useTemplates } from '@/hooks/meeting-details/useTemplates';
 import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
 import { useConfig } from '@/contexts/ConfigContext';
+import { useClaude } from '@/contexts/ClaudeContext';
+import { Bot } from 'lucide-react';
 
 export default function PageContent({
   meeting,
@@ -69,6 +71,9 @@ export default function PageContent({
 
   // Get model config from ConfigContext
   const { modelConfig, setModelConfig } = useConfig();
+
+  // Claude panel
+  const { isPanelOpen, openPanel } = useClaude();
 
   // Custom hooks
   const meetingData = useMeetingData({ meeting, summaryData, onMeetingUpdated });
@@ -228,6 +233,23 @@ export default function PageContent({
           isModelConfigLoading={false}
           onOpenModelSettings={handleRegisterModalOpen}
         />
+
+        {/* AI Assistant toggle button */}
+        {!isPanelOpen && (
+          <button
+            onClick={() => {
+              openPanel(
+                meeting.id,
+                meetingData.meetingTitle || meeting.title || 'Meeting',
+                meeting.folder_path || '',
+              );
+            }}
+            className="fixed right-4 top-4 z-30 bg-white border border-gray-200 rounded-full p-2 shadow-md hover:shadow-lg hover:bg-gray-50 transition-all"
+            title="Open AI Assistant"
+          >
+            <Bot className="w-5 h-5 text-gray-600" />
+          </button>
+        )}
       </div>
     </motion.div>
   );

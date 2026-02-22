@@ -2,11 +2,12 @@
 
 import { useEffect, useState, useRef } from "react"
 import { Switch } from "./ui/switch"
-import { FolderOpen } from "lucide-react"
+import { FolderOpen, Eye, EyeOff } from "lucide-react"
 import { invoke } from "@tauri-apps/api/core"
 import Analytics from "@/lib/analytics"
 import AnalyticsConsentSwitch from "./AnalyticsConsentSwitch"
 import { useConfig, NotificationSettings } from "@/contexts/ConfigContext"
+import { useClaude } from "@/contexts/ClaudeContext"
 
 export function PreferenceSettings() {
   const {
@@ -16,6 +17,15 @@ export function PreferenceSettings() {
     loadPreferences,
     updateNotificationSettings
   } = useConfig();
+  const { apiKey, setApiKey } = useClaude();
+  const [apiKeyInput, setApiKeyInput] = useState(apiKey ?? '');
+  const [apiKeyVisible, setApiKeyVisible] = useState(false);
+  const [apiKeySaved, setApiKeySaved] = useState(false);
+
+  // Sync input when apiKey loads from backend
+  useEffect(() => {
+    if (apiKey && !apiKeyInput) setApiKeyInput(apiKey);
+  }, [apiKey]);
 
   const [notificationsEnabled, setNotificationsEnabled] = useState<boolean | null>(null);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
@@ -223,6 +233,58 @@ export function PreferenceSettings() {
       {/* Analytics Section */}
       <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
         <AnalyticsConsentSwitch />
+      </div>
+
+      {/* AI Assistant API Key Section */}
+      <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
+        <h3 className="text-lg font-semibold text-gray-900 mb-1">AI Assistant (Claude)</h3>
+        <p className="text-sm text-gray-600 mb-4">
+          API key for the in-app AI assistant panel. Stored locally in the app database.
+        </p>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Anthropic API Key
+          </label>
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <input
+                type={apiKeyVisible ? 'text' : 'password'}
+                value={apiKeyInput}
+                onChange={(e) => { setApiKeyInput(e.target.value); setApiKeySaved(false); }}
+                placeholder="sk-ant-..."
+                className="w-full px-3 py-2 text-sm bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 pr-10"
+              />
+              <button
+                type="button"
+                onClick={() => setApiKeyVisible(!apiKeyVisible)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              >
+                {apiKeyVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <button
+              onClick={() => {
+                if (apiKeyInput.trim()) {
+                  setApiKey(apiKeyInput.trim());
+                  setApiKeySaved(true);
+                }
+              }}
+              disabled={!apiKeyInput.trim() || apiKeyInput.trim() === apiKey}
+              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+            >
+              Save
+            </button>
+          </div>
+          {(apiKey || apiKeySaved) && (
+            <p className="mt-1.5 text-xs text-green-600">Key is set and saved.</p>
+          )}
+          <p className="mt-2 text-xs text-gray-500">
+            Get your key at{' '}
+            <a href="https://console.anthropic.com/" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+              console.anthropic.com
+            </a>
+          </p>
+        </div>
       </div>
     </div>
   )
