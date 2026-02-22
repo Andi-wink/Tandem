@@ -8,6 +8,7 @@ import {
   cancelClaudeSession,
   ClaudeFrontendEvent,
 } from '@/services/claudeService';
+import { anonymizeTexts } from '@/services/anonymizationService';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -20,6 +21,7 @@ export interface ContextBasketItem {
   preview: string;     // first ~80 chars for display
   fullContent: string; // complete content for sending to Claude
   timestamp?: number;  // recording_elapsed_secs
+  anonymize?: boolean; // per-item override: true=force on, false=force off, undefined=follow global
 }
 
 export type ClaudeMessageRole = 'user' | 'assistant';
@@ -50,6 +52,10 @@ interface ClaudeState {
   contextBasket: ContextBasketItem[];
   apiKey: string | null;
   selectedModel: string;
+  // F005: PII Anonymization
+  anonymizationEnabled: boolean;
+  entityMap: Record<string, string>;
+  lastAnonymizedCount: number;  // entities replaced in last send
 }
 
 const MODEL_OPTIONS = [
@@ -71,6 +77,10 @@ interface ClaudeContextValue extends ClaudeState {
   cancelStream: () => void;
   setApiKey: (key: string) => void;
   setModel: (model: string) => void;
+  // F005: PII Anonymization
+  toggleAnonymization: () => void;
+  toggleItemAnonymization: (itemId: string) => void;
+  clearEntityMap: () => void;
 }
 
 const ClaudeContext = createContext<ClaudeContextValue | null>(null);
@@ -95,6 +105,10 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     selectedModel: typeof window !== 'undefined'
       ? (localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_MODEL)
       : DEFAULT_MODEL,
+    // F005: PII Anonymization — default ON (cloud provider assumed)
+    anonymizationEnabled: true,
+    entityMap: {},
+    lastAnonymizedCount: 0,
   }));
 
   // Load persisted API key from backend on mount
@@ -321,6 +335,32 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     setState(prev => ({ ...prev, selectedModel: model }));
   }, []);
 
+  // ── F005: PII Anonymization controls ──────────────────────────────────────
+
+  const toggleAnonymization = useCallback(() => {
+    setState(prev => ({ ...prev, anonymizationEnabled: !prev.anonymizationEnabled }));
+  }, []);
+
+  const toggleItemAnonymization = useCallback((itemId: string) => {
+    setState(prev => ({
+      ...prev,
+      contextBasket: prev.contextBasket.map(item =>
+        item.id === itemId
+          ? { ...item, anonymize: item.anonymize === undefined ? !prev.anonymizationEnabled : !item.anonymize }
+          : item
+      ),
+    }));
+  }, []);
+
+  const clearEntityMapAction = useCallback(() => {
+    if (state.meetingId) {
+      fetch(`${BACKEND}/api/anonymize/entity-map/${encodeURIComponent(state.meetingId)}`, {
+        method: 'DELETE',
+      }).catch(() => {});
+    }
+    setState(prev => ({ ...prev, entityMap: {}, lastAnonymizedCount: 0 }));
+  }, [state.meetingId]);
+
   const sendMessage = useCallback(async (message: string) => {
     if (!state.projectDir || !state.meetingId || !state.meetingTitle) {
       throw new Error('No active meeting for AI assistant session');
@@ -345,11 +385,51 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     if (typeCounts.note) summaryParts.push(`${typeCounts.note} note${typeCounts.note > 1 ? 's' : ''}`);
     const contextSummary = summaryParts.length > 0 ? `[+${summaryParts.join(', ')}]` : undefined;
 
-    // Assemble context block from basket items
+    // F005: Split basket into items to anonymize vs. raw items
+    const itemsToAnonymize = basket.filter(item =>
+      item.anonymize ?? state.anonymizationEnabled
+    );
+    const rawItems = basket.filter(item =>
+      !(item.anonymize ?? state.anonymizationEnabled)
+    );
+
+    // Anonymize items that need it
+    let anonymizedContents: string[] = [];
+    let anonymizedCount = 0;
+    if (itemsToAnonymize.length > 0) {
+      try {
+        const result = await anonymizeTexts(
+          itemsToAnonymize.map(i => i.fullContent),
+          state.meetingId,
+          Object.keys(state.entityMap).length > 0 ? state.entityMap : undefined,
+        );
+        anonymizedContents = result.sanitized;
+        anonymizedCount = result.entitiesFound.length;
+        setState(prev => ({
+          ...prev,
+          entityMap: { ...prev.entityMap, ...result.entityMap },
+          lastAnonymizedCount: anonymizedCount,
+        }));
+      } catch (err) {
+        console.error('Anonymization failed, sending raw:', err);
+        // Fallback: use raw content if anonymization service is unavailable
+        anonymizedContents = itemsToAnonymize.map(i => i.fullContent);
+      }
+    }
+
+    // Reassemble context block: anonymized items + raw items (preserve original order)
     const contextBlock = basket.length > 0
       ? basket.map(item => {
         const header = `--- ${item.type}: ${item.label} ---`;
-        return `${header}\n${item.fullContent}`;
+        const shouldAnonymize = item.anonymize ?? state.anonymizationEnabled;
+        let content: string;
+        if (shouldAnonymize) {
+          const idx = itemsToAnonymize.indexOf(item);
+          content = idx >= 0 && anonymizedContents[idx] ? anonymizedContents[idx] : item.fullContent;
+        } else {
+          content = item.fullContent;
+        }
+        return `${header}\n${content}`;
       }).join('\n\n')
       : undefined;
 
@@ -358,7 +438,9 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       id: `user-${Date.now()}`,
       role: 'user',
       text: message,
-      contextSummary,
+      contextSummary: contextSummary
+        ? contextSummary + (anonymizedCount > 0 ? ` (${anonymizedCount} PII entities anonymized)` : '')
+        : (anonymizedCount > 0 ? `(${anonymizedCount} PII entities anonymized)` : undefined),
     };
 
     // Prepare empty assistant message for streaming
@@ -413,7 +495,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       },
     );
     abortRef.current = controller;
-  }, [state.projectDir, state.meetingId, state.meetingTitle, state.sessionId, state.isStreaming, state.contextBasket, state.apiKey, state.selectedModel, handleStreamEvent]);
+  }, [state.projectDir, state.meetingId, state.meetingTitle, state.sessionId, state.isStreaming, state.contextBasket, state.apiKey, state.selectedModel, state.anonymizationEnabled, state.entityMap, handleStreamEvent]);
 
   const cancelStream = useCallback(() => {
     flushPendingRaf();
@@ -459,7 +541,10 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     cancelStream,
     setApiKey,
     setModel,
-  }), [state, openPanel, closePanel, addToBasket, removeFromBasket, clearBasket, sendMessage, clearSessionAction, cancelStream, setApiKey, setModel]);
+    toggleAnonymization,
+    toggleItemAnonymization,
+    clearEntityMap: clearEntityMapAction,
+  }), [state, openPanel, closePanel, addToBasket, removeFromBasket, clearBasket, sendMessage, clearSessionAction, cancelStream, setApiKey, setModel, toggleAnonymization, toggleItemAnonymization, clearEntityMapAction]);
 
   return (
     <ClaudeContext.Provider value={value}>

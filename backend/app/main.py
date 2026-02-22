@@ -12,6 +12,7 @@ from threading import Lock
 from transcript_processor import TranscriptProcessor
 import time
 import claude_agent
+import anonymizer
 
 # Load environment variables
 load_dotenv()
@@ -744,6 +745,77 @@ async def claude_cancel(meeting_id: str):
 
 
 # ---------------------------------------------------------------------------
+# PII Anonymization (F005) endpoints
+# ---------------------------------------------------------------------------
+
+class AnonymizeRequest(BaseModel):
+    texts: List[str]
+    meeting_id: str
+    entity_map: Optional[dict] = None
+    detect_json: bool = True
+
+class AnonymizeResponse(BaseModel):
+    sanitized: List[str]
+    entity_map: dict
+    entities_found: List[dict]
+
+
+@app.post("/api/anonymize", response_model=AnonymizeResponse)
+async def anonymize_endpoint(req: AnonymizeRequest):
+    """Anonymize PII in one or more text strings.
+
+    Uses Presidio + spaCy for detection, Faker for surrogates.
+    Entity map is maintained per meeting_id for consistent aliases.
+    """
+    if not anonymizer.is_available():
+        logger.warning("Anonymization requested but Presidio is not available")
+        return AnonymizeResponse(
+            sanitized=req.texts,
+            entity_map=req.entity_map or {},
+            entities_found=[],
+        )
+
+    sanitized, entity_map, entities_found = await anonymizer.anonymize_texts(
+        texts=req.texts,
+        meeting_id=req.meeting_id,
+        entity_map=req.entity_map,
+        detect_json=req.detect_json,
+    )
+    logger.info(
+        "Anonymized %d texts for meeting %s: %d entities found",
+        len(req.texts), req.meeting_id, len(entities_found),
+    )
+    return AnonymizeResponse(
+        sanitized=sanitized,
+        entity_map=entity_map,
+        entities_found=entities_found,
+    )
+
+
+@app.get("/api/anonymize/entity-map/{meeting_id}")
+async def get_entity_map(meeting_id: str):
+    """Get the current entity map for a meeting."""
+    return {"entity_map": anonymizer.get_entity_map(meeting_id)}
+
+
+@app.delete("/api/anonymize/entity-map/{meeting_id}")
+async def clear_entity_map(meeting_id: str):
+    """Clear the entity map for a meeting."""
+    anonymizer.clear_registry(meeting_id)
+    logger.info("Cleared entity map for meeting %s", meeting_id)
+    return {"message": "Entity map cleared"}
+
+
+@app.get("/api/anonymize/health")
+async def anonymize_health():
+    """Check if the anonymization service is available."""
+    return {
+        "available": anonymizer.is_available(),
+        "model": "en_core_web_sm" if anonymizer.is_available() else None,
+    }
+
+
+# ---------------------------------------------------------------------------
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -758,4 +830,4 @@ async def shutdown_event():
 if __name__ == "__main__":
     import multiprocessing
     multiprocessing.freeze_support()
-    uvicorn.run("main:app", host="0.0.0.0", port=5167, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=5167)
