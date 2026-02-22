@@ -11,10 +11,12 @@ import json
 import logging
 import os
 import queue
+import re
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import Event, Thread
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional
 
 from claude_agent_sdk import (
     query,
@@ -28,6 +30,52 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import StreamEvent
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# MCP server configuration (loaded once at import time)
+# ---------------------------------------------------------------------------
+
+_ENV_VAR_RE = re.compile(r"\$\{([^}]+)\}")
+
+
+def _expand_env_vars(value: Any) -> Any:
+    """Recursively expand ${VAR} references in strings, dicts, and lists."""
+    if isinstance(value, str):
+        return _ENV_VAR_RE.sub(lambda m: os.environ.get(m.group(1), ""), value)
+    if isinstance(value, dict):
+        return {k: _expand_env_vars(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_expand_env_vars(v) for v in value]
+    return value
+
+
+def _load_mcp_servers() -> dict[str, Any]:
+    """
+    Load MCP server configs from backend/mcp_servers.json (if it exists).
+
+    The file uses the same format as .mcp.json:
+        { "mcpServers": { "name": { "command": "...", "args": [...], "env": {...} } } }
+
+    API keys should use ${ENV_VAR} syntax — they get expanded from environment
+    variables at load time, so secrets never appear in the config file.
+    """
+    config_path = Path(__file__).resolve().parent.parent / "mcp_servers.json"
+    if not config_path.exists():
+        return {}
+
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+        servers = raw.get("mcpServers", {})
+        expanded = _expand_env_vars(servers)
+        names = ", ".join(expanded.keys()) if expanded else "(none)"
+        logger.info("Loaded MCP servers from %s: %s", config_path, names)
+        return expanded
+    except Exception as e:
+        logger.warning("Failed to load MCP servers from %s: %s", config_path, e)
+        return {}
+
+
+_MCP_SERVERS: dict[str, Any] = _load_mcp_servers()
 
 # ---------------------------------------------------------------------------
 # Session state
@@ -114,9 +162,14 @@ def _build_options(
     system_prompt: Optional[str] = None,
     model: str = "claude-opus-4-6",
 ) -> ClaudeAgentOptions:
+    allowed = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+    # Wildcard-allow all tools from each configured MCP server
+    for name in _MCP_SERVERS:
+        allowed.append(f"mcp__{name}__*")
+
     opts = ClaudeAgentOptions(
         model=model,
-        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+        allowed_tools=allowed,
         permission_mode="acceptEdits",
         cwd=project_dir,
         env={
@@ -126,6 +179,7 @@ def _build_options(
             "CLAUDECODE": "",
         },
         include_partial_messages=True,
+        **({"mcp_servers": _MCP_SERVERS} if _MCP_SERVERS else {}),
     )
     if session_id:
         opts.resume = session_id
