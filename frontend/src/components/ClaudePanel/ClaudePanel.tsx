@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Send, Trash2, AlertCircle, Square, ChevronUp, Check } from 'lucide-react';
+import { X, Send, Trash2, AlertCircle, Square, ChevronUp, Check, Shield } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
@@ -7,6 +7,7 @@ import { useClaude, MODEL_OPTIONS } from '@/contexts/ClaudeContext';
 import { ContextBasket } from './ContextBasket';
 import { ConversationView } from './ConversationView';
 import { ProjectDirModal } from './ProjectDirModal';
+import { EntityMapViewer } from './EntityMapViewer';
 
 export function ClaudePanel() {
   const {
@@ -28,6 +29,11 @@ export function ClaudePanel() {
     openPanel,
     selectedModel,
     setModel,
+    anonymizationEnabled,
+    entityMap,
+    toggleAnonymization,
+    toggleItemAnonymization,
+    clearEntityMap,
   } = useClaude();
 
   const [inputText, setInputText] = useState('');
@@ -147,12 +153,24 @@ export function ClaudePanel() {
           </div>
         )}
 
+        {/* Entity Map Viewer (F005) */}
+        {Object.keys(entityMap).length > 0 && (
+          <div className="flex-shrink-0">
+            <EntityMapViewer
+              entityMap={entityMap}
+              onClear={clearEntityMap}
+            />
+          </div>
+        )}
+
         {/* Context Basket */}
         <div className="flex-shrink-0">
           <ContextBasket
             items={contextBasket}
             onRemove={removeFromBasket}
             onClear={clearBasket}
+            anonymizationEnabled={anonymizationEnabled}
+            onToggleItemAnonymization={toggleItemAnonymization}
           />
         </div>
 
@@ -188,6 +206,19 @@ export function ClaudePanel() {
                 ))}
               </PopoverContent>
             </Popover>
+            {/* F005: PII Anonymization toggle */}
+            <button
+              onClick={toggleAnonymization}
+              className={`flex items-center gap-0.5 text-[10px] pb-2 flex-shrink-0 transition-colors ${
+                anonymizationEnabled
+                  ? 'text-emerald-500 hover:text-emerald-600'
+                  : 'text-gray-300 hover:text-gray-400'
+              }`}
+              title={anonymizationEnabled ? 'PII anonymization ON — click to disable' : 'PII anonymization OFF — click to enable'}
+            >
+              <Shield className="w-3 h-3" />
+              <span>{anonymizationEnabled ? 'PII' : 'PII'}</span>
+            </button>
             <textarea
               ref={inputRef}
               value={inputText}
