@@ -911,9 +911,42 @@ pub async fn api_save_meeting_title<R: Runtime>(
         auth_token.is_some()
     );
     let pool = state.db_manager.pool();
-    match MeetingsRepository::update_meeting_title(pool, &meeting_id, &title).await {
+
+    // Try to rename the meeting folder on disk to match the new title
+    let folder_renamed = match MeetingsRepository::get_meeting_metadata(pool, &meeting_id).await {
+        Ok(Some(meeting)) => {
+            if let Some(ref folder_path) = meeting.folder_path {
+                rename_meeting_folder(folder_path, &title)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    // Update database: title + folder_path if the folder was renamed
+    let result = if let Some(ref new_folder_path) = folder_renamed {
+        MeetingsRepository::update_meeting_title_and_folder(
+            pool,
+            &meeting_id,
+            &title,
+            new_folder_path,
+        )
+        .await
+    } else {
+        MeetingsRepository::update_meeting_title(pool, &meeting_id, &title).await
+    };
+
+    match result {
         Ok(true) => {
-            log_info!("Successfully saved meeting title");
+            if let Some(ref new_path) = folder_renamed {
+                log_info!(
+                    "Successfully saved meeting title and renamed folder to: {}",
+                    new_path
+                );
+            } else {
+                log_info!("Successfully saved meeting title (folder unchanged)");
+            }
             Ok(serde_json::json!({"message": "Meeting title saved successfully"}))
         }
         Ok(false) => {
@@ -923,6 +956,84 @@ pub async fn api_save_meeting_title<R: Runtime>(
         Err(e) => {
             log_error!("Failed to update meeting {}", e);
             Err(format!("Failed to update meeting: {}", e))
+        }
+    }
+}
+
+/// Extract the timestamp suffix from a meeting folder name.
+/// Folder names follow the pattern: `{name}_{YYYY-MM-DD_HH-MM}`
+/// Returns the suffix including the leading underscore (e.g., `_2026-02-04_14-07`).
+fn extract_folder_timestamp_suffix(folder_name: &str) -> Option<&str> {
+    // Timestamp format: _YYYY-MM-DD_HH-MM = 17 chars
+    if folder_name.len() < 17 {
+        return None;
+    }
+    let suffix = &folder_name[folder_name.len() - 17..];
+    let bytes = suffix.as_bytes();
+    // Validate pattern: _DDDD-DD-DD_DD-DD
+    if bytes[0] != b'_'
+        || bytes[5] != b'-'
+        || bytes[8] != b'-'
+        || bytes[11] != b'_'
+        || bytes[14] != b'-'
+    {
+        return None;
+    }
+    for &i in &[1, 2, 3, 4, 6, 7, 9, 10, 12, 13, 15, 16] {
+        if !bytes[i].is_ascii_digit() {
+            return None;
+        }
+    }
+    Some(suffix)
+}
+
+/// Attempt to rename a meeting folder on disk to match a new title.
+/// Returns the new folder path if successful, or None if rename was skipped/failed.
+fn rename_meeting_folder(old_folder_path: &str, new_title: &str) -> Option<String> {
+    let old_path = std::path::Path::new(old_folder_path);
+
+    if !old_path.exists() {
+        log_warn!(
+            "Meeting folder does not exist, skipping rename: {}",
+            old_folder_path
+        );
+        return None;
+    }
+
+    let folder_name = old_path.file_name()?.to_str()?;
+    let timestamp_suffix = extract_folder_timestamp_suffix(folder_name)?;
+
+    let sanitized_name = crate::audio::audio_processing::sanitize_filename(new_title);
+    let new_folder_name = format!("{}{}", sanitized_name, timestamp_suffix);
+
+    // Skip rename if the folder name hasn't actually changed
+    if new_folder_name == folder_name {
+        return None;
+    }
+
+    let parent = old_path.parent()?;
+    let new_path = parent.join(&new_folder_name);
+
+    if new_path.exists() {
+        log_warn!(
+            "Target folder already exists, skipping rename: {}",
+            new_path.display()
+        );
+        return None;
+    }
+
+    match std::fs::rename(old_path, &new_path) {
+        Ok(()) => {
+            log_info!(
+                "Renamed meeting folder: {} -> {}",
+                folder_name,
+                new_folder_name
+            );
+            Some(new_path.to_string_lossy().to_string())
+        }
+        Err(e) => {
+            log_error!("Failed to rename meeting folder: {}", e);
+            None
         }
     }
 }

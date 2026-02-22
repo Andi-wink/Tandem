@@ -196,6 +196,42 @@ impl MeetingsRepository {
         Ok(true)
     }
 
+    /// Update meeting title and folder_path together (used when renaming also renames the folder on disk)
+    pub async fn update_meeting_title_and_folder(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        new_title: &str,
+        new_folder_path: &str,
+    ) -> Result<bool, SqlxError> {
+        if meeting_id.trim().is_empty() {
+            return Err(SqlxError::Protocol(
+                "meeting_id cannot be empty".to_string(),
+            ));
+        }
+
+        let mut conn = pool.acquire().await?;
+        let mut transaction = conn.begin().await?;
+
+        let now = Utc::now().naive_utc();
+
+        let rows_affected = sqlx::query(
+            "UPDATE meetings SET title = ?, folder_path = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(new_title)
+        .bind(new_folder_path)
+        .bind(now)
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await?;
+
+        if rows_affected.rows_affected() == 0 {
+            transaction.rollback().await?;
+            return Ok(false);
+        }
+        transaction.commit().await?;
+        Ok(true)
+    }
+
     pub async fn update_meeting_name(
         pool: &SqlitePool,
         meeting_id: &str,
