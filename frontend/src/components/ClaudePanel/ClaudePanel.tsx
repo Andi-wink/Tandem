@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, Send, Trash2, AlertCircle, Square, ChevronUp, Check } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { useClaude, MODEL_OPTIONS } from '@/contexts/ClaudeContext';
@@ -33,6 +34,8 @@ export function ClaudePanel() {
   const [showProjectModal, setShowProjectModal] = useState(false);
   const [pendingFirstMessage, setPendingFirstMessage] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const sendMessageRef = useRef(sendMessage);
+  sendMessageRef.current = sendMessage;
 
   const hasApiKey = !!apiKey;
 
@@ -55,8 +58,8 @@ export function ClaudePanel() {
     const text = inputText.trim();
     if (!text || isStreaming) return;
 
-    // Show setup modal if no session yet (need API key + project dir)
-    if ((!sessionId && !projectDir && meetingId && meetingTitle) || !hasApiKey) {
+    // Show setup modal if no session yet or API key missing
+    if ((!sessionId && meetingId && meetingTitle) || !hasApiKey) {
       setPendingFirstMessage(text);
       setShowProjectModal(true);
       return;
@@ -71,6 +74,7 @@ export function ClaudePanel() {
       await sendMessage(text);
     } catch (err) {
       console.error('Failed to send message:', err);
+      toast.error(err instanceof Error ? err.message : 'Failed to send message');
     }
   };
 
@@ -80,11 +84,12 @@ export function ClaudePanel() {
       const msg = pendingFirstMessage;
       setPendingFirstMessage(null);
       setInputText('');
-      sendMessage(msg).catch(err => {
+      sendMessageRef.current(msg).catch(err => {
         console.error('Failed to send first message:', err);
+        toast.error(err instanceof Error ? err.message : 'Failed to send message');
       });
     }
-  }, [pendingFirstMessage, projectDir, sendMessage]);
+  }, [pendingFirstMessage, projectDir]);
 
   const handleProjectDirConfirm = (dir: string) => {
     setShowProjectModal(false);
@@ -100,13 +105,10 @@ export function ClaudePanel() {
     }
   };
 
-  if (!isPanelOpen) return null;
-
   return (
     <>
       <div
-        className="fixed right-0 top-0 bottom-0 w-[420px] bg-white border-l border-gray-200 shadow-lg z-40 flex flex-col transition-transform duration-200"
-        style={{ transform: isPanelOpen ? 'translateX(0)' : 'translateX(100%)' }}
+        className={`fixed right-0 top-0 bottom-0 w-[420px] bg-white border-l border-gray-200 shadow-lg z-40 flex flex-col transition-transform duration-200 ${isPanelOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50 flex-shrink-0">
@@ -224,9 +226,9 @@ export function ClaudePanel() {
       </div>
 
       {/* Project Dir Modal */}
-      {showProjectModal && meetingTitle && projectDir && (
+      {showProjectModal && meetingTitle && (
         <ProjectDirModal
-          defaultDir={projectDir}
+          defaultDir={projectDir || ''}
           meetingTitle={meetingTitle}
           onConfirm={handleProjectDirConfirm}
           onCancel={() => {

@@ -41,14 +41,19 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Configure CORS
+# B014: Restrict CORS to localhost and Tauri origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],     # Allow all origins for testing
+    allow_origins=[
+        "http://localhost:3118",
+        "http://127.0.0.1:3118",
+        "tauri://localhost",
+        "https://tauri.localhost",
+    ],
     allow_credentials=True,
-    allow_methods=["*"],     # Allow all methods
-    allow_headers=["*"],     # Allow all headers
-    max_age=3600,            # Cache preflight requests for 1 hour
+    allow_methods=["*"],
+    allow_headers=["*"],
+    max_age=3600,
 )
 
 # Global database manager instance for meeting management endpoints
@@ -656,17 +661,23 @@ class ClaudeMessageRequest(BaseModel):
 async def _sse_generator(meeting_id: str, project_dir: str, message: str,
                          api_key: str, context_block: Optional[str],
                          meeting_title: Optional[str], model: str = "claude-opus-4-6"):
-    """Wrap stream_session as an SSE byte stream."""
-    async for event in claude_agent.stream_session(
-        meeting_id=meeting_id,
-        project_dir=project_dir,
-        message=message,
-        api_key=api_key,
-        context_block=context_block,
-        meeting_title=meeting_title,
-        model=model,
-    ):
-        yield f"data: {json.dumps(event)}\n\n"
+    """Wrap stream_session as an SSE byte stream. B008: Cancel on client disconnect."""
+    try:
+        async for event in claude_agent.stream_session(
+            meeting_id=meeting_id,
+            project_dir=project_dir,
+            message=message,
+            api_key=api_key,
+            context_block=context_block,
+            meeting_title=meeting_title,
+            model=model,
+        ):
+            yield f"data: {json.dumps(event)}\n\n"
+    except asyncio.CancelledError:
+        # B008: Client disconnected mid-stream — cancel the agent to stop wasting API credits
+        logger.info("SSE client disconnected for meeting %s, cancelling agent", meeting_id)
+        await claude_agent.cancel_session(meeting_id)
+        raise
 
 
 @app.post("/api/claude/start")
@@ -758,4 +769,4 @@ async def shutdown_event():
 if __name__ == "__main__":
     import multiprocessing
     multiprocessing.freeze_support()
-    uvicorn.run("main:app", host="0.0.0.0", port=5167, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=5167, reload=True)

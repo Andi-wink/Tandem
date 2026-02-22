@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import {
+  BACKEND,
   streamClaudeSession,
   getClaudeSession,
   clearClaudeSession,
@@ -75,7 +76,6 @@ interface ClaudeContextValue extends ClaudeState {
 
 const ClaudeContext = createContext<ClaudeContextValue | null>(null);
 
-const BACKEND = 'http://localhost:5167';
 const MODEL_STORAGE_KEY = 'tandem_claude_model';
 const DEFAULT_MODEL = 'claude-opus-4-6';
 
@@ -97,14 +97,16 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       : DEFAULT_MODEL,
   }));
 
-  // Load persisted API key from backend on mount
+  // Load persisted API key from backend on mount (B033: cleanup on unmount)
   useEffect(() => {
+    const controller = new AbortController();
     (async () => {
       try {
         const res = await fetch(`${BACKEND}/get-api-key`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ provider: 'claude' }),
+          signal: controller.signal,
         });
         if (res.ok) {
           const key = await res.json();
@@ -113,9 +115,22 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
           }
         }
       } catch {
-        // Backend not available, key stays null
+        // Backend not available or aborted, key stays null
       }
     })();
+    return () => controller.abort();
+  }, []);
+
+  // B017: Cleanup RAF and abort SSE on unmount
+  useEffect(() => {
+    return () => {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+      }
+      if (abortRef.current) {
+        abortRef.current.abort();
+      }
+    };
   }, []);
 
   // Track the current streaming message being assembled
@@ -127,6 +142,11 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
   const rafIdRef = useRef<number | null>(null);
   // Track current meeting ID for event filtering
   const meetingIdRef = useRef<string | null>(null);
+  // B015: Synchronous guard against double-sends (avoids stale closure)
+  const isStreamingRef = useRef(false);
+  // B016: Refs for state values read inside sendMessage (reduces dependency array)
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   // Keep meetingIdRef in sync with state
   useEffect(() => {
@@ -223,6 +243,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
 
       case 'done':
         flushPendingRaf();
+        isStreamingRef.current = false;
         setState(prev => {
           const conv = [...prev.conversation];
           const lastMsg = conv[conv.length - 1];
@@ -246,6 +267,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
 
       case 'error':
         flushPendingRaf();
+        isStreamingRef.current = false;
         setState(prev => {
           const conv = [...prev.conversation];
           const lastMsg = conv[conv.length - 1];
@@ -308,11 +330,11 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
 
   const setApiKey = useCallback((key: string) => {
     setState(prev => ({ ...prev, apiKey: key }));
-    // Persist to backend SQLite
+    // Persist API key only — do NOT overwrite user's model preferences
     fetch(`${BACKEND}/save-model-config`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: 'claude', model: 'claude-sonnet-4-20250514', whisperModel: 'large-v3', apiKey: key }),
+      body: JSON.stringify({ apiKey: key }),
     }).catch(() => {});
   }, []);
 
@@ -322,15 +344,20 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const sendMessage = useCallback(async (message: string) => {
-    if (!state.projectDir || !state.meetingId || !state.meetingTitle) {
+    // B015: Use ref for synchronous double-send guard
+    const s = stateRef.current;
+    if (!s.projectDir || !s.meetingId || !s.meetingTitle) {
       throw new Error('No active meeting for AI assistant session');
     }
-    if (state.isStreaming) return;
-    if (!state.apiKey) {
+    if (isStreamingRef.current) return;
+    if (!s.apiKey) {
       throw new Error('Anthropic API key not set. Please add your key in settings.');
     }
 
-    const basket = state.contextBasket;
+    // B015: Set synchronous guard immediately
+    isStreamingRef.current = true;
+
+    const basket = s.contextBasket;
 
     // Build context summary for display
     const typeCounts: Record<string, number> = {};
@@ -353,17 +380,16 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       }).join('\n\n')
       : undefined;
 
-    // Add user message to conversation
+    // B030: Use crypto.randomUUID() for unique IDs
     const userMsg: ClaudeMessage = {
-      id: `user-${Date.now()}`,
+      id: `user-${crypto.randomUUID()}`,
       role: 'user',
       text: message,
       contextSummary,
     };
 
-    // Prepare empty assistant message for streaming
     const assistantMsg: ClaudeMessage = {
-      id: `assistant-${Date.now()}`,
+      id: `assistant-${crypto.randomUUID()}`,
       role: 'assistant',
       text: '',
     };
@@ -379,18 +405,18 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     }));
 
     // Determine endpoint & body
-    const isResume = !!state.sessionId;
+    const isResume = !!s.sessionId;
     const endpoint = isResume ? '/api/claude/message' : '/api/claude/start';
     const body: Record<string, unknown> = {
-      meeting_id: state.meetingId,
-      project_dir: state.projectDir,
+      meeting_id: s.meetingId,
+      project_dir: s.projectDir,
       message,
-      api_key: state.apiKey,
+      api_key: s.apiKey,
       context_block: contextBlock || null,
-      model: state.selectedModel,
+      model: s.selectedModel,
     };
     if (!isResume) {
-      body.meeting_title = state.meetingTitle;
+      body.meeting_title = s.meetingTitle;
     }
 
     // Start SSE stream
@@ -399,7 +425,6 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       body,
       handleStreamEvent,
       (err) => {
-        // onError callback
         handleStreamEvent({
           event_type: 'error',
           text: err.message,
@@ -408,12 +433,12 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
           tool_output: null,
           session_id: null,
           cost_usd: null,
-          meeting_id: state.meetingId!,
+          meeting_id: s.meetingId!,
         });
       },
     );
     abortRef.current = controller;
-  }, [state.projectDir, state.meetingId, state.meetingTitle, state.sessionId, state.isStreaming, state.contextBasket, state.apiKey, state.selectedModel, handleStreamEvent]);
+  }, [handleStreamEvent]);
 
   const cancelStream = useCallback(() => {
     flushPendingRaf();
@@ -421,13 +446,15 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       abortRef.current.abort();
       abortRef.current = null;
     }
-    if (state.meetingId) {
-      cancelClaudeSession(state.meetingId).catch(() => {});
+    const mid = stateRef.current.meetingId;
+    if (mid) {
+      cancelClaudeSession(mid).catch(() => {});
     }
+    isStreamingRef.current = false;
     setState(prev => ({ ...prev, isStreaming: false }));
     streamingTextRef.current = '';
     streamingToolCallsRef.current = [];
-  }, [state.meetingId]);
+  }, []);
 
   const clearSessionAction = useCallback(async () => {
     // Cancel any in-flight stream
@@ -435,8 +462,10 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       abortRef.current.abort();
       abortRef.current = null;
     }
-    if (state.meetingId) {
-      await clearClaudeSession(state.meetingId);
+    isStreamingRef.current = false;
+    const mid = stateRef.current.meetingId;
+    if (mid) {
+      await clearClaudeSession(mid);
     }
     setState(prev => ({
       ...prev,
@@ -445,7 +474,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       contextBasket: [],
       isStreaming: false,
     }));
-  }, [state.meetingId]);
+  }, []);
 
   const value = useMemo<ClaudeContextValue>(() => ({
     ...state,

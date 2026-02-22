@@ -3,7 +3,7 @@
  * via fetch() + ReadableStream (SSE) instead of Tauri invoke/events.
  */
 
-const BACKEND = 'http://localhost:5167';
+export const BACKEND = 'http://localhost:5167';
 
 // ---------------------------------------------------------------------------
 // Types (unchanged from before, kept for compat)
@@ -80,6 +80,19 @@ export function streamClaudeSession(
             onEvent(event);
           } catch {
             // ignore malformed lines
+          }
+        }
+      }
+
+      // B031: Flush remaining buffer after stream ends
+      if (buffer.trim()) {
+        const trimmed = buffer.trim();
+        if (trimmed.startsWith('data: ')) {
+          try {
+            const event: ClaudeFrontendEvent = JSON.parse(trimmed.slice(6));
+            onEvent(event);
+          } catch {
+            // ignore malformed tail
           }
         }
       }

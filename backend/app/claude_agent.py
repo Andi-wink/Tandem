@@ -13,6 +13,7 @@ import os
 import queue
 import re
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event, Thread
@@ -77,9 +78,20 @@ def _load_mcp_servers() -> dict[str, Any]:
 
 _MCP_SERVERS: dict[str, Any] = _load_mcp_servers()
 
+# B034: Valid model IDs for validation
+_VALID_MODELS = {
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-sonnet-4-20250514",
+    "claude-haiku-4-5-20251001",
+}
+
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
+
+_SESSION_TTL_SECS = 24 * 60 * 60  # B010: 24 hours
+
 
 @dataclass
 class SessionState:
@@ -88,10 +100,13 @@ class SessionState:
     project_dir: str
     session_id: Optional[str] = None
     cancel_event: Event = field(default_factory=Event)
+    last_active: float = field(default_factory=time.monotonic)
 
 
 # In-memory store: meeting_id -> SessionState
 _sessions: dict[str, SessionState] = {}
+# B007: Lock to prevent concurrent session creation for same meeting_id
+_sessions_lock = asyncio.Lock()
 
 
 def get_session(meeting_id: str) -> Optional[SessionState]:
@@ -110,6 +125,18 @@ async def cancel_session(meeting_id: str) -> bool:
         session.cancel_event.set()
         return True
     return False
+
+
+def _cleanup_expired_sessions() -> None:
+    """B010: Remove sessions inactive for more than _SESSION_TTL_SECS."""
+    now = time.monotonic()
+    expired = [mid for mid, s in _sessions.items()
+               if now - s.last_active > _SESSION_TTL_SECS]
+    for mid in expired:
+        session = _sessions.pop(mid, None)
+        if session:
+            session.cancel_event.set()
+            logger.info("Expired inactive session for meeting %s", mid)
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +292,9 @@ async def _query_bridge(
         yield item
 
     thread.join(timeout=5)
+    # B011: Warn if thread didn't stop
+    if thread.is_alive():
+        logger.warning("Claude query thread for session did not stop within 5s timeout")
 
 
 async def stream_session(
@@ -280,11 +310,25 @@ async def stream_session(
     Stream an AI assistant session, yielding SSE-compatible event dicts.
     Handles both new sessions and session resume automatically.
     """
-    # Get or create session state
-    session = _sessions.get(meeting_id)
-    if session is None:
-        session = SessionState(meeting_id=meeting_id, project_dir=project_dir)
-        _sessions[meeting_id] = session
+    # B034: Validate model parameter
+    if model not in _VALID_MODELS:
+        yield _make_event(
+            meeting_id,
+            event_type="error",
+            text=f"Invalid model: {model}. Valid models: {', '.join(sorted(_VALID_MODELS))}",
+        )
+        return
+
+    # B010: Clean up expired sessions on each request
+    _cleanup_expired_sessions()
+
+    # B007: Lock to prevent concurrent session creation for same meeting_id
+    async with _sessions_lock:
+        session = _sessions.get(meeting_id)
+        if session is None:
+            session = SessionState(meeting_id=meeting_id, project_dir=project_dir)
+            _sessions[meeting_id] = session
+        session.last_active = time.monotonic()
 
     # Generate CLAUDE.md for new sessions
     if not session.session_id and meeting_title:
@@ -403,11 +447,15 @@ async def stream_session(
             session_id=session.session_id,
         )
     except Exception as e:
-        logger.error("Claude agent error for meeting %s: %s", meeting_id, e, exc_info=True)
+        # B004: Sanitize potential API key from error messages before logging
+        error_str = str(e)
+        if api_key and len(api_key) > 8:
+            error_str = error_str.replace(api_key, "sk-ant-***")
+        logger.error("Claude agent error for meeting %s: %s", meeting_id, error_str)
         yield _make_event(
             meeting_id,
             event_type="error",
-            text=str(e),
+            text=error_str,
         )
     finally:
         session.cancel_event.clear()

@@ -58,9 +58,14 @@ export function ConversationView({ messages, isStreaming }: ConversationViewProp
   };
 
   // Auto-scroll to bottom when new messages arrive (only if user is near bottom)
+  // B019: Use requestAnimationFrame to ensure scrollHeight reflects new content
   useEffect(() => {
-    if (scrollRef.current && isNearBottomRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (isNearBottomRef.current) {
+      requestAnimationFrame(() => {
+        if (scrollRef.current) {
+          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        }
+      });
     }
   }, [messages]);
 
@@ -92,10 +97,11 @@ export function ConversationView({ messages, isStreaming }: ConversationViewProp
             <div className="max-w-[95%]">
               {msg.text && (
                 <div className="text-sm break-words prose prose-sm max-w-none">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
-                  {isStreaming && msg === messages[messages.length - 1] && (
-                    <span className="inline-block w-1.5 h-4 bg-gray-400 ml-0.5 animate-pulse" />
-                  )}
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {isStreaming && msg === messages[messages.length - 1]
+                      ? msg.text + ' \u258B'
+                      : msg.text}
+                  </ReactMarkdown>
                 </div>
               )}
               {msg.toolCalls?.map((call, i) => (

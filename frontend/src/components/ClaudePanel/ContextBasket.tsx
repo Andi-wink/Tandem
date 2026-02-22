@@ -20,7 +20,7 @@ export function ContextBasket({ items, onRemove, onClear }: ContextBasketProps) 
   if (items.length === 0) {
     return (
       <div className="px-3 py-2 text-xs text-gray-400 italic border-b border-gray-100">
-        Drag transcript chunks, screenshots, or clips here to add context
+        Use the &quot;Add to AI&quot; buttons on transcript chunks, screenshots, or clips to add context
       </div>
     );
   }

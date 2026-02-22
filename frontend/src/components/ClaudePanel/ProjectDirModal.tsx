@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { FolderOpen, X, Key, ExternalLink } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/button';
@@ -30,18 +30,27 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
   };
 
   const handleConfirm = () => {
-    if (keyInput.trim()) {
-      setApiKey(keyInput.trim());
-    }
+    if (!isKeyValid) return;
+    setApiKey(keyInput.trim());
     onConfirm(selectedDir);
   };
 
-  const isKeyValid = keyInput.trim().startsWith('sk-ant-') || keyInput.trim().startsWith('sk-');
-  const canConfirm = !!keyInput.trim();
+  const isKeyValid = keyInput.trim().startsWith('sk-ant-') && keyInput.trim().length > 20;
+  const canConfirm = isKeyValid;
+
+  // B026: Close on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCancel();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [onCancel]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="bg-white rounded-lg shadow-xl w-[420px] max-w-[90vw]">
+    // B027: Close on backdrop click
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onCancel}>
+      <div className="bg-white rounded-lg shadow-xl w-[420px] max-w-[90vw]" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
           <h3 className="font-semibold text-sm">AI Assistant — Setup</h3>
           <button onClick={onCancel} className="text-gray-400 hover:text-gray-600">
