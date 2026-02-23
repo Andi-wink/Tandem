@@ -12,6 +12,8 @@ import { TranscriptSegmentData, ScreenshotData, ClipboardData, TimelineItem, Tim
 import { TimelineFilterBar } from "./TimelineFilterBar";
 import { ScreenshotThumbnail } from "./ScreenshotThumbnail";
 import { Clipboard } from "lucide-react";
+import { ContextBasketItem } from "@/contexts/ClaudeContext";
+import { useDraggableBasketItem } from "@/hooks/useDragAndDrop";
 
 export interface VirtualizedTranscriptViewProps {
     /** Transcript segments to display */
@@ -75,6 +77,57 @@ function cleanStopWords(text: string): string {
     return cleanedText.replace(/\s+/g, ' ').trim();
 }
 
+function segmentToBasketItem(seg: TranscriptSegmentData): ContextBasketItem {
+    return {
+        id: `segment-${seg.id}`,
+        type: 'transcript_chunk',
+        label: formatRecordingTime(seg.timestamp),
+        preview: seg.text.slice(0, 80) + (seg.text.length > 80 ? '...' : ''),
+        fullContent: seg.text,
+        timestamp: seg.timestamp,
+    };
+}
+
+function clipboardToBasketItem(clip: ClipboardData): ContextBasketItem {
+    const timeLabel = clip.recording_elapsed_secs != null
+        ? formatRecordingTime(clip.recording_elapsed_secs)
+        : clip.timestamp;
+    return {
+        id: clip.id,
+        type: 'clipboard',
+        label: `Clipboard ${timeLabel}`,
+        preview: (clip.text || '').slice(0, 80) + ((clip.text || '').length > 80 ? '...' : ''),
+        fullContent: clip.text || `[Clipboard image: ${clip.file_path}]`,
+        timestamp: clip.recording_elapsed_secs,
+    };
+}
+
+// Draggable clipboard text item
+const DraggableClipboardItem = memo(function DraggableClipboardItem({
+    clip,
+    onClick,
+}: {
+    clip: ClipboardData;
+    onClick?: (clip: ClipboardData) => void;
+}) {
+    const basketItem = clipboardToBasketItem(clip);
+    const { isDragging, dragHandlers } = useDraggableBasketItem(basketItem);
+
+    return (
+        <div
+            {...dragHandlers}
+            className={`flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs ${onClick ? 'cursor-grab hover:bg-amber-100' : ''} ${isDragging ? 'opacity-50' : ''}`}
+            onClick={() => onClick?.(clip)}
+        >
+            <Clipboard className="w-3.5 h-3.5 text-amber-500 mt-0.5 shrink-0" />
+            <div className="min-w-0">
+                <span className="text-amber-600 font-medium mr-2">{clip.timestamp}</span>
+                <span className="text-gray-700 line-clamp-2">{clip.text}</span>
+            </div>
+        </div>
+    );
+});
+
 // Memoized transcript segment component
 const TranscriptSegment = memo(function TranscriptSegment({
     id,
@@ -83,6 +136,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     confidence,
     isStreaming,
     showConfidence,
+    basketItem,
 }: {
     id: string;
     timestamp: number;
@@ -90,12 +144,14 @@ const TranscriptSegment = memo(function TranscriptSegment({
     confidence?: number;
     isStreaming: boolean;
     showConfidence: boolean;
+    basketItem?: ContextBasketItem;
 }) {
+    const { isDragging, dragHandlers } = useDraggableBasketItem(basketItem ?? null);
     const displayText = cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
 
     return (
-        <div id={`segment-${id}`} className="mb-3">
-            <div className="flex items-start gap-2">
+        <div id={`segment-${id}`} className="mb-3" {...dragHandlers}>
+            <div className={`flex items-start gap-2 ${isDragging ? 'opacity-50' : ''} ${basketItem ? 'cursor-grab' : ''}`}>
                 <Tooltip>
                     <TooltipTrigger>
                         <span className="text-xs text-gray-400 mt-1 flex-shrink-0 min-w-[50px]">
@@ -326,7 +382,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         className="px-3 py-1"
                                     >
                                         {clip.content_type === 'image' && clip.thumbnail_base64 ? (
-                                            // Image clip — reuse screenshot thumbnail style
+                                            // Image clip — reuse screenshot thumbnail style (already draggable)
                                             <div
                                                 className={`cursor-pointer ${onClipboardItemClick ? 'hover:opacity-90' : ''}`}
                                                 onClick={() => onClipboardItemClick?.(clip)}
@@ -346,17 +402,11 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                                 />
                                             </div>
                                         ) : (
-                                            // Text clip — compact preview card
-                                            <div
-                                                className={`flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs ${onClipboardItemClick ? 'cursor-pointer hover:bg-amber-100' : ''}`}
-                                                onClick={() => onClipboardItemClick?.(clip)}
-                                            >
-                                                <Clipboard className="w-3.5 h-3.5 text-amber-500 mt-0.5 shrink-0" />
-                                                <div className="min-w-0">
-                                                    <span className="text-amber-600 font-medium mr-2">{clip.timestamp}</span>
-                                                    <span className="text-gray-700 line-clamp-2">{clip.text}</span>
-                                                </div>
-                                            </div>
+                                            // Text clip — draggable compact preview card
+                                            <DraggableClipboardItem
+                                                clip={clip}
+                                                onClick={onClipboardItemClick}
+                                            />
                                         )}
                                     </motion.div>
                                 );
@@ -379,6 +429,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         confidence={seg.confidence}
                                         isStreaming={isStreamingSeg}
                                         showConfidence={showConfidence}
+                                        basketItem={segmentToBasketItem(seg)}
                                     />
                                 </motion.div>
                             );
@@ -432,6 +483,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         confidence={segment.confidence}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
+                                        basketItem={segmentToBasketItem(segment)}
                                     />
                                 </div>
                             );
@@ -488,6 +540,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         confidence={segment.confidence}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
+                                        basketItem={segmentToBasketItem(segment)}
                                     />
                                 </motion.div>
                             );

@@ -1,9 +1,10 @@
 'use client';
 
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { ScreenshotData } from '@/types';
 import { Camera, Plus, Check } from 'lucide-react';
 import { useClaude, ContextBasketItem } from '@/contexts/ClaudeContext';
+import { useDraggableBasketItem } from '@/hooks/useDragAndDrop';
 
 interface ScreenshotThumbnailProps {
   screenshot: ScreenshotData;
@@ -22,23 +23,27 @@ export const ScreenshotThumbnail = memo(function ScreenshotThumbnail({
 
   const inBasket = contextBasket.some(b => b.id === screenshot.id);
 
+  const basketItem: ContextBasketItem | null = useMemo(() => inBasket ? null : ({
+    id: screenshot.id,
+    type: 'screenshot',
+    label: `Screenshot ${timeLabel}`,
+    preview: `${screenshot.capture_mode} capture (${screenshot.width}x${screenshot.height})`,
+    fullContent: `[Screenshot taken at ${timeLabel} — ${screenshot.capture_mode} capture, ${screenshot.width}x${screenshot.height}]\nImage file path: ${screenshot.file_path}\nPlease use the Read tool to view this image file.`,
+    timestamp: screenshot.recording_elapsed_secs,
+  }), [screenshot, timeLabel, inBasket]);
+
+  const { isDragging, dragHandlers } = useDraggableBasketItem(basketItem);
+
   const handleAddToAI = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (inBasket) return;
-    const item: ContextBasketItem = {
-      id: screenshot.id,
-      type: 'screenshot',
-      label: `Screenshot ${timeLabel}`,
-      preview: `${screenshot.capture_mode} capture (${screenshot.width}x${screenshot.height})`,
-      fullContent: `[Screenshot taken at ${timeLabel} — ${screenshot.capture_mode} capture, ${screenshot.width}x${screenshot.height}]\nImage file path: ${screenshot.file_path}\nPlease use the Read tool to view this image file.`,
-      timestamp: screenshot.recording_elapsed_secs,
-    };
-    addToBasket(item);
+    if (inBasket || !basketItem) return;
+    addToBasket(basketItem);
   };
 
   return (
     <div
-      className="group flex items-start gap-3 px-3 py-2 rounded-lg bg-blue-950/30 border border-blue-800/30 hover:border-blue-600/50 cursor-pointer transition-colors"
+      {...dragHandlers}
+      className={`group flex items-start gap-3 px-3 py-2 rounded-lg bg-blue-950/30 border border-blue-800/30 hover:border-blue-600/50 cursor-pointer transition-colors ${isDragging ? 'opacity-50' : ''} ${!inBasket ? 'cursor-grab' : ''}`}
       onClick={() => onClick(screenshot)}
     >
       {/* Timestamp */}
