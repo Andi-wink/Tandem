@@ -34,13 +34,14 @@ pub(crate) use perf_trace;
 
 // Re-export async logging macros for external use (removed due to macro conflicts)
 
-// Declare audio module
+// Declare modules
 pub mod analytics;
 pub mod api;
 pub mod audio;
 pub mod clipboard;
 pub mod console_utils;
 pub mod database;
+mod migration;
 pub mod notifications;
 pub mod ollama;
 pub mod onboarding;
@@ -495,6 +496,9 @@ pub fn run() {
         .manage(audio::init_system_audio_state())
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .setup(|_app| {
+            // Migrate data from old Meetily paths to Tandem paths (runs once)
+            migration::run_migration();
+
             log::info!("Application setup complete");
 
             // Initialize system tray
