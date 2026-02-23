@@ -8,6 +8,7 @@ import { ContextBasket } from './ContextBasket';
 import { ConversationView } from './ConversationView';
 import { ProjectDirModal } from './ProjectDirModal';
 import { EntityMapViewer } from './EntityMapViewer';
+import { useDropZone } from '@/hooks/useDragAndDrop';
 
 export function ClaudePanel() {
   const {
@@ -21,6 +22,7 @@ export function ClaudePanel() {
     contextBasket,
     apiKey,
     closePanel,
+    addToBasket,
     removeFromBasket,
     clearBasket,
     sendMessage,
@@ -44,6 +46,7 @@ export function ClaudePanel() {
   sendMessageRef.current = sendMessage;
 
   const hasApiKey = !!apiKey;
+  const { isOver: isPanelDropOver, dropHandlers: panelDropHandlers } = useDropZone(addToBasket);
 
   // Auto-focus input when panel opens
   useEffect(() => {
@@ -114,7 +117,8 @@ export function ClaudePanel() {
   return (
     <>
       <div
-        className={`fixed right-0 top-0 bottom-0 w-[420px] bg-white border-l border-gray-200 shadow-lg z-40 flex flex-col transition-transform duration-200 ${isPanelOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}
+        {...panelDropHandlers}
+        className={`fixed right-0 top-0 bottom-0 w-[420px] bg-white border-l border-gray-200 shadow-lg z-40 flex flex-col transition-transform duration-200 ${isPanelOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'} ${isPanelDropOver ? 'ring-2 ring-blue-400 ring-inset' : ''}`}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50 flex-shrink-0">
@@ -171,6 +175,7 @@ export function ClaudePanel() {
             onClear={clearBasket}
             anonymizationEnabled={anonymizationEnabled}
             onToggleItemAnonymization={toggleItemAnonymization}
+            onAdd={addToBasket}
           />
         </div>
 
