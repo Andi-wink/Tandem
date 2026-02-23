@@ -316,7 +316,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         setState(prev => ({ ...prev, sessionId: existing.session_id }));
       }
     } catch {
-      // No existing session, that's fine
+      // 404 (no session) returns null above; other errors land here — not critical
     }
   }, []);
 
@@ -344,11 +344,10 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
 
   const setApiKey = useCallback((key: string) => {
     setState(prev => ({ ...prev, apiKey: key }));
-    // Persist API key only — do NOT overwrite user's model preferences
-    fetch(`${BACKEND}/save-model-config`, {
+    fetch(`${BACKEND}/save-api-key`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apiKey: key }),
+      body: JSON.stringify({ provider: 'claude', apiKey: key }),
     }).catch(() => {});
   }, []);
 
@@ -530,7 +529,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     }
     const mid = stateRef.current.meetingId;
     if (mid) {
-      cancelClaudeSession(mid).catch(() => {});
+      cancelClaudeSession(mid).catch(err => console.error('cancelClaudeSession:', err));
     }
     isStreamingRef.current = false;
     setState(prev => ({ ...prev, isStreaming: false }));
@@ -547,7 +546,11 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     isStreamingRef.current = false;
     const mid = stateRef.current.meetingId;
     if (mid) {
-      await clearClaudeSession(mid);
+      try {
+        await clearClaudeSession(mid);
+      } catch (err) {
+        console.error('clearClaudeSession:', err);
+      }
     }
     setState(prev => ({
       ...prev,

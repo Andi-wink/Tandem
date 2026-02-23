@@ -113,18 +113,27 @@ export async function getClaudeSession(
   meetingId: string,
 ): Promise<ClaudeSessionState | null> {
   const res = await fetch(`${BACKEND}/api/claude/session/${encodeURIComponent(meetingId)}`);
-  if (!res.ok) return null;
+  if (!res.ok) {
+    if (res.status === 404) return null;
+    throw new Error(`getClaudeSession failed: ${res.status} ${res.statusText}`);
+  }
   return res.json();
 }
 
 export async function clearClaudeSession(meetingId: string): Promise<void> {
-  await fetch(`${BACKEND}/api/claude/session/${encodeURIComponent(meetingId)}`, {
+  const res = await fetch(`${BACKEND}/api/claude/session/${encodeURIComponent(meetingId)}`, {
     method: 'DELETE',
   });
+  if (!res.ok) {
+    throw new Error(`clearClaudeSession failed: ${res.status} ${res.statusText}`);
+  }
 }
 
 export async function cancelClaudeSession(meetingId: string): Promise<void> {
-  await fetch(`${BACKEND}/api/claude/cancel/${encodeURIComponent(meetingId)}`, {
+  const res = await fetch(`${BACKEND}/api/claude/cancel/${encodeURIComponent(meetingId)}`, {
     method: 'POST',
   });
+  if (!res.ok) {
+    throw new Error(`cancelClaudeSession failed: ${res.status} ${res.statusText}`);
+  }
 }
