@@ -5,6 +5,19 @@ import { ContextBasketItem } from '@/contexts/ClaudeContext';
 export const BASKET_ITEM_MIME = 'application/x-tandem-basket-item';
 
 /**
+ * Module-level flag tracking whether an internal basket drag is in progress.
+ * WebView2 on Windows doesn't reliably expose custom MIME types in
+ * dataTransfer.types during dragenter/dragover, so we use this flag
+ * as the primary detection mechanism.
+ */
+let _internalDragActive = false;
+
+/** Check if the current drag is an internal basket-item drag. */
+function isBasketDrag(e: DragEvent): boolean {
+  return _internalDragActive || Array.from(e.dataTransfer.types).includes(BASKET_ITEM_MIME);
+}
+
+/**
  * Makes an element draggable as a ContextBasketItem.
  * Pass `null` to disable dragging (e.g. when the item is already in the basket).
  */
@@ -16,12 +29,16 @@ export function useDraggableBasketItem(item: ContextBasketItem | null) {
       e.preventDefault();
       return;
     }
-    e.dataTransfer.setData(BASKET_ITEM_MIME, JSON.stringify(item));
+    const json = JSON.stringify(item);
+    e.dataTransfer.setData(BASKET_ITEM_MIME, json);
+    e.dataTransfer.setData('text/plain', json); // fallback for restrictive webviews
     e.dataTransfer.effectAllowed = 'copy';
+    _internalDragActive = true;
     setIsDragging(true);
   }, [item]);
 
   const onDragEnd = useCallback(() => {
+    _internalDragActive = false;
     setIsDragging(false);
   }, []);
 
@@ -47,7 +64,7 @@ export function useDropZone(onDrop: (item: ContextBasketItem) => void) {
     e.preventDefault();
     e.stopPropagation();
     dragCounterRef.current++;
-    if (e.dataTransfer.types.includes(BASKET_ITEM_MIME)) {
+    if (isBasketDrag(e)) {
       setIsOver(true);
     }
   }, []);
@@ -55,7 +72,7 @@ export function useDropZone(onDrop: (item: ContextBasketItem) => void) {
   const onDragOver = useCallback((e: DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (e.dataTransfer.types.includes(BASKET_ITEM_MIME)) {
+    if (isBasketDrag(e)) {
       e.dataTransfer.dropEffect = 'copy';
     }
   }, []);
@@ -75,12 +92,15 @@ export function useDropZone(onDrop: (item: ContextBasketItem) => void) {
     dragCounterRef.current = 0;
     setIsOver(false);
 
-    const json = e.dataTransfer.getData(BASKET_ITEM_MIME);
+    // Try custom MIME first, fall back to text/plain
+    const json = e.dataTransfer.getData(BASKET_ITEM_MIME) || e.dataTransfer.getData('text/plain');
     if (!json) return;
 
     try {
       const item: ContextBasketItem = JSON.parse(json);
-      onDrop(item);
+      if (item.id && item.type && item.fullContent) {
+        onDrop(item);
+      }
     } catch (err) {
       console.error('Failed to parse dropped basket item:', err);
     }
