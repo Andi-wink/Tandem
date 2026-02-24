@@ -38,17 +38,17 @@ const DraggableChunkButton = memo(function DraggableChunkButton({
       } ${
         inBasket
           ? 'bg-blue-50 border-blue-200 text-blue-600 cursor-default'
-          : 'bg-white border-gray-200 text-gray-700 hover:border-blue-300 hover:bg-blue-50 cursor-grab'
+          : 'bg-background border-border text-foreground hover:border-blue-300 hover:bg-blue-50 cursor-grab'
       }`}
       title={inBasket ? 'Already in context' : `Drag or click to add ${chunk.label} to AI context`}
     >
       <FileText className="w-3 h-3 flex-shrink-0" />
       <span className="font-medium">{chunk.label}</span>
-      <span className="text-gray-400">({chunk.segmentCount})</span>
+      <span className="text-muted-foreground">({chunk.segmentCount})</span>
       {inBasket ? (
         <Check className="w-3 h-3 text-blue-500" />
       ) : (
-        <Plus className="w-3 h-3 text-gray-400" />
+        <Plus className="w-3 h-3 text-muted-foreground" />
       )}
     </button>
   );
@@ -74,8 +74,8 @@ export function TranscriptChunks({ chunks }: TranscriptChunksProps) {
   };
 
   return (
-    <div className="px-3 py-2 border-b border-gray-200 bg-gray-50">
-      <div className="text-xs font-medium text-gray-500 mb-1.5">
+    <div className="px-3 py-2 border-b border-border bg-muted">
+      <div className="text-xs font-medium text-muted-foreground mb-1.5">
         Transcript chunks ({chunks.length})
       </div>
       <div className="flex flex-wrap gap-1.5">

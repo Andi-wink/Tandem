@@ -25,6 +25,7 @@ import { ScreenshotProvider } from '@/contexts/ScreenshotContext'
 import { ClipboardProvider } from '@/contexts/ClipboardContext'
 import { ClaudeProvider } from '@/contexts/ClaudeContext'
 import { ClaudePanel } from '@/components/ClaudePanel'
+import { ThemeProvider } from 'next-themes'
 
 const sourceSans3 = Source_Sans_3({
   subsets: ['latin'],
@@ -102,8 +103,9 @@ export default function RootLayout({
   }
 
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body className={`${sourceSans3.variable} font-sans antialiased`}>
+        <ThemeProvider attribute="class" defaultTheme="dark" storageKey="tandem-theme" enableSystem={false}>
         <AnalyticsProvider>
           <RecordingStateProvider>
             <TranscriptProvider>
@@ -144,6 +146,7 @@ export default function RootLayout({
             </TranscriptProvider>
           </RecordingStateProvider>
         </AnalyticsProvider>
+        </ThemeProvider>
         <Toaster position="bottom-center" richColors closeButton />
       </body>
     </html>
