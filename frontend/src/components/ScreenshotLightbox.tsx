@@ -38,7 +38,7 @@ export function ScreenshotLightbox({ screenshot, onClose }: ScreenshotLightboxPr
           onClick={onClose}
           className="absolute -top-3 -right-3 z-10 rounded-full bg-gray-800 border border-gray-600 p-1.5 hover:bg-gray-700 transition-colors"
         >
-          <X className="w-4 h-4 text-gray-300" />
+          <X className="w-4 h-4 text-muted-foreground/50" />
         </button>
         <img
           src={imageSrc}
@@ -46,7 +46,7 @@ export function ScreenshotLightbox({ screenshot, onClose }: ScreenshotLightboxPr
           className="max-w-full max-h-[90vh] rounded-lg shadow-2xl object-contain"
         />
         <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-black/60 to-transparent rounded-b-lg">
-          <div className="flex items-center justify-between text-xs text-gray-300">
+          <div className="flex items-center justify-between text-xs text-muted-foreground/50">
             <span>{screenshot.timestamp} - {screenshot.capture_mode}</span>
             <span>{screenshot.width} x {screenshot.height}</span>
           </div>

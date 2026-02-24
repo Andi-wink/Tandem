@@ -28,7 +28,7 @@ export const TimelineFilterBar = memo(function TimelineFilterBar({
   ];
 
   return (
-    <div className="flex items-center gap-1 px-3 py-1.5 border-b border-gray-800/50">
+    <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border">
       {filters.map(({ value, label, icon: Icon, count }) => (
         <button
           key={value}
@@ -36,7 +36,7 @@ export const TimelineFilterBar = memo(function TimelineFilterBar({
           className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
             filter === value
               ? 'bg-blue-600/20 text-blue-300 border border-blue-600/30'
-              : 'text-gray-400 hover:text-gray-300 hover:bg-gray-800/50'
+              : 'text-muted-foreground hover:text-muted-foreground/50 hover:bg-muted'
           }`}
         >
           <Icon className="w-3 h-3" />

@@ -200,7 +200,7 @@ export default function Home() {
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: 'easeOut' }}
-      className="flex flex-col h-screen bg-gray-50"
+      className="flex flex-col h-screen bg-background"
     >
       {/* All Modals supported*/}
       <SettingsModals
@@ -237,7 +237,7 @@ export default function Home() {
                 }}
               >
                 <div className="w-2/3 max-w-[750px] flex justify-center">
-                  <div className="bg-white rounded-full shadow-lg flex items-center">
+                  <div className="bg-card rounded-full shadow-lg flex items-center">
                     <RecordingControls
                       isRecording={recordingState.isRecording}
                       onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}
@@ -282,10 +282,10 @@ export default function Home() {
                 projectDir,
               );
             }}
-            className="fixed right-4 top-4 z-30 bg-white border border-gray-200 rounded-full p-2 shadow-md hover:shadow-lg hover:bg-gray-50 transition-all"
+            className="fixed right-4 top-4 z-30 bg-card border border-border rounded-full p-2 shadow-md hover:shadow-lg hover:bg-muted transition-all"
             title="Open AI Assistant"
           >
-            <Bot className="w-5 h-5 text-gray-600" />
+            <Bot className="w-5 h-5 text-muted-foreground" />
           </button>
         )}
       </div>

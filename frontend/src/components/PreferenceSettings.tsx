@@ -159,33 +159,33 @@ export function PreferenceSettings() {
   return (
     <div className="space-y-6">
       {/* Notifications Section */}
-      <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
+      <div className="bg-background rounded-lg border border-border p-6 shadow-sm">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">Notifications</h3>
-            <p className="text-sm text-gray-600">Enable or disable notifications of start and end of meeting</p>
+            <h3 className="text-lg font-semibold text-foreground mb-2">Notifications</h3>
+            <p className="text-sm text-muted-foreground">Enable or disable notifications of start and end of meeting</p>
           </div>
           <Switch checked={notificationsEnabledValue} onCheckedChange={setNotificationsEnabled} />
         </div>
       </div>
 
       {/* Data Storage Locations Section */}
-      <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Data Storage Locations</h3>
-        <p className="text-sm text-gray-600 mb-6">
+      <div className="bg-background rounded-lg border border-border p-6 shadow-sm">
+        <h3 className="text-lg font-semibold text-foreground mb-4">Data Storage Locations</h3>
+        <p className="text-sm text-muted-foreground mb-6">
           View and access where Tandem stores your data
         </p>
 
         <div className="space-y-4">
           {/* Database Location */}
-          {/* <div className="p-4 border rounded-lg bg-gray-50">
+          {/* <div className="p-4 border rounded-lg bg-muted">
             <div className="font-medium mb-2">Database</div>
-            <div className="text-sm text-gray-600 mb-3 break-all font-mono text-xs">
+            <div className="text-sm text-muted-foreground mb-3 break-all font-mono text-xs">
               {storageLocations?.database || 'Loading...'}
             </div>
             <button
               onClick={() => handleOpenFolder('database')}
-              className="flex items-center gap-2 px-3 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
+              className="flex items-center gap-2 px-3 py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors"
             >
               <FolderOpen className="w-4 h-4" />
               Open Folder
@@ -193,14 +193,14 @@ export function PreferenceSettings() {
           </div> */}
 
           {/* Models Location */}
-          {/* <div className="p-4 border rounded-lg bg-gray-50">
+          {/* <div className="p-4 border rounded-lg bg-muted">
             <div className="font-medium mb-2">Whisper Models</div>
-            <div className="text-sm text-gray-600 mb-3 break-all font-mono text-xs">
+            <div className="text-sm text-muted-foreground mb-3 break-all font-mono text-xs">
               {storageLocations?.models || 'Loading...'}
             </div>
             <button
               onClick={() => handleOpenFolder('models')}
-              className="flex items-center gap-2 px-3 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
+              className="flex items-center gap-2 px-3 py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors"
             >
               <FolderOpen className="w-4 h-4" />
               Open Folder
@@ -208,14 +208,14 @@ export function PreferenceSettings() {
           </div> */}
 
           {/* Recordings Location */}
-          <div className="p-4 border rounded-lg bg-gray-50">
+          <div className="p-4 border rounded-lg bg-muted">
             <div className="font-medium mb-2">Meeting Recordings</div>
-            <div className="text-sm text-gray-600 mb-3 break-all font-mono text-xs">
+            <div className="text-sm text-muted-foreground mb-3 break-all font-mono text-xs">
               {storageLocations?.recordings || 'Loading...'}
             </div>
             <button
               onClick={() => handleOpenFolder('recordings')}
-              className="flex items-center gap-2 px-3 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
+              className="flex items-center gap-2 px-3 py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors"
             >
               <FolderOpen className="w-4 h-4" />
               Open Folder
@@ -231,18 +231,18 @@ export function PreferenceSettings() {
       </div>
 
       {/* Analytics Section */}
-      <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
+      <div className="bg-background rounded-lg border border-border p-6 shadow-sm">
         <AnalyticsConsentSwitch />
       </div>
 
       {/* AI Assistant API Key Section */}
-      <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
-        <h3 className="text-lg font-semibold text-gray-900 mb-1">AI Assistant (Claude)</h3>
-        <p className="text-sm text-gray-600 mb-4">
+      <div className="bg-background rounded-lg border border-border p-6 shadow-sm">
+        <h3 className="text-lg font-semibold text-foreground mb-1">AI Assistant (Claude)</h3>
+        <p className="text-sm text-muted-foreground mb-4">
           API key for the in-app AI assistant panel. Stored locally in the app database.
         </p>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+          <label className="block text-sm font-medium text-foreground mb-1">
             Anthropic API Key
           </label>
           <div className="flex gap-2">
@@ -252,12 +252,12 @@ export function PreferenceSettings() {
                 value={apiKeyInput}
                 onChange={(e) => { setApiKeyInput(e.target.value); setApiKeySaved(false); }}
                 placeholder="sk-ant-..."
-                className="w-full px-3 py-2 text-sm bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 pr-10"
+                className="w-full px-3 py-2 text-sm bg-background border border-border rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 pr-10"
               />
               <button
                 type="button"
                 onClick={() => setApiKeyVisible(!apiKeyVisible)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-muted-foreground"
               >
                 {apiKeyVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
@@ -278,7 +278,7 @@ export function PreferenceSettings() {
           {(apiKey || apiKeySaved) && (
             <p className="mt-1.5 text-xs text-green-600">Key is set and saved.</p>
           )}
-          <p className="mt-2 text-xs text-gray-500">
+          <p className="mt-2 text-xs text-muted-foreground">
             Get your key at{' '}
             <a href="https://console.anthropic.com/" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
               console.anthropic.com

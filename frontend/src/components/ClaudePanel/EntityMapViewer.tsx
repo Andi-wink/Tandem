@@ -13,10 +13,10 @@ export function EntityMapViewer({ entityMap, onClear }: EntityMapViewerProps) {
   if (entries.length === 0) return null;
 
   return (
-    <div className="border-b border-gray-200 bg-gray-50">
+    <div className="border-b border-border bg-muted">
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full px-3 py-1.5 flex items-center justify-between text-xs text-gray-500 hover:text-gray-700"
+        className="w-full px-3 py-1.5 flex items-center justify-between text-xs text-muted-foreground hover:text-foreground"
       >
         <span className="flex items-center gap-1">
           {isExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
@@ -24,7 +24,7 @@ export function EntityMapViewer({ entityMap, onClear }: EntityMapViewerProps) {
         </span>
         <button
           onClick={(e) => { e.stopPropagation(); onClear(); }}
-          className="text-gray-400 hover:text-red-500 p-0.5"
+          className="text-muted-foreground hover:text-red-500 p-0.5"
           title="Clear entity map"
         >
           <Trash2 className="w-3 h-3" />
@@ -37,7 +37,7 @@ export function EntityMapViewer({ entityMap, onClear }: EntityMapViewerProps) {
             {entries.map(([real, surrogate]) => (
               <div key={real} className="flex items-center gap-2 text-[11px] py-0.5">
                 <span className="text-red-400 line-through truncate flex-1 min-w-0">{real}</span>
-                <span className="text-gray-400 flex-shrink-0">&rarr;</span>
+                <span className="text-muted-foreground flex-shrink-0">&rarr;</span>
                 <span className="text-emerald-500 truncate flex-1 min-w-0">{surrogate}</span>
               </div>
             ))}

@@ -21,7 +21,7 @@ const typeIcons: Record<string, React.ElementType> = {
 export function ContextBasket({ items, onRemove, onClear, anonymizationEnabled, onToggleItemAnonymization }: ContextBasketProps) {
   if (items.length === 0) {
     return (
-      <div className="px-3 py-2 text-xs text-gray-400 italic border-b border-gray-100">
+      <div className="px-3 py-2 text-xs text-muted-foreground italic border-b border-border">
         Drag items here or use &ldquo;Add to AI&rdquo; buttons on transcript chunks, screenshots, or clips
       </div>
     );
@@ -31,14 +31,14 @@ export function ContextBasket({ items, onRemove, onClear, anonymizationEnabled, 
   const approxTokens = Math.round(totalChars / 4);
 
   return (
-    <div className="border-b border-gray-200">
-      <div className="px-3 py-1.5 flex items-center justify-between bg-gray-50 border-b border-gray-100">
-        <span className="text-xs font-medium text-gray-500">
+    <div className="border-b border-border">
+      <div className="px-3 py-1.5 flex items-center justify-between bg-muted border-b border-border">
+        <span className="text-xs font-medium text-muted-foreground">
           Context ({items.length} items, ~{approxTokens.toLocaleString()} tokens)
         </span>
         <button
           onClick={onClear}
-          className="text-xs text-gray-400 hover:text-gray-600"
+          className="text-xs text-muted-foreground hover:text-foreground"
         >
           Clear all
         </button>
@@ -51,7 +51,7 @@ export function ContextBasket({ items, onRemove, onClear, anonymizationEnabled, 
           return (
             <div
               key={item.id}
-              className="flex items-start gap-1.5 p-1.5 rounded bg-blue-50 border border-blue-100 text-xs group"
+              className="flex items-start gap-1.5 p-1.5 rounded bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800/30 text-xs group"
             >
               {/* F005: Per-item anonymization shield */}
               {onToggleItemAnonymization && (
@@ -60,7 +60,7 @@ export function ContextBasket({ items, onRemove, onClear, anonymizationEnabled, 
                   className={`mt-0.5 flex-shrink-0 transition-colors ${
                     willAnonymize
                       ? 'text-emerald-500 hover:text-emerald-600'
-                      : 'text-gray-300 hover:text-gray-400'
+                      : 'text-muted-foreground/50 hover:text-muted-foreground'
                   }`}
                   title={willAnonymize ? 'PII will be anonymized (click to send raw)' : 'Sending raw (click to anonymize)'}
                 >
@@ -69,17 +69,17 @@ export function ContextBasket({ items, onRemove, onClear, anonymizationEnabled, 
               )}
               <Icon className="w-3.5 h-3.5 mt-0.5 text-blue-500 flex-shrink-0" />
               <div className="flex-1 min-w-0">
-                <div className="font-medium text-blue-700 truncate">{item.label}</div>
-                <div className="text-gray-500 truncate">{item.preview}</div>
+                <div className="font-medium text-blue-700 dark:text-blue-300 truncate">{item.label}</div>
+                <div className="text-muted-foreground truncate">{item.preview}</div>
                 {isOverridden && (
-                  <div className="text-[10px] text-gray-400 italic">
+                  <div className="text-[10px] text-muted-foreground italic">
                     {willAnonymize ? 'Anonymization ON (overridden)' : 'Anonymization OFF (overridden)'}
                   </div>
                 )}
               </div>
               <button
                 onClick={() => onRemove(item.id)}
-                className="opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-gray-600 flex-shrink-0"
+                className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground flex-shrink-0"
               >
                 <X className="w-3.5 h-3.5" />
               </button>

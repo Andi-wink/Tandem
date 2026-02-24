@@ -15,9 +15,9 @@ test.describe('Home Page', () => {
     await tauriPage.goto('/');
     await tauriPage.waitForLoadState('networkidle');
 
-    // The recording controls are a white pill-shaped container at the bottom.
+    // The recording controls are a pill-shaped container at the bottom.
     // Use the inner container with specific spacing class to disambiguate.
-    const recordingControls = tauriPage.locator('div.space-x-2.bg-white.rounded-full.shadow-lg');
+    const recordingControls = tauriPage.locator('div.space-x-2.bg-card.rounded-full.shadow-lg');
     await expect(recordingControls).toBeVisible({ timeout: 15_000 });
   });
 

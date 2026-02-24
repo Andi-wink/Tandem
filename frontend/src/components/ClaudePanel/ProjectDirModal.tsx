@@ -50,22 +50,22 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
   return (
     // B027: Close on backdrop click
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onCancel}>
-      <div className="bg-white rounded-lg shadow-xl w-[420px] max-w-[90vw]" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
+      <div className="bg-background rounded-lg shadow-xl w-[420px] max-w-[90vw]" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
           <h3 className="font-semibold text-sm">AI Assistant — Setup</h3>
-          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600">
+          <button onClick={onCancel} className="text-muted-foreground hover:text-foreground">
             <X className="w-4 h-4" />
           </button>
         </div>
 
         <div className="px-4 py-4 space-y-4">
-          <p className="text-sm text-gray-600">
+          <p className="text-sm text-muted-foreground">
             Set up the AI assistant for <strong>{meetingTitle}</strong>.
           </p>
 
           {/* API Key input */}
           <div className="space-y-2">
-            <label className="flex items-center gap-1.5 text-sm font-medium text-gray-700">
+            <label className="flex items-center gap-1.5 text-sm font-medium text-foreground">
               <Key className="w-3.5 h-3.5" />
               Anthropic API Key
             </label>
@@ -74,7 +74,7 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
               value={keyInput}
               onChange={(e) => setKeyInput(e.target.value)}
               placeholder="sk-ant-..."
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             {keyInput && !isKeyValid && (
               <p className="text-xs text-amber-600">API key should start with &quot;sk-ant-&quot;</p>
@@ -91,13 +91,13 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
 
           {/* Project directory selection */}
           <div className="space-y-2">
-            <div className="text-sm font-medium text-gray-700">Project Directory</div>
-            <p className="text-xs text-gray-500">
+            <div className="text-sm font-medium text-foreground">Project Directory</div>
+            <p className="text-xs text-muted-foreground">
               Where the AI assistant will work. A CLAUDE.md with meeting context will be created here.
             </p>
 
             {/* Default: meeting folder */}
-            <label className="flex items-start gap-2 p-3 rounded border border-gray-200 cursor-pointer hover:bg-gray-50">
+            <label className="flex items-start gap-2 p-3 rounded border border-border cursor-pointer hover:bg-muted">
               <input
                 type="radio"
                 name="dir"
@@ -107,12 +107,12 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
               />
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium">Meeting folder (default)</div>
-                <div className="text-xs text-gray-400 truncate">{defaultDir}</div>
+                <div className="text-xs text-muted-foreground truncate">{defaultDir}</div>
               </div>
             </label>
 
             {/* Custom: existing repo */}
-            <label className="flex items-start gap-2 p-3 rounded border border-gray-200 cursor-pointer hover:bg-gray-50">
+            <label className="flex items-start gap-2 p-3 rounded border border-border cursor-pointer hover:bg-muted">
               <input
                 type="radio"
                 name="dir"
@@ -123,7 +123,7 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium">Existing repository</div>
                 <div className="flex items-center gap-2 mt-1">
-                  <div className="text-xs text-gray-400 truncate flex-1">
+                  <div className="text-xs text-muted-foreground truncate flex-1">
                     {!useDefault ? selectedDir : 'Select a folder...'}
                   </div>
                   <Button
@@ -142,7 +142,7 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
           </div>
         </div>
 
-        <div className="flex justify-end gap-2 px-4 py-3 border-t border-gray-200">
+        <div className="flex justify-end gap-2 px-4 py-3 border-t border-border">
           <Button variant="outline" size="sm" onClick={onCancel}>Cancel</Button>
           <Button size="sm" onClick={handleConfirm} disabled={!canConfirm}>Start Session</Button>
         </div>

@@ -118,7 +118,7 @@ export function ClaudePanel() {
   return (
     <>
       <div
-        className={`fixed right-0 top-0 bottom-0 w-[420px] bg-white border-l border-gray-200 shadow-lg z-40 flex flex-col transition-transform duration-200 ${isPanelOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}
+        className={`fixed right-0 top-0 bottom-0 w-[420px] bg-background border-l border-border shadow-lg z-40 flex flex-col transition-transform duration-200 ${isPanelOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}
       >
         {/* Full-panel drop overlay — shown while an internal drag is active so
             the entire sidebar accepts drops without relying on event bubbling
@@ -141,18 +141,18 @@ export function ClaudePanel() {
         )}
 
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50 flex-shrink-0">
+        <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-muted flex-shrink-0">
           <div className="flex-1 min-w-0">
             <div className="font-semibold text-sm truncate">{meetingTitle || 'AI Assistant'}</div>
             {projectDir && (
-              <div className="text-xs text-gray-400 truncate">{projectDir}</div>
+              <div className="text-xs text-muted-foreground truncate">{projectDir}</div>
             )}
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
             {sessionId && (
               <button
                 onClick={clearSession}
-                className="p-1 text-gray-400 hover:text-red-500"
+                className="p-1 text-muted-foreground hover:text-red-500"
                 title="Clear session"
               >
                 <Trash2 className="w-4 h-4" />
@@ -160,7 +160,7 @@ export function ClaudePanel() {
             )}
             <button
               onClick={closePanel}
-              className="p-1 text-gray-400 hover:text-gray-600"
+              className="p-1 text-muted-foreground hover:text-foreground"
             >
               <X className="w-4 h-4" />
             </button>
@@ -169,9 +169,9 @@ export function ClaudePanel() {
 
         {/* API key not set warning */}
         {!hasApiKey && (
-          <div className="px-3 py-2 bg-amber-50 border-b border-amber-200 flex items-start gap-2 flex-shrink-0">
+          <div className="px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800/30 flex items-start gap-2 flex-shrink-0">
             <AlertCircle className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
-            <div className="text-xs text-amber-700">
+            <div className="text-xs text-amber-700 dark:text-amber-300">
               Anthropic API key not set. It will be requested when you send your first message.
             </div>
           </div>
@@ -205,12 +205,12 @@ export function ClaudePanel() {
         />
 
         {/* Input */}
-        <div className="border-t border-gray-200 p-3 flex-shrink-0">
+        <div className="border-t border-border p-3 flex-shrink-0">
           <div className="flex items-end gap-2">
             <Popover>
               <PopoverTrigger asChild>
                 <button
-                  className="flex items-center gap-0.5 text-[10px] text-gray-400 hover:text-gray-600 pb-2 flex-shrink-0"
+                  className="flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground pb-2 flex-shrink-0"
                   title="Select model"
                 >
                   <ChevronUp className="w-3 h-3" />
@@ -222,7 +222,7 @@ export function ClaudePanel() {
                   <button
                     key={m.id}
                     onClick={() => setModel(m.id)}
-                    className="flex items-center justify-between w-full px-2 py-1.5 text-xs rounded hover:bg-gray-100"
+                    className="flex items-center justify-between w-full px-2 py-1.5 text-xs rounded hover:bg-muted"
                   >
                     <span>{m.label}</span>
                     {m.id === selectedModel && <Check className="w-3 h-3 text-blue-500" />}
@@ -236,7 +236,7 @@ export function ClaudePanel() {
               className={`flex items-center gap-0.5 text-[10px] pb-2 flex-shrink-0 transition-colors ${
                 anonymizationEnabled
                   ? 'text-emerald-500 hover:text-emerald-600'
-                  : 'text-gray-300 hover:text-gray-400'
+                  : 'text-muted-foreground/50 hover:text-muted-foreground'
               }`}
               title={anonymizationEnabled ? 'PII anonymization ON — click to disable' : 'PII anonymization OFF — click to enable'}
             >
@@ -251,7 +251,7 @@ export function ClaudePanel() {
               placeholder="Ask about this meeting..."
               disabled={isStreaming}
               rows={1}
-              className="flex-1 resize-none border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:bg-gray-50"
+              className="flex-1 resize-none border border-border rounded-lg px-3 py-2 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:bg-muted"
             />
             {isStreaming ? (
               <Button
@@ -275,7 +275,7 @@ export function ClaudePanel() {
             )}
           </div>
           {isStreaming && (
-            <div className="text-xs text-gray-400 mt-1 animate-pulse">AI is thinking...</div>
+            <div className="text-xs text-muted-foreground mt-1 animate-pulse">AI is thinking...</div>
           )}
         </div>
       </div>
