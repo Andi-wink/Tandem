@@ -1,4 +1,4 @@
-# Meetily API Documentation
+# Tandem API Documentation
 
 ## Prerequisites
 
