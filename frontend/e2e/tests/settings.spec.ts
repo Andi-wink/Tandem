@@ -1,0 +1,56 @@
+import { test, expect } from '../fixtures/tauri-mock';
+
+test.describe('Settings Page', () => {
+  test.beforeEach(async ({ tauriPage }) => {
+    await tauriPage.goto('/settings');
+    await tauriPage.waitForLoadState('networkidle');
+  });
+
+  test('renders settings page with heading and back button', async ({ tauriPage }) => {
+    await expect(tauriPage.getByRole('heading', { name: 'Settings' })).toBeVisible({ timeout: 10_000 });
+    await expect(tauriPage.getByText('Back')).toBeVisible();
+  });
+
+  test('shows all four tabs', async ({ tauriPage }) => {
+    await expect(tauriPage.getByRole('tab', { name: 'General' })).toBeVisible({ timeout: 10_000 });
+    await expect(tauriPage.getByRole('tab', { name: 'Recordings' })).toBeVisible();
+    await expect(tauriPage.getByRole('tab', { name: 'Transcription' })).toBeVisible();
+    await expect(tauriPage.getByRole('tab', { name: 'Summary' })).toBeVisible();
+  });
+
+  test('General tab is active by default', async ({ tauriPage }) => {
+    const generalTab = tauriPage.getByRole('tab', { name: 'General' });
+    await expect(generalTab).toHaveAttribute('data-state', 'active', { timeout: 10_000 });
+  });
+
+  test('can switch to Recordings tab', async ({ tauriPage }) => {
+    await tauriPage.getByRole('tab', { name: 'Recordings' }).click();
+    await expect(tauriPage.getByRole('tab', { name: 'Recordings' })).toHaveAttribute('data-state', 'active');
+    await expect(tauriPage.getByRole('tab', { name: 'General' })).toHaveAttribute('data-state', 'inactive');
+  });
+
+  test('can switch to Transcription tab', async ({ tauriPage }) => {
+    await tauriPage.getByRole('tab', { name: 'Transcription' }).click();
+    await expect(tauriPage.getByRole('tab', { name: 'Transcription' })).toHaveAttribute('data-state', 'active');
+  });
+
+  test('can switch to Summary tab', async ({ tauriPage }) => {
+    await tauriPage.getByRole('tab', { name: 'Summary' }).click();
+    await expect(tauriPage.getByRole('tab', { name: 'Summary' })).toHaveAttribute('data-state', 'active');
+  });
+
+  test('back button navigates to previous page', async ({ tauriPage }) => {
+    // Navigate from home to settings
+    await tauriPage.goto('/');
+    await tauriPage.waitForLoadState('networkidle');
+    await tauriPage.goto('/settings');
+    await tauriPage.waitForLoadState('networkidle');
+    await expect(tauriPage.getByRole('heading', { name: 'Settings' })).toBeVisible({ timeout: 10_000 });
+
+    // Click back
+    await tauriPage.getByText('Back').click();
+
+    // Should go back to home
+    await expect(tauriPage).toHaveURL(/localhost:3118\/?$/);
+  });
+});
