@@ -1,4 +1,4 @@
-import { useCallback, useState, useRef, DragEvent } from 'react';
+import { useCallback, useState, useRef, DragEvent, useSyncExternalStore } from 'react';
 import { ContextBasketItem } from '@/contexts/ClaudeContext';
 
 /** Custom MIME type to identify basket-item drags (avoids OS file-drop interference). */
@@ -11,6 +11,20 @@ export const BASKET_ITEM_MIME = 'application/x-tandem-basket-item';
  * as the primary detection mechanism.
  */
 let _internalDragActive = false;
+const _dragListeners = new Set<() => void>();
+
+function _notifyDragListeners() {
+  _dragListeners.forEach(cb => cb());
+}
+
+/** Subscribe to whether an internal basket drag is currently in progress. */
+export function useDragActive(): boolean {
+  return useSyncExternalStore(
+    (cb) => { _dragListeners.add(cb); return () => { _dragListeners.delete(cb); }; },
+    () => _internalDragActive,
+    () => _internalDragActive,
+  );
+}
 
 /** Check if the current drag is an internal basket-item drag. */
 function isBasketDrag(e: DragEvent): boolean {
@@ -34,11 +48,13 @@ export function useDraggableBasketItem(item: ContextBasketItem | null) {
     e.dataTransfer.setData('text/plain', json); // fallback for restrictive webviews
     e.dataTransfer.effectAllowed = 'copy';
     _internalDragActive = true;
+    _notifyDragListeners();
     setIsDragging(true);
   }, [item]);
 
   const onDragEnd = useCallback(() => {
     _internalDragActive = false;
+    _notifyDragListeners();
     setIsDragging(false);
   }, []);
 

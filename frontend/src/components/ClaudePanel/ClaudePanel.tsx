@@ -8,7 +8,7 @@ import { ContextBasket } from './ContextBasket';
 import { ConversationView } from './ConversationView';
 import { ProjectDirModal } from './ProjectDirModal';
 import { EntityMapViewer } from './EntityMapViewer';
-import { useDropZone } from '@/hooks/useDragAndDrop';
+import { useDropZone, useDragActive } from '@/hooks/useDragAndDrop';
 
 export function ClaudePanel() {
   const {
@@ -46,7 +46,8 @@ export function ClaudePanel() {
   sendMessageRef.current = sendMessage;
 
   const hasApiKey = !!apiKey;
-  const { isOver: isPanelDropOver, dropHandlers: panelDropHandlers } = useDropZone(addToBasket);
+  const isDragActive = useDragActive();
+  const { isOver: isDropOver, dropHandlers: overlayDropHandlers } = useDropZone(addToBasket);
 
   // Auto-focus input when panel opens
   useEffect(() => {
@@ -117,9 +118,28 @@ export function ClaudePanel() {
   return (
     <>
       <div
-        {...panelDropHandlers}
-        className={`fixed right-0 top-0 bottom-0 w-[420px] bg-white border-l border-gray-200 shadow-lg z-40 flex flex-col transition-transform duration-200 ${isPanelOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'} ${isPanelDropOver ? 'ring-2 ring-blue-400 ring-inset' : ''}`}
+        className={`fixed right-0 top-0 bottom-0 w-[420px] bg-white border-l border-gray-200 shadow-lg z-40 flex flex-col transition-transform duration-200 ${isPanelOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}
       >
+        {/* Full-panel drop overlay — shown while an internal drag is active so
+            the entire sidebar accepts drops without relying on event bubbling
+            (which is unreliable in WebView2 on Windows). */}
+        {isDragActive && isPanelOpen && (
+          <div
+            {...overlayDropHandlers}
+            className={`absolute inset-0 z-50 transition-colors ${
+              isDropOver ? 'bg-blue-50/80 ring-2 ring-blue-400 ring-inset' : ''
+            }`}
+          >
+            {isDropOver && (
+              <div className="flex items-center justify-center h-full pointer-events-none">
+                <span className="text-blue-500 text-sm font-medium bg-white/90 px-3 py-1.5 rounded-full shadow-sm">
+                  Drop to add to context
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50 flex-shrink-0">
           <div className="flex-1 min-w-0">
@@ -175,7 +195,6 @@ export function ClaudePanel() {
             onClear={clearBasket}
             anonymizationEnabled={anonymizationEnabled}
             onToggleItemAnonymization={toggleItemAnonymization}
-            onAdd={addToBasket}
           />
         </div>
 

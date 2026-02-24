@@ -1,7 +1,6 @@
 import React from 'react';
 import { X, FileText, Camera, Clipboard, Quote, StickyNote, Shield } from 'lucide-react';
 import { ContextBasketItem } from '@/contexts/ClaudeContext';
-import { useDropZone } from '@/hooks/useDragAndDrop';
 
 interface ContextBasketProps {
   items: ContextBasketItem[];
@@ -9,7 +8,6 @@ interface ContextBasketProps {
   onClear: () => void;
   anonymizationEnabled?: boolean;
   onToggleItemAnonymization?: (itemId: string) => void;
-  onAdd: (item: ContextBasketItem) => void;
 }
 
 const typeIcons: Record<string, React.ElementType> = {
@@ -20,22 +18,11 @@ const typeIcons: Record<string, React.ElementType> = {
   note: StickyNote,
 };
 
-export function ContextBasket({ items, onRemove, onClear, anonymizationEnabled, onToggleItemAnonymization, onAdd }: ContextBasketProps) {
-  const { isOver, dropHandlers } = useDropZone(onAdd);
-
+export function ContextBasket({ items, onRemove, onClear, anonymizationEnabled, onToggleItemAnonymization }: ContextBasketProps) {
   if (items.length === 0) {
     return (
-      <div
-        {...dropHandlers}
-        className={`px-3 py-2 text-xs text-gray-400 italic border-b transition-colors ${
-          isOver
-            ? 'bg-blue-50 border-blue-300 border-dashed border-2'
-            : 'border-gray-100'
-        }`}
-      >
-        {isOver
-          ? 'Drop here to add to context'
-          : 'Drag items here or use \u201cAdd to AI\u201d buttons on transcript chunks, screenshots, or clips'}
+      <div className="px-3 py-2 text-xs text-gray-400 italic border-b border-gray-100">
+        Drag items here or use &ldquo;Add to AI&rdquo; buttons on transcript chunks, screenshots, or clips
       </div>
     );
   }
@@ -44,12 +31,7 @@ export function ContextBasket({ items, onRemove, onClear, anonymizationEnabled, 
   const approxTokens = Math.round(totalChars / 4);
 
   return (
-    <div
-      {...dropHandlers}
-      className={`border-b transition-colors ${
-        isOver ? 'border-blue-300 bg-blue-50/50' : 'border-gray-200'
-      }`}
-    >
+    <div className="border-b border-gray-200">
       <div className="px-3 py-1.5 flex items-center justify-between bg-gray-50 border-b border-gray-100">
         <span className="text-xs font-medium text-gray-500">
           Context ({items.length} items, ~{approxTokens.toLocaleString()} tokens)
