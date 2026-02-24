@@ -488,7 +488,11 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
         TranscriptionEngine::Parakeet(parakeet_engine) => {
             match parakeet_engine.transcribe_audio(speech_samples).await {
                 Ok(text) => {
-                    let cleaned_text = text.trim().to_string();
+                    // Apply the same repetition filter used by Whisper to catch
+                    // hallucinated repetitive output (e.g. "AAAAAAA", "um um um")
+                    let cleaned_text = crate::whisper_engine::WhisperEngine::clean_repetitive_text(
+                        text.trim(),
+                    );
                     if cleaned_text.is_empty() {
                         return Ok((String::new(), None, false));
                     }

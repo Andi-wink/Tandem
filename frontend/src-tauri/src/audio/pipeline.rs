@@ -48,13 +48,12 @@ impl AudioMixerRingBuffer {
 
     fn add_samples(&mut self, device_type: DeviceType, samples: Vec<f32>) {
         // Log buffer health periodically for diagnostics
-        static mut SAMPLE_COUNTER: u64 = 0;
-        unsafe {
-            SAMPLE_COUNTER += 1;
-            if SAMPLE_COUNTER % 200 == 0 {
-                debug!("📊 Ring buffer status: mic={} samples, sys={} samples (max={})",
-                       self.mic_buffer.len(), self.system_buffer.len(), self.max_buffer_size);
-            }
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SAMPLE_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let count = SAMPLE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        if count % 200 == 0 {
+            debug!("📊 Ring buffer status: mic={} samples, sys={} samples (max={})",
+                   self.mic_buffer.len(), self.system_buffer.len(), self.max_buffer_size);
         }
 
         match device_type {

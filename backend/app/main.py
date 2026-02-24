@@ -593,10 +593,22 @@ async def save_transcript_config(request: SaveTranscriptConfigRequest):
 class GetApiKeyRequest(BaseModel):
     provider: str
 
+class SaveApiKeyRequest(BaseModel):
+    provider: str
+    apiKey: str
+
 @app.post("/get-api-key")
 async def get_api_key(request: GetApiKeyRequest):
     try:
         return await db.get_api_key(request.provider)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/save-api-key")
+async def save_api_key(request: SaveApiKeyRequest):
+    try:
+        await db.save_api_key(request.apiKey, request.provider)
+        return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

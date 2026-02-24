@@ -178,17 +178,17 @@ class DatabaseManager:
                 
                 try:
                     # First try to update existing process
-                    await conn.execute(
+                    cursor = await conn.execute(
                         """
-                        UPDATE summary_processes 
+                        UPDATE summary_processes
                         SET status = ?, updated_at = ?, start_time = ?, error = NULL, result = NULL
                         WHERE meeting_id = ?
                         """,
                         ("PENDING", now, now, meeting_id)
                     )
-                    
+
                     # If no rows were updated, insert a new one
-                    if conn.total_changes == 0:
+                    if cursor.rowcount == 0:
                         await conn.execute(
                             "INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, start_time) VALUES (?, ?, ?, ?, ?)",
                             (meeting_id, "PENDING", now, now, now)
@@ -301,14 +301,14 @@ class DatabaseManager:
                 
                 try:
                     # First try to update existing transcript
-                    await conn.execute("""
-                        UPDATE transcript_chunks 
+                    cursor = await conn.execute("""
+                        UPDATE transcript_chunks
                         SET transcript_text = ?, model = ?, model_name = ?, chunk_size = ?, overlap = ?, created_at = ?
                         WHERE meeting_id = ?
                     """, (transcript_text, model, model_name, chunk_size, overlap, now, meeting_id))
-                    
+
                     # If no rows were updated, insert a new one
-                    if conn.total_changes == 0:
+                    if cursor.rowcount == 0:
                         await conn.execute("""
                             INSERT INTO transcript_chunks (meeting_id, transcript_text, model, model_name, chunk_size, overlap, created_at)
                             VALUES (?, ?, ?, ?, ?, ?, ?)

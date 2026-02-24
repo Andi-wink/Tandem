@@ -383,7 +383,8 @@ impl WhisperEngine {
     }
     
     // Enhanced function to clean repetitive text patterns and meaningless outputs
-    fn clean_repetitive_text(text: &str) -> String {
+    // Public so other transcription providers (e.g. Parakeet) can reuse this filter
+    pub fn clean_repetitive_text(text: &str) -> String {
         if text.is_empty() {
             return String::new();
         }
