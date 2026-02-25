@@ -22,22 +22,18 @@ export function useRecordingStateSync(
 ): UseRecordingStateSyncReturn {
   const [isRecordingDisabled, setIsRecordingDisabled] = useState(false);
 
+  // R016: Reduced polling frequency (RecordingStateContext already polls at 500ms).
+  // This hook only bridges the local page-level isRecording state with the backend
+  // as a fallback for edge cases where context events are missed.
   useEffect(() => {
-    console.log('Setting up recording state check effect, current isRecording:', isRecording);
-
     const checkRecordingState = async () => {
       try {
-        console.log('checkRecordingState called');
-        console.log('About to call is_recording command');
         const isCurrentlyRecording = await recordingService.isRecording();
-        console.log('checkRecordingState: backend recording =', isCurrentlyRecording, 'UI recording =', isRecording);
 
         if (isCurrentlyRecording && !isRecording) {
-          console.log('Recording is active in backend but not in UI, synchronizing state...');
           setIsRecording(true);
           setIsMeetingActive(true);
         } else if (!isCurrentlyRecording && isRecording) {
-          console.log('Recording is inactive in backend but active in UI, synchronizing state...');
           setIsRecording(false);
         }
       } catch (error) {
@@ -45,21 +41,10 @@ export function useRecordingStateSync(
       }
     };
 
-    // Test if Tauri is available
-    console.log('Testing Tauri availability...');
     if (typeof window !== 'undefined' && (window as any).__TAURI__) {
-      console.log('Tauri is available, starting state check');
       checkRecordingState();
-
-      // Set up a polling interval to periodically check recording state
-      const interval = setInterval(checkRecordingState, 1000); // Check every 1 second
-
-      return () => {
-        console.log('Cleaning up recording state check interval');
-        clearInterval(interval);
-      };
-    } else {
-      console.log('Tauri is not available, skipping state check');
+      const interval = setInterval(checkRecordingState, 5000); // R016: 5s (was 1s)
+      return () => clearInterval(interval);
     }
   }, [isRecording, setIsRecording, setIsMeetingActive]);
 

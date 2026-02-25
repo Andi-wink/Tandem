@@ -69,16 +69,17 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
 
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // NEW: Status setter with logging
-  const setStatus = useCallback((status: RecordingStatus, message?: string) => {
-    console.log(`[RecordingState] Status: ${state.status} → ${status}`, message || '');
-
-    setState(prev => ({
-      ...prev,
-      status,
-      statusMessage: message,
-    }));
-  }, [state.status, state.isRecording, state.isPaused]);
+  // R016: Status setter — uses functional update to avoid stale closure
+  const setStatus = useCallback((newStatus: RecordingStatus, message?: string) => {
+    setState(prev => {
+      console.log(`[RecordingState] Status: ${prev.status} → ${newStatus}`, message || '');
+      return {
+        ...prev,
+        status: newStatus,
+        statusMessage: message,
+      };
+    });
+  }, []);
 
   /**
    * Sync recording state with backend
