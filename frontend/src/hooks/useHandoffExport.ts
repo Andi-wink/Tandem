@@ -149,7 +149,7 @@ export function useHandoffExport(): UseHandoffExportReturn {
 
       // Write file
       const filePath = `${folderPathRef.current}/HANDOFF.md`;
-      await invoke('save_transcript', { file_path: filePath, content: markdown });
+      await invoke('save_transcript', { filePath, content: markdown });
 
       toast.success('Handoff file saved', {
         description: filePath,
