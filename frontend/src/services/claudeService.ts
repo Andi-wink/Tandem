@@ -43,6 +43,7 @@ export function streamClaudeSession(
   const controller = new AbortController();
 
   (async () => {
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
       const res = await fetch(`${BACKEND}${endpoint}`, {
         method: 'POST',
@@ -55,7 +56,7 @@ export function streamClaudeSession(
         throw new Error(`Backend returned ${res.status}: ${res.statusText}`);
       }
 
-      const reader = res.body?.getReader();
+      reader = res.body?.getReader();
       if (!reader) throw new Error('No response body');
 
       const decoder = new TextDecoder();
@@ -67,38 +68,45 @@ export function streamClaudeSession(
 
         buffer += decoder.decode(value, { stream: true });
 
-        // Process complete SSE lines (each ends with \n\n)
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || ''; // keep the incomplete tail
+        // R003: Split on double-newline (SSE event boundary) to handle
+        // payloads that might contain single newlines within data fields
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || ''; // keep the incomplete tail
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith('data: ')) continue;
-          const jsonStr = trimmed.slice(6); // strip "data: "
-          try {
-            const event: ClaudeFrontendEvent = JSON.parse(jsonStr);
-            onEvent(event);
-          } catch {
-            // ignore malformed lines
+        for (const eventBlock of events) {
+          for (const line of eventBlock.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data: ')) continue;
+            const jsonStr = trimmed.slice(6);
+            try {
+              const event: ClaudeFrontendEvent = JSON.parse(jsonStr);
+              onEvent(event);
+            } catch (parseErr) {
+              console.warn('[claudeService] Malformed SSE data:', jsonStr.slice(0, 100), parseErr);
+            }
           }
         }
       }
 
-      // B031: Flush remaining buffer after stream ends
+      // Flush remaining buffer after stream ends
       if (buffer.trim()) {
-        const trimmed = buffer.trim();
-        if (trimmed.startsWith('data: ')) {
+        for (const line of buffer.split('\n')) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
           try {
             const event: ClaudeFrontendEvent = JSON.parse(trimmed.slice(6));
             onEvent(event);
-          } catch {
-            // ignore malformed tail
+          } catch (parseErr) {
+            console.warn('[claudeService] Malformed SSE tail:', trimmed.slice(0, 100), parseErr);
           }
         }
       }
     } catch (err) {
       if ((err as Error).name === 'AbortError') return; // expected on cancel
       onError?.(err as Error);
+    } finally {
+      // R003: Guarantee reader is released to prevent resource leaks
+      reader?.releaseLock();
     }
   })();
 
