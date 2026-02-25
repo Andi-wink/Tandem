@@ -163,7 +163,7 @@ impl ProfessionalAudioMixer {
 
             // Pre-scale system audio to 70% to leave headroom
             // This prevents constant soft scaling which can cause pumping artifacts
-            // Mic is normalized to -23 LUFS (already optimal), system needs reduction
+            // Mic is normalized to -16 LUFS (voice/podcast standard), system needs reduction
             let sys_scaled = sys * 1.0;
             let _mic_scaled = mic * 0.8;  // Reserved for future mic scaling
 
@@ -295,7 +295,7 @@ impl AudioCapture {
             // Initialize EBU R128 normalizer (professional loudness standard)
             let norm = match LoudnessNormalizer::new(1, TARGET_SAMPLE_RATE) {
                 Ok(normalizer) => {
-                    info!("✅ EBU R128 normalizer initialized for microphone '{}' (target: -23 LUFS)", device.name);
+                    info!("✅ EBU R128 normalizer initialized for microphone '{}' (target: -16 LUFS)", device.name);
                     Some(normalizer)
                 }
                 Err(e) => {
@@ -824,20 +824,21 @@ impl AudioPipeline {
                             // Simple mixing without aggressive ducking
                             let mixed_clean = self.mixer.mix_window(&mic_window, &sys_window);
 
-                            // NO POST-GAIN NEEDED: Microphone already normalized by EBU R128 to -23 LUFS
-                            // This is broadcast-standard loudness (Netflix/YouTube/Spotify level)
+                            // NO POST-GAIN NEEDED: Microphone already normalized by EBU R128 to -16 LUFS
+                            // This is voice/podcast-standard loudness (7 dB louder than broadcast -23 LUFS)
                             // System audio at natural levels
                             // Previous 2x gain was causing excessive limiting/distortion
                             let mixed_with_gain = mixed_clean;
 
-                            // STEP 3: Send mixed audio for transcription (VAD + Whisper)
+                            // STEP 3: Send mixed audio through VAD for transcription
+                            // VAD segments are sent directly to the transcription engine
                             match self.vad_processor.process_audio(&mixed_with_gain) {
                                 Ok(speech_segments) => {
                                     for segment in speech_segments {
                                         let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
 
-                                        if segment.samples.len() >= 800 {  // Minimum 50ms at 16kHz - matches Parakeet capability
-                                            info!("📤 Sending VAD segment: {:.1}ms, {} samples",
+                                        if segment.samples.len() >= 800 {  // Minimum 50ms at 16kHz
+                                            info!("🎤 Sending VAD segment: {:.1}ms duration, {} samples",
                                                   duration_ms, segment.samples.len());
 
                                             let transcription_chunk = AudioChunk {
@@ -845,11 +846,11 @@ impl AudioPipeline {
                                                 sample_rate: 16000,
                                                 timestamp: segment.start_timestamp_ms / 1000.0,
                                                 chunk_id: self.chunk_id_counter,
-                                                device_type: DeviceType::Microphone,  // Mixed audio
+                                                device_type: DeviceType::Microphone,
                                             };
 
                                             if let Err(e) = self.transcription_sender.send(transcription_chunk) {
-                                                warn!("Failed to send VAD segment: {}", e);
+                                                warn!("Failed to send VAD segment for transcription: {}", e);
                                             } else {
                                                 self.chunk_id_counter += 1;
                                             }
@@ -883,7 +884,6 @@ impl AudioPipeline {
                     break;
                 }
                 Err(_) => {
-                    // Timeout - just continue, VAD handles all segmentation
                     continue;
                 }
             }
@@ -899,15 +899,14 @@ impl AudioPipeline {
     fn flush_remaining_audio(&mut self) -> Result<()> {
         info!("Flushing remaining audio from pipeline (processed {} chunks)", self.processed_chunks);
 
-        // Flush any remaining audio from VAD processor and send segments to transcription
+        // Flush any remaining audio from VAD processor
         match self.vad_processor.flush() {
             Ok(final_segments) => {
                 for segment in final_segments {
                     let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
 
-                    // Send segments >= 50ms (800 samples at 16kHz) - matches main pipeline filter
                     if segment.samples.len() >= 800 {
-                        info!("📤 Sending final VAD segment to Whisper: {:.1}ms duration, {} samples",
+                        info!("🎤 Sending final VAD segment: {:.1}ms duration, {} samples",
                               duration_ms, segment.samples.len());
 
                         let transcription_chunk = AudioChunk {

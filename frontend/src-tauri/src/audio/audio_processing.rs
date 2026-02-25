@@ -139,9 +139,9 @@ impl TruePeakLimiter {
 /// Professional loudness normalizer using EBU R128 standard
 /// This is a STATEFUL normalizer that tracks cumulative loudness over time
 ///
-/// EBU R128 is the broadcast industry standard for loudness normalization:
-/// - Target: -23 LUFS (Loudness Units relative to Full Scale)
-/// - Used by: Netflix, YouTube, Spotify, all professional broadcast
+/// EBU R128 measurement with voice-optimized target:
+/// - Target: -16 LUFS (voice/podcast standard for clear speech)
+/// - Broadcast uses -23 LUFS, but that's too quiet for meeting recordings
 /// - Perceptually accurate (not just simple RMS)
 ///
 pub struct LoudnessNormalizer {
@@ -181,14 +181,14 @@ impl LoudnessNormalizer {
     /// This maintains cumulative loudness measurements across all processed audio,
     /// resulting in consistent normalization that sounds natural.
     ///
-    /// Target: -23 LUFS (professional broadcast standard for speech/dialog)
+    /// Target: -16 LUFS (voice/podcast standard for clear speech)
     /// Applies sample-by-sample with 10ms lookahead limiter to prevent clipping
     pub fn normalize_loudness(&mut self, samples: &[f32]) -> Vec<f32> {
         if samples.is_empty() {
             return Vec::new();
         }
 
-        const TARGET_LUFS: f64 = -23.0;
+        const TARGET_LUFS: f64 = -16.0; // Voice/podcast standard (was -23.0 broadcast)
         const ANALYZE_CHUNK_SIZE: usize = 512;
 
         let mut normalized_samples = Vec::with_capacity(samples.len());

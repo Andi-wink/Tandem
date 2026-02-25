@@ -1,0 +1,59 @@
+{
+  "project": "Tandem",
+  "description": "Transcription quality improvements for Parakeet TDT 0.6B / Whisper ASR pipeline. Each item addresses a specific audio pipeline issue that degrades transcription accuracy or recording quality.",
+  "last_updated": "2026-02-25",
+  "improvements": [
+    {
+      "id": "T001",
+      "category": "normalization",
+      "name": "Raise Normalization Target to -16 LUFS",
+      "description": "EBU R128 target of -23 LUFS (broadcast standard) is too quiet for meeting recordings. Podcast/voice standard is -16 LUFS. This reduces effective SNR going into the ASR model and makes saved recordings hard to hear.",
+      "priority": "high",
+      "status": "complete",
+      "difficulty": "trivial",
+      "expected_impact": "Louder recordings, better SNR for ASR (~1-3% WER improvement), directly fixes 'quiet audio' complaint",
+      "files": [
+        "frontend/src-tauri/src/audio/audio_processing.rs"
+      ],
+      "changes": [
+        "Change TARGET_LUFS from -23.0 to -16.0 in LoudnessNormalizer::normalize_loudness()"
+      ]
+    },
+    {
+      "id": "T002",
+      "category": "resampling",
+      "name": "Improve VAD Resampling Quality",
+      "description": "VAD module resamples 48kHz -> 16kHz using basic low-pass + linear interpolation instead of the high-quality Rubato sinc resampler used elsewhere. This introduces aliasing artifacts in the audio sent to the transcription engine.",
+      "priority": "high",
+      "status": "complete",
+      "difficulty": "medium",
+      "expected_impact": "Cleaner 16kHz audio for ASR, reduced aliasing artifacts, ~1-2% WER improvement",
+      "files": [
+        "frontend/src-tauri/src/audio/vad.rs"
+      ],
+      "changes": [
+        "Replaced VAD's internal resample_to_16k with persistent Rubato SincFixedIn resampler",
+        "512-tap sinc filter, Cubic interpolation, BlackmanHarris2 window, f_cutoff=0.95",
+        "Persistent resampler with input buffering (512-sample chunks) to preserve state across calls",
+        "Basic linear interpolation kept as fallback if Rubato init fails"
+      ]
+    },
+    {
+      "id": "T003",
+      "category": "segmentation",
+      "name": "Buffer Longer Segments Before Transcription",
+      "description": "Current VAD sends speech segments as soon as endpoints are detected (often 1-3 seconds). Parakeet TDT works best with longer context (up to 24 minutes). Short segments lose context at boundaries, hurting accuracy.",
+      "priority": "medium",
+      "status": "reverted",
+      "difficulty": "medium",
+      "expected_impact": "Better word accuracy at segment boundaries, ~2-5% WER improvement for short utterances",
+      "revert_reason": "Made transcription quality worse in practice — accumulating segments delayed output and degraded results",
+      "files": [
+        "frontend/src-tauri/src/audio/pipeline.rs"
+      ],
+      "changes": [
+        "REVERTED: All accumulation buffer code removed, VAD segments sent directly to transcription engine"
+      ]
+    }
+  ]
+}
