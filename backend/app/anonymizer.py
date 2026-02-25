@@ -14,6 +14,7 @@ Two-tier detection:
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -206,10 +207,10 @@ class EntityRegistry:
     _clusterer: NameClusterer = field(default_factory=NameClusterer, repr=False)
 
     def __post_init__(self):
-        # Seed Faker with meeting_id for reproducibility
+        # Seed Faker per-instance (not global Faker.seed()) to avoid race conditions
         seed = hash(self.meeting_id) % (2**32)
         self._faker = Faker()
-        Faker.seed(seed)
+        self._faker.seed_instance(seed)
 
     @property
     def entity_map(self) -> dict[str, str]:
@@ -410,14 +411,40 @@ def _try_parse_json_block(text: str) -> tuple[Any, bool]:
 # Main anonymization function
 # ---------------------------------------------------------------------------
 
-# In-memory registries keyed by meeting_id
+# In-memory registries keyed by meeting_id, with last-access timestamps
 _registries: dict[str, EntityRegistry] = {}
+_registry_last_access: dict[str, float] = {}
+_REGISTRY_TTL_SECS = 2 * 60 * 60  # 2 hours
+_REGISTRY_MAX_SIZE = 100  # LRU cap
+
+
+def _cleanup_expired_registries() -> None:
+    """Evict registries inactive for more than _REGISTRY_TTL_SECS."""
+    now = time.monotonic()
+    expired = [mid for mid, ts in _registry_last_access.items()
+               if now - ts > _REGISTRY_TTL_SECS]
+    for mid in expired:
+        _registries.pop(mid, None)
+        _registry_last_access.pop(mid, None)
+        logger.info("Evicted expired entity registry for meeting %s", mid)
+
+
+def _evict_lru_if_needed() -> None:
+    """If registries exceed max size, evict the least recently used."""
+    while len(_registries) > _REGISTRY_MAX_SIZE:
+        oldest = min(_registry_last_access, key=_registry_last_access.get)
+        _registries.pop(oldest, None)
+        _registry_last_access.pop(oldest, None)
+        logger.info("Evicted LRU entity registry for meeting %s", oldest)
 
 
 def get_registry(meeting_id: str, entity_map: Optional[dict] = None) -> EntityRegistry:
     """Get or create an EntityRegistry for a meeting."""
+    _cleanup_expired_registries()
     if meeting_id not in _registries:
+        _evict_lru_if_needed()
         _registries[meeting_id] = EntityRegistry(meeting_id=meeting_id)
+    _registry_last_access[meeting_id] = time.monotonic()
     registry = _registries[meeting_id]
     if entity_map:
         registry.load(entity_map)
@@ -427,11 +454,13 @@ def get_registry(meeting_id: str, entity_map: Optional[dict] = None) -> EntityRe
 def clear_registry(meeting_id: str) -> None:
     """Clear the entity registry for a meeting."""
     _registries.pop(meeting_id, None)
+    _registry_last_access.pop(meeting_id, None)
 
 
 def get_entity_map(meeting_id: str) -> dict[str, str]:
     """Get the current entity map for a meeting."""
     if meeting_id in _registries:
+        _registry_last_access[meeting_id] = time.monotonic()
         return _registries[meeting_id].entity_map
     return {}
 

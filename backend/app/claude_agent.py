@@ -90,7 +90,8 @@ _VALID_MODELS = {
 # Session state
 # ---------------------------------------------------------------------------
 
-_SESSION_TTL_SECS = 24 * 60 * 60  # B010: 24 hours
+_SESSION_TTL_SECS = 2 * 60 * 60  # R012: 2 hours (was 24h)
+_SESSION_MAX_SIZE = 50  # R012: LRU cap
 
 
 @dataclass
@@ -110,7 +111,10 @@ _sessions_lock = asyncio.Lock()
 
 
 def get_session(meeting_id: str) -> Optional[SessionState]:
-    return _sessions.get(meeting_id)
+    session = _sessions.get(meeting_id)
+    if session:
+        session.last_active = time.monotonic()
+    return session
 
 
 def clear_session(meeting_id: str) -> None:
@@ -128,7 +132,7 @@ async def cancel_session(meeting_id: str) -> bool:
 
 
 def _cleanup_expired_sessions() -> None:
-    """B010: Remove sessions inactive for more than _SESSION_TTL_SECS."""
+    """R012: Remove sessions inactive for more than _SESSION_TTL_SECS."""
     now = time.monotonic()
     expired = [mid for mid, s in _sessions.items()
                if now - s.last_active > _SESSION_TTL_SECS]
@@ -137,6 +141,16 @@ def _cleanup_expired_sessions() -> None:
         if session:
             session.cancel_event.set()
             logger.info("Expired inactive session for meeting %s", mid)
+
+
+def _evict_lru_sessions_if_needed() -> None:
+    """R012: If sessions exceed max size, evict the least recently used."""
+    while len(_sessions) > _SESSION_MAX_SIZE:
+        oldest_mid = min(_sessions, key=lambda mid: _sessions[mid].last_active)
+        session = _sessions.pop(oldest_mid, None)
+        if session:
+            session.cancel_event.set()
+            logger.info("Evicted LRU session for meeting %s", oldest_mid)
 
 
 # ---------------------------------------------------------------------------
@@ -429,8 +443,9 @@ async def stream_session(
         )
         return
 
-    # B010: Clean up expired sessions on each request
+    # R012: Clean up expired and LRU sessions on each request
     _cleanup_expired_sessions()
+    _evict_lru_sessions_if_needed()
 
     # B007: Lock to prevent concurrent session creation for same meeting_id
     async with _sessions_lock:
