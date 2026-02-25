@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
 import dynamic from 'next/dynamic';
+import { useTheme } from 'next-themes';
 import { Summary, SummaryDataResponse, SummaryFormat, BlockNoteBlock } from '@/types';
 import { AISummary } from './index';
 import { Block } from '@blocknote/core';
@@ -74,6 +75,7 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
   meeting,
   onDirtyChange
 }, ref) => {
+  const { resolvedTheme } = useTheme();
   const { format, data } = detectSummaryFormat(summaryData);
   const [isDirty, setIsDirty] = useState(false);
   const [currentBlocks, setCurrentBlocks] = useState<Block[]>([]);
@@ -248,7 +250,7 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
                 handleEditorChange(editor.document);
               }
             }}
-            theme="light"
+            theme={resolvedTheme === 'dark' ? 'dark' : 'light'}
           />
         </div>
       </div>

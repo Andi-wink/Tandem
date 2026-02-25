@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { useTheme } from "next-themes";
 import { PartialBlock, Block } from "@blocknote/core";
 import "@blocknote/shadcn/style.css";
 import "@blocknote/core/fonts/inter.css";
@@ -12,6 +13,7 @@ interface EditorProps {
 }
 
 export default function Editor({ initialContent, onChange, editable = true }: EditorProps) {
+  const { resolvedTheme } = useTheme();
   console.log('📝 EDITOR: Initializing BlockNote editor with blocks:', {
     hasContent: !!initialContent,
     blocksCount: initialContent?.length || 0,
@@ -59,5 +61,5 @@ export default function Editor({ initialContent, onChange, editable = true }: Ed
     };
   }, [editor, onChange]);
 
-  return <BlockNoteView editor={editor} editable={editable} theme="light" />;
+  return <BlockNoteView editor={editor} editable={editable} theme={resolvedTheme === 'dark' ? 'dark' : 'light'} />;
 }

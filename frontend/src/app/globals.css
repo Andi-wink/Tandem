@@ -193,6 +193,34 @@
     overflow: visible !important;
   }
 
+  /* BlockNote dark mode — blend with app theme */
+  .dark .bn-container,
+  .dark .bn-editor {
+    background-color: hsl(var(--background)) !important;
+    color: hsl(var(--foreground)) !important;
+  }
+
+  .dark .bn-container .ProseMirror {
+    background: transparent !important;
+  }
+
+  /* BlockNote table cells in dark mode */
+  .dark .bn-container table,
+  .dark .bn-container th,
+  .dark .bn-container td {
+    border-color: hsl(var(--border)) !important;
+  }
+
+  .dark .bn-container th {
+    background: hsl(var(--muted)) !important;
+    color: hsl(var(--foreground)) !important;
+  }
+
+  .dark .bn-container td {
+    background: transparent !important;
+    color: hsl(var(--foreground)) !important;
+  }
+
   /* Disable internal scrolling - let parent handle all scrolling */
   .ProseMirror {
     overflow: visible !important;

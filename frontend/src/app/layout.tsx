@@ -150,7 +150,7 @@ export default function RootLayout({
           </RecordingStateProvider>
         </AnalyticsProvider>
         </ThemeProvider>
-        <Toaster position="bottom-center" richColors closeButton theme="dark" />
+        <Toaster position="bottom-center" richColors closeButton />
       </body>
     </html>
   )

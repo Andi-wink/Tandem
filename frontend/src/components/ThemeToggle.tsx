@@ -10,6 +10,14 @@ export function ThemeToggle({ isCollapsed = false }: { isCollapsed?: boolean }) 
 
   useEffect(() => setMounted(true), []);
 
+  // Sync native window title bar theme with app theme
+  useEffect(() => {
+    if (!mounted) return;
+    import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+      getCurrentWindow().setTheme(theme === 'light' ? 'light' : 'dark').catch(() => {});
+    }).catch(() => {});
+  }, [theme, mounted]);
+
   if (!mounted) return null;
 
   const isDark = theme === 'dark';
