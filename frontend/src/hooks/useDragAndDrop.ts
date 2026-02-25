@@ -34,8 +34,14 @@ function isBasketDrag(e: DragEvent): boolean {
 /**
  * Makes an element draggable as a ContextBasketItem.
  * Pass `null` to disable dragging (e.g. when the item is already in the basket).
+ *
+ * When `selectedItems` is provided and this item is among them,
+ * dragging will carry all selected items (multi-drag).
  */
-export function useDraggableBasketItem(item: ContextBasketItem | null) {
+export function useDraggableBasketItem(
+  item: ContextBasketItem | null,
+  selectedItems?: ContextBasketItem[],
+) {
   const [isDragging, setIsDragging] = useState(false);
 
   const onDragStart = useCallback((e: DragEvent) => {
@@ -43,14 +49,20 @@ export function useDraggableBasketItem(item: ContextBasketItem | null) {
       e.preventDefault();
       return;
     }
-    const json = JSON.stringify(item);
+
+    // If this item is part of a multi-selection, drag all selected items
+    const itemsToSend = selectedItems && selectedItems.length > 1 && selectedItems.some(si => si.id === item.id)
+      ? selectedItems
+      : [item];
+
+    const json = JSON.stringify(itemsToSend);
     e.dataTransfer.setData(BASKET_ITEM_MIME, json);
     e.dataTransfer.setData('text/plain', json); // fallback for restrictive webviews
     e.dataTransfer.effectAllowed = 'copy';
     _internalDragActive = true;
     _notifyDragListeners();
     setIsDragging(true);
-  }, [item]);
+  }, [item, selectedItems]);
 
   const onDragEnd = useCallback(() => {
     _internalDragActive = false;
@@ -69,10 +81,10 @@ export function useDraggableBasketItem(item: ContextBasketItem | null) {
 }
 
 /**
- * Makes an element a drop zone that accepts ContextBasketItems.
+ * Makes an element a drop zone that accepts ContextBasketItems (single or array).
  * Returns `isOver` for visual highlight and `dropHandlers` to spread onto the element.
  */
-export function useDropZone(onDrop: (item: ContextBasketItem) => void) {
+export function useDropZone(onDrop: (item: ContextBasketItem) => void, onAfterDrop?: () => void) {
   const [isOver, setIsOver] = useState(false);
   const dragCounterRef = useRef(0);
 
@@ -113,14 +125,25 @@ export function useDropZone(onDrop: (item: ContextBasketItem) => void) {
     if (!json) return;
 
     try {
-      const item: ContextBasketItem = JSON.parse(json);
-      if (item.id && item.type && item.fullContent) {
-        onDrop(item);
+      const parsed = JSON.parse(json);
+
+      // Support both single item and array of items
+      if (Array.isArray(parsed)) {
+        parsed.forEach((item: ContextBasketItem) => {
+          if (item.id && item.type && item.fullContent) {
+            onDrop(item);
+          }
+        });
+      } else if (parsed.id && parsed.type && parsed.fullContent) {
+        onDrop(parsed);
       }
+
+      // Clear selection after successful drop
+      onAfterDrop?.();
     } catch (err) {
       console.error('Failed to parse dropped basket item:', err);
     }
-  }, [onDrop]);
+  }, [onDrop, onAfterDrop]);
 
   return {
     isOver,

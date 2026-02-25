@@ -24,6 +24,7 @@ import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcess
 import { ScreenshotProvider } from '@/contexts/ScreenshotContext'
 import { ClipboardProvider } from '@/contexts/ClipboardContext'
 import { ClaudeProvider } from '@/contexts/ClaudeContext'
+import { SelectionProvider } from '@/contexts/SelectionContext'
 import { ClaudePanel } from '@/components/ClaudePanel'
 import { ThemeProvider } from 'next-themes'
 
@@ -118,6 +119,7 @@ export default function RootLayout({
                           <RecordingPostProcessingProvider>
                           <ClipboardProvider>
                           <ScreenshotProvider>
+                          <SelectionProvider>
                           <ClaudeProvider>
                             {/* Download progress toast provider - listens for background downloads */}
                             <DownloadProgressToastProvider />
@@ -133,6 +135,7 @@ export default function RootLayout({
                               </div>
                             )}
                           </ClaudeProvider>
+                          </SelectionProvider>
                           </ScreenshotProvider>
                           </ClipboardProvider>
                           </RecordingPostProcessingProvider>
@@ -147,7 +150,7 @@ export default function RootLayout({
           </RecordingStateProvider>
         </AnalyticsProvider>
         </ThemeProvider>
-        <Toaster position="bottom-center" richColors closeButton />
+        <Toaster position="bottom-center" richColors closeButton theme="dark" />
       </body>
     </html>
   )

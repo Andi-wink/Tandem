@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { ScreenshotData } from '@/types';
-import { takeScreenshot, cropPreCapturedRegion, startRegionCapture, cancelRegionCapture, saveScreenshotsJson } from '@/services/screenshotService';
+import { takeScreenshot, cropPreCapturedRegion, startRegionCapture, cancelRegionCapture, saveScreenshotsJson, saveAnnotatedScreenshot } from '@/services/screenshotService';
 
 export interface RegionSelectInfo {
   previewDataUri: string;
@@ -19,6 +19,7 @@ interface ScreenshotContextType {
   isCapturing: boolean;
   captureFullscreen: () => Promise<void>;
   captureRegion: (x: number, y: number, width: number, height: number) => Promise<void>;
+  captureAnnotatedRegion: (annotatedBase64: string) => Promise<void>;
   startRegionSelect: () => void;
   cancelRegionSelect: () => void;
   openLightbox: (screenshot: ScreenshotData) => void;
@@ -135,6 +136,21 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
     }
   }, []);
 
+  // Save an annotated region screenshot (base64 PNG from the annotation canvas)
+  const captureAnnotatedRegion = useCallback(async (annotatedBase64: string) => {
+    setIsRegionSelecting(false);
+    setRegionSelectInfo(null);
+    setIsCapturing(true);
+    try {
+      await saveAnnotatedScreenshot(annotatedBase64);
+      // screenshot-taken event listener handles adding to state
+    } catch (err) {
+      console.error('Failed to save annotated screenshot:', err);
+    } finally {
+      setIsCapturing(false);
+    }
+  }, []);
+
   const startRegionSelect = useCallback(async () => {
     try {
       await startRegionCapture();
@@ -188,6 +204,7 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
         isCapturing,
         captureFullscreen,
         captureRegion,
+        captureAnnotatedRegion,
         startRegionSelect,
         cancelRegionSelect,
         openLightbox,

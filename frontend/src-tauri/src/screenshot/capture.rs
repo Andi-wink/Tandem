@@ -125,6 +125,51 @@ pub fn crop_from_pre_captured(
     save_screenshot(dynamic, w, h, CaptureMode::Region, screenshots_dir)
 }
 
+/// Crop a region from the pre-captured image and return a JPEG data URI for annotation preview.
+/// Does NOT consume the stored image — it remains available for the final save.
+pub fn crop_preview_from_pre_captured(
+    x: i32,
+    y: i32,
+    region_width: u32,
+    region_height: u32,
+) -> Result<(String, u32, u32)> {
+    let guard = PRE_CAPTURED_IMAGE
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+
+    let raw_image = guard
+        .as_ref()
+        .context("No pre-captured image available")?;
+
+    let cropped = crop_image(raw_image, x, y, region_width, region_height)?;
+    let w = cropped.width();
+    let h = cropped.height();
+
+    // Encode as JPEG (much faster than PNG, fine for annotation preview)
+    let dynamic = DynamicImage::ImageRgba8(cropped);
+    let rgb = dynamic.to_rgb8();
+    let mut buf = Cursor::new(Vec::new());
+    let mut encoder = JpegEncoder::new_with_quality(&mut buf, 90);
+    encoder
+        .encode(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .context("Failed to encode crop preview JPEG")?;
+
+    let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
+    let data_uri = format!("data:image/jpeg;base64,{}", b64);
+
+    info!(
+        "Cropped preview from pre-captured: {}x{}, data URI length: {}",
+        w, h, data_uri.len()
+    );
+
+    Ok((data_uri, w, h))
+}
+
 /// Free the stored pre-captured image and reset the in-progress flag.
 /// Called when the user cancels region selection.
 pub fn clear_pre_captured() {
@@ -335,6 +380,29 @@ pub fn generate_thumbnail_from_path(file_path: &Path) -> Result<String> {
     let image = image::open(file_path)
         .with_context(|| format!("Failed to open image: {}", file_path.display()))?;
     generate_thumbnail(&image, THUMBNAIL_MAX_WIDTH)
+}
+
+/// Save an annotated screenshot from a base64-encoded PNG data URI.
+/// Decodes the image, saves to disk, generates thumbnail, and returns metadata.
+pub fn save_from_base64(image_base64: &str, screenshots_dir: &Path) -> Result<ScreenshotData> {
+    // Strip data URI prefix if present
+    let raw_b64 = if let Some(pos) = image_base64.find(",") {
+        &image_base64[pos + 1..]
+    } else {
+        image_base64
+    };
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(raw_b64)
+        .context("Failed to decode base64 image data")?;
+
+    let dynamic = image::load_from_memory(&bytes)
+        .context("Failed to decode image from base64 bytes")?;
+
+    let width = dynamic.width();
+    let height = dynamic.height();
+
+    save_screenshot(dynamic, width, height, CaptureMode::Region, screenshots_dir)
 }
 
 /// Get or create a screenshots directory under the given base path.

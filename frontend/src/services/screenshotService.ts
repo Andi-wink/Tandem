@@ -52,10 +52,31 @@ export async function cropPreCapturedRegion(
   return invoke<ScreenshotData>('crop_pre_captured_region', { x, y, width, height });
 }
 
+export interface CropPreviewResult {
+  data_uri: string;
+  width: number;
+  height: number;
+}
+
+export async function cropPreCapturedPreview(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): Promise<CropPreviewResult> {
+  return invoke<CropPreviewResult>('crop_pre_captured_preview', { x, y, width, height });
+}
+
 export async function startRegionCapture(): Promise<void> {
   return invoke<void>('start_region_capture');
 }
 
 export async function cancelRegionCapture(): Promise<void> {
   return invoke<void>('cancel_region_capture');
+}
+
+export async function saveAnnotatedScreenshot(
+  imageBase64: string,
+): Promise<ScreenshotData> {
+  return invoke<ScreenshotData>('save_annotated_screenshot', { imageBase64 });
 }

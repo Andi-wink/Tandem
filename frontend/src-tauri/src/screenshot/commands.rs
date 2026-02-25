@@ -309,12 +309,77 @@ pub async fn start_region_capture<R: Runtime>(app: AppHandle<R>) -> Result<(), S
     Ok(())
 }
 
+/// Crop a preview from the pre-captured screen image for annotation.
+/// Returns a JPEG data URI and the cropped dimensions WITHOUT consuming the stored image.
+/// The original remains available for the final save via save_annotated_screenshot.
+#[derive(Debug, Clone, Serialize)]
+pub struct CropPreviewResult {
+    pub data_uri: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[tauri::command]
+pub async fn crop_pre_captured_preview(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<CropPreviewResult, String> {
+    info!(
+        "Cropping preview from pre-captured at ({}, {}) {}x{}",
+        x, y, width, height
+    );
+
+    let (data_uri, w, h) =
+        capture::crop_preview_from_pre_captured(x, y, width, height).map_err(|e| {
+            error!("Failed to crop preview from pre-captured: {}", e);
+            format!("Crop preview failed: {}", e)
+        })?;
+
+    Ok(CropPreviewResult {
+        data_uri,
+        width: w,
+        height: h,
+    })
+}
+
 /// Cancel region capture and free the pre-captured image from memory.
 #[tauri::command]
 pub async fn cancel_region_capture() -> Result<(), String> {
     info!("Cancelling region capture, clearing pre-captured image");
     capture::clear_pre_captured();
     Ok(())
+}
+
+/// Save an annotated screenshot from a base64-encoded PNG.
+/// Used after the user draws on a region screenshot in the annotation overlay.
+#[tauri::command]
+pub async fn save_annotated_screenshot<R: Runtime>(
+    app: AppHandle<R>,
+    image_base64: String,
+) -> Result<ScreenshotData, String> {
+    info!(
+        "Saving annotated screenshot (base64 length: {})",
+        image_base64.len()
+    );
+
+    // Free the pre-captured buffer since we're using the annotated version
+    capture::clear_pre_captured();
+
+    let screenshots_dir = get_screenshots_dir(&app)?;
+
+    let data = capture::save_from_base64(&image_base64, &screenshots_dir).map_err(|e| {
+        error!("Failed to save annotated screenshot: {}", e);
+        format!("Annotated screenshot save failed: {}", e)
+    })?;
+
+    if let Err(e) = app.emit("screenshot-taken", &data) {
+        error!("Failed to emit screenshot-taken event: {}", e);
+    }
+
+    info!("Annotated screenshot saved: {}", data.file_path);
+    Ok(data)
 }
 
 /// Determine the screenshots directory.

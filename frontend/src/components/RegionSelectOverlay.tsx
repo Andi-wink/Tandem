@@ -2,12 +2,15 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { AnnotationOverlay } from './ScreenshotAnnotation/AnnotationOverlay';
+import { cropPreCapturedPreview } from '@/services/screenshotService';
 
 interface RegionSelectOverlayProps {
   previewDataUri: string;   // Base64 data URI of the pre-captured JPEG
   monitorWidth: number;     // Physical pixel width of captured image
   monitorHeight: number;    // Physical pixel height of captured image
   onSelect: (x: number, y: number, width: number, height: number) => void;
+  onAnnotatedCapture?: (annotatedBase64: string) => void;
   onCancel: () => void;
 }
 
@@ -16,12 +19,14 @@ export function RegionSelectOverlay({
   monitorWidth,
   monitorHeight,
   onSelect,
+  onAnnotatedCapture,
   onCancel,
 }: RegionSelectOverlayProps) {
   const [startPos, setStartPos] = useState<{ x: number; y: number } | null>(null);
   const [currentPos, setCurrentPos] = useState<{ x: number; y: number } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [ready, setReady] = useState(false);
+  const [annotationImage, setAnnotationImage] = useState<string | null>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const wasFullscreenRef = useRef(false);
 
@@ -85,9 +90,10 @@ export function RegionSelectOverlay({
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
-      if (e.key === 'Escape') handleCancel();
+      // In annotation mode, Escape is handled by AnnotationOverlay
+      if (e.key === 'Escape' && !annotationImage) handleCancel();
     },
-    [handleCancel],
+    [handleCancel, annotationImage],
   );
 
   useEffect(() => {
@@ -96,10 +102,11 @@ export function RegionSelectOverlay({
   }, [handleKeyDown]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (annotationImage) return; // Don't start new selection during annotation
     setStartPos({ x: e.clientX, y: e.clientY });
     setCurrentPos({ x: e.clientX, y: e.clientY });
     setIsDragging(true);
-  }, []);
+  }, [annotationImage]);
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
@@ -117,18 +124,33 @@ export function RegionSelectOverlay({
       const viewW = Math.abs(currentPos.x - startPos.x);
       const viewH = Math.abs(currentPos.y - startPos.y);
 
+      // Map viewport coords to physical pixel coords
+      const scaleX = monitorWidth / window.innerWidth;
+      const scaleY = monitorHeight / window.innerHeight;
+      const physX = Math.round(viewX * scaleX);
+      const physY = Math.round(viewY * scaleY);
+      const physW = Math.round(viewW * scaleX);
+      const physH = Math.round(viewH * scaleY);
+
       if (viewW > 10 && viewH > 10) {
-        // Map viewport coordinates to physical screen pixels
-        const scaleX = monitorWidth / window.innerWidth;
-        const scaleY = monitorHeight / window.innerHeight;
-
-        const screenX = Math.round(viewX * scaleX);
-        const screenY = Math.round(viewY * scaleY);
-        const screenW = Math.round(viewW * scaleX);
-        const screenH = Math.round(viewH * scaleY);
-
-        await restoreWindow();
-        onSelect(screenX, screenY, screenW, screenH);
+        if (onAnnotatedCapture) {
+          // Annotation path: crop via Rust (fast JPEG), stay fullscreen
+          try {
+            const result = await cropPreCapturedPreview(physX, physY, physW, physH);
+            // Stay fullscreen — no restoreWindow() here.
+            // AnnotationOverlay renders in-place, saving ~200-300ms of window transitions.
+            setAnnotationImage(result.data_uri);
+          } catch (err) {
+            console.error('Failed to crop for annotation:', err);
+            // Fallback to normal capture
+            await restoreWindow();
+            onSelect(physX, physY, physW, physH);
+          }
+        } else {
+          // No annotation: original behavior
+          await restoreWindow();
+          onSelect(physX, physY, physW, physH);
+        }
       } else {
         await handleCancel();
       }
@@ -136,7 +158,19 @@ export function RegionSelectOverlay({
     setIsDragging(false);
     setStartPos(null);
     setCurrentPos(null);
-  }, [startPos, currentPos, isDragging, monitorWidth, monitorHeight, restoreWindow, onSelect, handleCancel]);
+  }, [startPos, currentPos, isDragging, monitorWidth, monitorHeight, restoreWindow, onSelect, onAnnotatedCapture, handleCancel]);
+
+  const handleAnnotationSave = useCallback(async (annotatedDataUri: string) => {
+    await restoreWindow();
+    setAnnotationImage(null);
+    onAnnotatedCapture?.(annotatedDataUri);
+  }, [onAnnotatedCapture, restoreWindow]);
+
+  const handleAnnotationCancel = useCallback(async () => {
+    await restoreWindow();
+    setAnnotationImage(null);
+    onCancel();
+  }, [onCancel, restoreWindow]);
 
   // Calculate selection rectangle in viewport coordinates
   const selectionRect =
@@ -148,6 +182,17 @@ export function RegionSelectOverlay({
           height: Math.abs(currentPos.y - startPos.y),
         }
       : null;
+
+  // Annotation phase: show annotation overlay instead of region selection
+  if (annotationImage) {
+    return (
+      <AnnotationOverlay
+        imageDataUri={annotationImage}
+        onSave={handleAnnotationSave}
+        onCancel={handleAnnotationCancel}
+      />
+    );
+  }
 
   // Don't render until fullscreen is ready (prevents flash of windowed content)
   if (!ready) return null;
