@@ -9,6 +9,7 @@ import { ConversationView } from './ConversationView';
 import { ProjectDirModal } from './ProjectDirModal';
 import { EntityMapViewer } from './EntityMapViewer';
 import { useDropZone, useDragActive } from '@/hooks/useDragAndDrop';
+import { useSelection } from '@/contexts/SelectionContext';
 
 export function ClaudePanel() {
   const {
@@ -47,7 +48,8 @@ export function ClaudePanel() {
 
   const hasApiKey = !!apiKey;
   const isDragActive = useDragActive();
-  const { isOver: isDropOver, dropHandlers: overlayDropHandlers } = useDropZone(addToBasket);
+  const { clearSelection } = useSelection();
+  const { isOver: isDropOver, dropHandlers: overlayDropHandlers } = useDropZone(addToBasket, clearSelection);
 
   // Auto-focus input when panel opens
   useEffect(() => {
@@ -117,26 +119,48 @@ export function ClaudePanel() {
 
   return (
     <>
+      {/* Edge drop strip — visible when panel is CLOSED and a drag is active.
+          Gives the user a visible target on the right edge to drop items into. */}
+      {isDragActive && !isPanelOpen && (
+        <div
+          {...overlayDropHandlers}
+          className={`fixed right-0 top-0 bottom-0 z-50 flex items-center justify-center transition-all duration-150 ${
+            isDropOver
+              ? 'w-48 bg-blue-500/20 dark:bg-blue-500/15 border-l-2 border-blue-400'
+              : 'w-14 bg-blue-500/10 dark:bg-blue-500/5 border-l-2 border-dashed border-blue-400/50'
+          }`}
+        >
+          <div className="flex flex-col items-center gap-1 pointer-events-none">
+            <span className={`text-[10px] font-medium transition-colors ${isDropOver ? 'text-blue-400' : 'text-blue-400/70'}`}>
+              {isDropOver ? 'Drop to add to AI' : 'AI'}
+            </span>
+          </div>
+        </div>
+      )}
+
       <div
         className={`fixed right-0 top-0 bottom-0 w-[420px] bg-background border-l border-border shadow-lg z-40 flex flex-col transition-transform duration-200 ${isPanelOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}
       >
-        {/* Full-panel drop overlay — shown while an internal drag is active so
-            the entire sidebar accepts drops without relying on event bubbling
-            (which is unreliable in WebView2 on Windows). */}
+        {/* Full-panel drop overlay — shown while an internal drag is active.
+            Always visible with a subtle tint so user knows where to drop. */}
         {isDragActive && isPanelOpen && (
           <div
             {...overlayDropHandlers}
             className={`absolute inset-0 z-50 transition-colors ${
-              isDropOver ? 'bg-blue-50/80 ring-2 ring-blue-400 ring-inset' : ''
+              isDropOver
+                ? 'bg-blue-500/20 dark:bg-blue-400/10 ring-2 ring-blue-400 ring-inset'
+                : 'bg-blue-500/5 dark:bg-blue-400/5 ring-1 ring-blue-400/30 ring-inset'
             }`}
           >
-            {isDropOver && (
-              <div className="flex items-center justify-center h-full pointer-events-none">
-                <span className="text-blue-500 text-sm font-medium bg-white/90 px-3 py-1.5 rounded-full shadow-sm">
-                  Drop to add to context
-                </span>
-              </div>
-            )}
+            <div className="flex items-center justify-center h-full pointer-events-none">
+              <span className={`text-sm font-medium px-3 py-1.5 rounded-full shadow-sm transition-colors ${
+                isDropOver
+                  ? 'text-blue-500 bg-white/90 dark:bg-slate-800/90 dark:text-blue-300'
+                  : 'text-blue-400/60 bg-white/50 dark:bg-slate-800/50 dark:text-blue-400/50'
+              }`}>
+                {isDropOver ? 'Drop to add to context' : 'Drop items here'}
+              </span>
+            </div>
           </div>
         )}
 

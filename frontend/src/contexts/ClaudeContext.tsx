@@ -111,28 +111,36 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     lastAnonymizedCount: 0,
   }));
 
-  // Load persisted API key from backend on mount (B033: cleanup on unmount)
+  // Load persisted API key from native Tauri store on mount
   useEffect(() => {
-    const controller = new AbortController();
+    let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${BACKEND}/get-api-key`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ provider: 'claude' }),
-          signal: controller.signal,
-        });
-        if (res.ok) {
-          const key = await res.json();
-          if (key && typeof key === 'string' && key.length > 0) {
-            setState(prev => ({ ...prev, apiKey: key }));
-          }
+        const { invoke } = await import('@tauri-apps/api/core');
+        const key = await invoke<string>('api_get_api_key', { provider: 'claude' });
+        if (!cancelled && key && key.length > 0) {
+          setState(prev => ({ ...prev, apiKey: key }));
         }
       } catch {
-        // Backend not available or aborted, key stays null
+        // Tauri not available (e.g. in browser dev), try backend fallback
+        try {
+          const res = await fetch(`${BACKEND}/get-api-key`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider: 'claude' }),
+          });
+          if (!cancelled && res.ok) {
+            const key = await res.json();
+            if (key && typeof key === 'string' && key.length > 0) {
+              setState(prev => ({ ...prev, apiKey: key }));
+            }
+          }
+        } catch {
+          // Neither available, key stays null
+        }
       }
     })();
-    return () => controller.abort();
+    return () => { cancelled = true; };
   }, []);
 
   // B017: Cleanup RAF and abort SSE on unmount
@@ -344,11 +352,19 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
 
   const setApiKey = useCallback((key: string) => {
     setState(prev => ({ ...prev, apiKey: key }));
-    fetch(`${BACKEND}/save-api-key`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: 'claude', apiKey: key }),
-    }).catch(() => {});
+    // Save via native Tauri command (primary), backend HTTP fallback
+    (async () => {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('api_save_api_key', { provider: 'claude', apiKey: key });
+      } catch {
+        fetch(`${BACKEND}/save-api-key`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: 'claude', apiKey: key }),
+        }).catch(() => {});
+      }
+    })();
   }, []);
 
   const setModel = useCallback((model: string) => {
@@ -506,9 +522,12 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       body,
       handleStreamEvent,
       (err) => {
+        const msg = err.message === 'Failed to fetch'
+          ? 'Could not connect to backend server. Make sure the backend is running on port 5167.'
+          : err.message;
         handleStreamEvent({
           event_type: 'error',
-          text: err.message,
+          text: msg,
           tool_name: null,
           tool_input: null,
           tool_output: null,

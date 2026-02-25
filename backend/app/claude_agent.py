@@ -182,6 +182,13 @@ answer questions, and help with follow-up actions.
 # Streaming query with Windows ProactorEventLoop bridge
 # ---------------------------------------------------------------------------
 
+def _stderr_handler(line: str) -> None:
+    """Capture stderr output from the bundled claude.exe CLI for debugging."""
+    stripped = line.strip()
+    if stripped:
+        logger.debug("claude-cli stderr: %s", stripped)
+
+
 def _build_options(
     api_key: str,
     project_dir: str,
@@ -189,7 +196,7 @@ def _build_options(
     system_prompt: Optional[str] = None,
     model: str = "claude-opus-4-6",
 ) -> ClaudeAgentOptions:
-    allowed = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+    allowed = ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite", "AskUserQuestion"]
     # Wildcard-allow all tools from each configured MCP server
     for name in _MCP_SERVERS:
         allowed.append(f"mcp__{name}__*")
@@ -205,6 +212,7 @@ def _build_options(
             # the backend itself runs inside a Claude Code environment.
             "CLAUDECODE": "",
         },
+        stderr=_stderr_handler,
         include_partial_messages=True,
         **({"mcp_servers": _MCP_SERVERS} if _MCP_SERVERS else {}),
     )
@@ -297,6 +305,107 @@ async def _query_bridge(
         logger.warning("Claude query thread for session did not stop within 5s timeout")
 
 
+def _build_system_prompt(meeting_title: str, project_dir: str) -> str:
+    """Build a system prompt for brand-new sessions."""
+    platform_note = (
+        "The user is on Windows. Use PowerShell-compatible commands in Bash. "
+        "Prefer Read, Glob, and Grep tools over Bash for file exploration."
+    ) if sys.platform == "win32" else ""
+
+    return (
+        f"You are an AI assistant embedded in Tandem, a meeting assistant app. "
+        f'You are helping with the meeting: "{meeting_title}". '
+        f"The project directory is: {project_dir}. "
+        f"You have access to file tools (Read, Write, Edit, Glob, Grep) and Bash. "
+        f"{platform_note}"
+        f"Be concise and helpful."
+    )
+
+
+async def _run_query_stream(
+    meeting_id: str,
+    session: SessionState,
+    prompt: str,
+    options: ClaudeAgentOptions,
+) -> AsyncIterator[dict]:
+    """
+    Core streaming loop: runs the SDK query and yields SSE event dicts.
+    Extracted to allow retry logic in stream_session.
+    """
+    session_init_sent = False
+    tool_call_map: dict[str, str] = {}
+
+    async for msg in _query_bridge(prompt, options, session.cancel_event):
+
+        # --- StreamEvent: real-time partial updates -----------------
+        if isinstance(msg, StreamEvent):
+            if msg.session_id and not session_init_sent:
+                session.session_id = msg.session_id
+                session_init_sent = True
+                yield _make_event(
+                    meeting_id,
+                    event_type="session_init",
+                    session_id=msg.session_id,
+                )
+
+            event_data = msg.event or {}
+            etype = event_data.get("type", "")
+
+            if etype == "content_block_delta":
+                delta = event_data.get("delta", {})
+                if delta.get("type") == "text_delta":
+                    text = delta.get("text", "")
+                    if text:
+                        yield _make_event(
+                            meeting_id,
+                            event_type="text_delta",
+                            text=text,
+                        )
+
+        # --- AssistantMessage: complete message with content blocks -
+        elif isinstance(msg, AssistantMessage):
+            for block in msg.content:
+                if isinstance(block, ToolUseBlock):
+                    tool_call_map[block.id] = block.name
+                    yield _make_event(
+                        meeting_id,
+                        event_type="tool_call",
+                        tool_name=block.name,
+                        tool_input=(
+                            json.dumps(block.input)
+                            if isinstance(block.input, dict)
+                            else str(block.input)
+                        ),
+                    )
+
+        # --- UserMessage: contains ToolResultBlock from SDK --------
+        elif isinstance(msg, UserMessage):
+            content = msg.content
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, ToolResultBlock):
+                        name = tool_call_map.get(block.tool_use_id, "unknown")
+                        output = block.content
+                        if isinstance(output, list):
+                            output = json.dumps(output)
+                        yield _make_event(
+                            meeting_id,
+                            event_type="tool_result",
+                            tool_name=name,
+                            tool_output=str(output) if output else "",
+                        )
+
+        # --- ResultMessage: final result with session_id & cost ----
+        elif isinstance(msg, ResultMessage):
+            session.session_id = msg.session_id
+            yield _make_event(
+                meeting_id,
+                event_type="done",
+                session_id=msg.session_id,
+                cost_usd=msg.total_cost_usd,
+            )
+
+
 async def stream_session(
     meeting_id: str,
     project_dir: str,
@@ -309,6 +418,7 @@ async def stream_session(
     """
     Stream an AI assistant session, yielding SSE-compatible event dicts.
     Handles both new sessions and session resume automatically.
+    If resume fails, automatically falls back to a fresh session.
     """
     # B034: Validate model parameter
     if model not in _VALID_MODELS:
@@ -345,13 +455,9 @@ async def stream_session(
     # System prompt for brand-new sessions
     system_prompt = None
     if not session.session_id and meeting_title:
-        system_prompt = (
-            f"You are an AI assistant embedded in Tandem, a meeting assistant app. "
-            f'You are helping with the meeting: "{meeting_title}". '
-            f"The project directory is: {project_dir}. "
-            f"You have access to file tools (Read, Write, Edit, Glob, Grep) and Bash. "
-            f"Be concise and helpful."
-        )
+        system_prompt = _build_system_prompt(meeting_title, project_dir)
+
+    was_resuming = bool(session.session_id)
 
     options = _build_options(
         api_key=api_key,
@@ -364,81 +470,9 @@ async def stream_session(
     # Reset cancel flag for this run
     session.cancel_event.clear()
 
-    session_init_sent = False
-    tool_call_map: dict[str, str] = {}  # tool_use_id -> tool_name
-
     try:
-        async for msg in _query_bridge(prompt, options, session.cancel_event):
-
-            # --- StreamEvent: real-time partial updates -----------------
-            if isinstance(msg, StreamEvent):
-                # Emit session_init on first sight of session_id
-                if msg.session_id and not session_init_sent:
-                    session.session_id = msg.session_id
-                    session_init_sent = True
-                    yield _make_event(
-                        meeting_id,
-                        event_type="session_init",
-                        session_id=msg.session_id,
-                    )
-
-                event_data = msg.event or {}
-                etype = event_data.get("type", "")
-
-                # Text streaming
-                if etype == "content_block_delta":
-                    delta = event_data.get("delta", {})
-                    if delta.get("type") == "text_delta":
-                        text = delta.get("text", "")
-                        if text:
-                            yield _make_event(
-                                meeting_id,
-                                event_type="text_delta",
-                                text=text,
-                            )
-
-            # --- AssistantMessage: complete message with content blocks -
-            elif isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, ToolUseBlock):
-                        tool_call_map[block.id] = block.name
-                        yield _make_event(
-                            meeting_id,
-                            event_type="tool_call",
-                            tool_name=block.name,
-                            tool_input=(
-                                json.dumps(block.input)
-                                if isinstance(block.input, dict)
-                                else str(block.input)
-                            ),
-                        )
-
-            # --- UserMessage: contains ToolResultBlock from SDK --------
-            elif isinstance(msg, UserMessage):
-                content = msg.content
-                if isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, ToolResultBlock):
-                            name = tool_call_map.get(block.tool_use_id, "unknown")
-                            output = block.content
-                            if isinstance(output, list):
-                                output = json.dumps(output)
-                            yield _make_event(
-                                meeting_id,
-                                event_type="tool_result",
-                                tool_name=name,
-                                tool_output=str(output) if output else "",
-                            )
-
-            # --- ResultMessage: final result with session_id & cost ----
-            elif isinstance(msg, ResultMessage):
-                session.session_id = msg.session_id
-                yield _make_event(
-                    meeting_id,
-                    event_type="done",
-                    session_id=msg.session_id,
-                    cost_usd=msg.total_cost_usd,
-                )
+        async for event in _run_query_stream(meeting_id, session, prompt, options):
+            yield event
 
     except asyncio.CancelledError:
         yield _make_event(
@@ -447,15 +481,57 @@ async def stream_session(
             session_id=session.session_id,
         )
     except Exception as e:
-        # B004: Sanitize potential API key from error messages before logging
         error_str = str(e)
         if api_key and len(api_key) > 8:
             error_str = error_str.replace(api_key, "sk-ant-***")
-        logger.error("Claude agent error for meeting %s: %s", meeting_id, error_str)
-        yield _make_event(
-            meeting_id,
-            event_type="error",
-            text=error_str,
-        )
+
+        # If resume failed, fall back to a fresh session automatically
+        if was_resuming and "exit code" in error_str:
+            logger.warning(
+                "Resume failed for meeting %s (%s), retrying as new session",
+                meeting_id, error_str,
+            )
+            session.session_id = None
+            session.cancel_event.clear()
+
+            # Rebuild options without resume, with system prompt
+            system_prompt = _build_system_prompt(
+                meeting_title or "Meeting", project_dir,
+            )
+            retry_options = _build_options(
+                api_key=api_key,
+                project_dir=project_dir,
+                session_id=None,
+                system_prompt=system_prompt,
+                model=model,
+            )
+
+            try:
+                async for event in _run_query_stream(
+                    meeting_id, session, prompt, retry_options,
+                ):
+                    yield event
+            except Exception as retry_err:
+                retry_str = str(retry_err)
+                if api_key and len(api_key) > 8:
+                    retry_str = retry_str.replace(api_key, "sk-ant-***")
+                logger.error(
+                    "Claude agent retry also failed for meeting %s: %s",
+                    meeting_id, retry_str,
+                )
+                yield _make_event(
+                    meeting_id,
+                    event_type="error",
+                    text=retry_str,
+                )
+        else:
+            logger.error(
+                "Claude agent error for meeting %s: %s", meeting_id, error_str,
+            )
+            yield _make_event(
+                meeting_id,
+                event_type="error",
+                text=error_str,
+            )
     finally:
         session.cancel_event.clear()
