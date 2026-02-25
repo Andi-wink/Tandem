@@ -8,8 +8,11 @@ import { ContextBasket } from './ContextBasket';
 import { ConversationView } from './ConversationView';
 import { ProjectDirModal } from './ProjectDirModal';
 import { EntityMapViewer } from './EntityMapViewer';
+import { SlashCommandAutocomplete } from './SlashCommandAutocomplete';
 import { useDropZone, useDragActive } from '@/hooks/useDragAndDrop';
 import { useSelection } from '@/contexts/SelectionContext';
+import { useSlashCommand } from '@/hooks/useSlashCommand';
+import { useRecordingState } from '@/contexts/RecordingStateContext';
 
 export function ClaudePanel() {
   const {
@@ -50,6 +53,24 @@ export function ClaudePanel() {
   const isDragActive = useDragActive();
   const { clearSelection } = useSelection();
   const { isOver: isDropOver, dropHandlers: overlayDropHandlers } = useDropZone(addToBasket, clearSelection);
+  const recordingState = useRecordingState();
+
+  // F018: Slash command state
+  const {
+    activeCommand,
+    showAutocomplete,
+    filteredCommands,
+    selectedIndex,
+    capturedSegmentCount,
+    handleInputForCommands,
+    activateCommand,
+    cancelCommand,
+    selectPrev,
+    selectNext,
+    getSelectedCommand,
+    buildCommandMessage,
+    dismissAutocomplete,
+  } = useSlashCommand();
 
   // Auto-focus input when panel opens
   useEffect(() => {
@@ -60,19 +81,35 @@ export function ClaudePanel() {
 
   // Auto-resize textarea
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInputText(e.target.value);
+    const value = e.target.value;
+    setInputText(value);
     const el = e.target;
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+
+    // F018: Detect slash commands for autocomplete
+    handleInputForCommands(value);
   };
 
   const handleSend = async () => {
     const text = inputText.trim();
     if (!text || isStreaming) return;
 
+    // F018: If a slash command is active, build the expanded message
+    let messageToSend = text;
+    if (activeCommand) {
+      const { message, capturedBasketItem } = buildCommandMessage(text);
+      messageToSend = message;
+      // Add captured transcript as a basket item before sending
+      if (capturedBasketItem) {
+        addToBasket(capturedBasketItem);
+      }
+      cancelCommand();
+    }
+
     // Show setup modal if no session yet, API key missing, or projectDir empty
     if ((!sessionId && meetingId && meetingTitle) || !hasApiKey || !projectDir) {
-      setPendingFirstMessage(text);
+      setPendingFirstMessage(messageToSend);
       setShowProjectModal(true);
       return;
     }
@@ -83,7 +120,7 @@ export function ClaudePanel() {
     }
 
     try {
-      await sendMessage(text);
+      await sendMessage(messageToSend);
     } catch (err) {
       console.error('Failed to send message:', err);
       toast.error(err instanceof Error ? err.message : 'Failed to send message');
@@ -111,6 +148,53 @@ export function ClaudePanel() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // F018: Slash command autocomplete navigation
+    if (showAutocomplete) {
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        selectPrev();
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        selectNext();
+        return;
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const cmd = getSelectedCommand();
+        if (cmd) {
+          const newText = activateCommand(cmd);
+          setInputText(newText);
+        }
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        const cmd = getSelectedCommand();
+        if (cmd) {
+          // Select the command (don't send yet)
+          const newText = activateCommand(cmd);
+          setInputText(newText);
+        }
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        dismissAutocomplete();
+        return;
+      }
+    }
+
+    // F018: Escape cancels active command
+    if (activeCommand && e.key === 'Escape') {
+      e.preventDefault();
+      cancelCommand();
+      setInputText('');
+      return;
+    }
+
+    // Normal Enter to send
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -230,7 +314,40 @@ export function ClaudePanel() {
 
         {/* Input */}
         <div className="border-t border-border p-3 flex-shrink-0">
-          <div className="flex items-end gap-2">
+          {/* F018: Active command capture indicator */}
+          {activeCommand && (
+            <div className="flex items-center justify-between mb-2 px-2 py-1.5 rounded-md bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/30 text-xs">
+              <div className="flex items-center gap-2">
+                {recordingState.isRecording && (
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500" />
+                  </span>
+                )}
+                <span className="font-mono font-medium text-blue-700 dark:text-blue-300">
+                  /{activeCommand.name}
+                </span>
+                {recordingState.isRecording ? (
+                  <span className="text-blue-600 dark:text-blue-400">
+                    Capturing live transcript ({capturedSegmentCount} segment{capturedSegmentCount !== 1 ? 's' : ''})
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">
+                    No active recording
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={() => { cancelCommand(); setInputText(''); }}
+                className="text-muted-foreground hover:text-red-500 ml-2"
+                title="Cancel command"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          <div className="relative flex items-end gap-2">
             <Popover>
               <PopoverTrigger asChild>
                 <button
@@ -267,16 +384,30 @@ export function ClaudePanel() {
               <Shield className="w-3 h-3" />
               <span>{anonymizationEnabled ? 'PII' : 'PII'}</span>
             </button>
-            <textarea
-              ref={inputRef}
-              value={inputText}
-              onChange={handleInputChange}
-              onKeyDown={handleKeyDown}
-              placeholder="Ask about this meeting..."
-              disabled={isStreaming}
-              rows={1}
-              className="flex-1 resize-none border border-border rounded-lg px-3 py-2 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:bg-muted"
-            />
+            <div className="relative flex-1">
+              {/* F018: Slash command autocomplete dropdown */}
+              {showAutocomplete && (
+                <SlashCommandAutocomplete
+                  commands={filteredCommands}
+                  selectedIndex={selectedIndex}
+                  onSelect={(cmd) => {
+                    const newText = activateCommand(cmd);
+                    setInputText(newText);
+                    inputRef.current?.focus();
+                  }}
+                />
+              )}
+              <textarea
+                ref={inputRef}
+                value={inputText}
+                onChange={handleInputChange}
+                onKeyDown={handleKeyDown}
+                placeholder={activeCommand ? `Type additional context for /${activeCommand.name}...` : 'Ask about this meeting... (type / for commands)'}
+                disabled={isStreaming}
+                rows={1}
+                className="w-full resize-none border border-border rounded-lg px-3 py-2 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:bg-muted"
+              />
+            </div>
             {isStreaming ? (
               <Button
                 size="sm"

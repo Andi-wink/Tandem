@@ -51,7 +51,7 @@ const DraggableChunkButton = memo(function DraggableChunkButton({
       data-selectable-id={chunk.id}
       onClick={handleClick}
       disabled={inBasket}
-      className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs border transition-all ${
+      className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs border select-none transition-all ${
         isDragging ? 'opacity-60 ring-2 ring-blue-400 shadow-[0_0_12px_rgba(59,130,246,0.4)] scale-[0.97]' : ''
       } ${
         isSelected && !inBasket ? 'bg-blue-100 dark:bg-blue-900/40 border-blue-400 ring-1 ring-blue-300' : ''
