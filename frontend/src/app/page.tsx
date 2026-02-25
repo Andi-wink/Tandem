@@ -18,6 +18,8 @@ import { useRecordingStart } from '@/hooks/useRecordingStart';
 import { useRecordingStop } from '@/hooks/useRecordingStop';
 import { useTranscriptRecovery } from '@/hooks/useTranscriptRecovery';
 import { TranscriptRecovery } from '@/components/TranscriptRecovery';
+import { useHandoffExport } from '@/hooks/useHandoffExport';
+import { HandoffDialog } from '@/components/HandoffDialog';
 import { indexedDBService } from '@/services/indexedDBService';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
@@ -54,6 +56,17 @@ export default function Home() {
     setIsRecordingState,
     setIsRecordingDisabled
   );
+
+  // F020: Handoff export (registers window.triggerHandoff for auto + manual triggers)
+  const {
+    showHandoffDialog,
+    isGenerating: isHandoffGenerating,
+    anonymizeChecked,
+    setAnonymizeChecked,
+    piiAvailable,
+    confirmHandoff,
+    cancelHandoff,
+  } = useHandoffExport();
 
   // Recovery hook
   const {
@@ -207,6 +220,17 @@ export default function Home() {
         modals={modals}
         messages={messages}
         onClose={hideModal}
+      />
+
+      {/* F020: Handoff dialog */}
+      <HandoffDialog
+        open={showHandoffDialog}
+        onConfirm={confirmHandoff}
+        onCancel={cancelHandoff}
+        anonymizeChecked={anonymizeChecked}
+        onAnonymizeChange={setAnonymizeChecked}
+        piiAvailable={piiAvailable}
+        isGenerating={isHandoffGenerating}
       />
 
       {/* Recovery Dialog */}
