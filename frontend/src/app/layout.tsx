@@ -28,6 +28,7 @@ import { SelectionProvider } from '@/contexts/SelectionContext'
 import { ClaudePanel } from '@/components/ClaudePanel'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ThemeProvider } from 'next-themes'
+import { ComposeProviders } from '@/components/ComposeProviders'
 
 const sourceSans3 = Source_Sans_3({
   subsets: ['latin'],
@@ -107,56 +108,44 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={`${sourceSans3.variable} font-sans antialiased`}>
-        <ThemeProvider attribute="class" defaultTheme="dark" storageKey="tandem-theme" enableSystem={false}>
-        <AnalyticsProvider>
-          <RecordingStateProvider>
-            <TranscriptProvider>
-              <ConfigProvider>
-                <OllamaDownloadProvider>
-                  <OnboardingProvider>
-                    <UpdateCheckProvider>
-                      <SidebarProvider>
-                        <TooltipProvider>
-                          <RecordingPostProcessingProvider>
-                          <ClipboardProvider>
-                          <ScreenshotProvider>
-                          <SelectionProvider>
-                          <ClaudeProvider>
-                            {/* Download progress toast provider - listens for background downloads */}
-                            <DownloadProgressToastProvider />
+        {/* R010: Flat provider list instead of 15-deep nesting pyramid */}
+        <ComposeProviders providers={[
+          [ThemeProvider, { attribute: 'class', defaultTheme: 'dark', storageKey: 'tandem-theme', enableSystem: false }],
+          [AnalyticsProvider],
+          [RecordingStateProvider],
+          [TranscriptProvider],
+          [ConfigProvider],
+          [OllamaDownloadProvider],
+          [OnboardingProvider],
+          [UpdateCheckProvider],
+          [SidebarProvider],
+          [TooltipProvider],
+          [RecordingPostProcessingProvider],
+          [ClipboardProvider],
+          [ScreenshotProvider],
+          [SelectionProvider],
+          [ClaudeProvider],
+        ]}>
+          {/* Download progress toast provider - listens for background downloads */}
+          <DownloadProgressToastProvider />
 
-                            {/* Show onboarding or main app */}
-                            {showOnboarding ? (
-                              <OnboardingFlow onComplete={handleOnboardingComplete} />
-                            ) : (
-                              <div className="flex">
-                                <ErrorBoundary fallbackLabel="Sidebar">
-                                  <Sidebar />
-                                </ErrorBoundary>
-                                <ErrorBoundary fallbackLabel="Main content">
-                                  <MainContent>{children}</MainContent>
-                                </ErrorBoundary>
-                                <ErrorBoundary fallbackLabel="AI Panel">
-                                  <ClaudePanel />
-                                </ErrorBoundary>
-                              </div>
-                            )}
-                          </ClaudeProvider>
-                          </SelectionProvider>
-                          </ScreenshotProvider>
-                          </ClipboardProvider>
-                          </RecordingPostProcessingProvider>
-                        </TooltipProvider>
-                      </SidebarProvider>
-                    </UpdateCheckProvider>
-                  </OnboardingProvider>
-
-                </OllamaDownloadProvider>
-              </ConfigProvider>
-            </TranscriptProvider>
-          </RecordingStateProvider>
-        </AnalyticsProvider>
-        </ThemeProvider>
+          {/* Show onboarding or main app */}
+          {showOnboarding ? (
+            <OnboardingFlow onComplete={handleOnboardingComplete} />
+          ) : (
+            <div className="flex">
+              <ErrorBoundary fallbackLabel="Sidebar">
+                <Sidebar />
+              </ErrorBoundary>
+              <ErrorBoundary fallbackLabel="Main content">
+                <MainContent>{children}</MainContent>
+              </ErrorBoundary>
+              <ErrorBoundary fallbackLabel="AI Panel">
+                <ClaudePanel />
+              </ErrorBoundary>
+            </div>
+          )}
+        </ComposeProviders>
         <Toaster position="bottom-center" richColors closeButton />
       </body>
     </html>
