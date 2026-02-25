@@ -3,6 +3,8 @@ import { ChevronRight, ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ClaudeMessage, ClaudeToolCall } from '@/contexts/ClaudeContext';
+import { TodoWriteBlock, parseTodoInput } from './TodoWriteBlock';
+import { AskUserQuestionBlock, parseQuestionInput } from './AskUserQuestionBlock';
 
 interface ConversationViewProps {
   messages: ClaudeMessage[];
@@ -104,9 +106,16 @@ export function ConversationView({ messages, isStreaming }: ConversationViewProp
                   </ReactMarkdown>
                 </div>
               )}
-              {msg.toolCalls?.map((call, i) => (
-                <ToolCallBlock key={`${msg.id}-tool-${i}`} call={call} />
-              ))}
+              {msg.toolCalls?.map((call, i) => {
+                const key = `${msg.id}-tool-${i}`;
+                if (call.name === 'TodoWrite' && parseTodoInput(call.input)) {
+                  return <TodoWriteBlock key={key} call={call} />;
+                }
+                if (call.name === 'AskUserQuestion' && parseQuestionInput(call.input)) {
+                  return <AskUserQuestionBlock key={key} call={call} />;
+                }
+                return <ToolCallBlock key={key} call={call} />;
+              })}
               {msg.costUsd !== undefined && (
                 <div className="text-xs text-muted-foreground mt-1">
                   Cost: ${msg.costUsd.toFixed(4)}

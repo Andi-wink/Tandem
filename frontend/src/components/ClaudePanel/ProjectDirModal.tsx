@@ -17,6 +17,17 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
   const [useDefault, setUseDefault] = useState(true);
   const [keyInput, setKeyInput] = useState(apiKey || '');
 
+  // Resolve actual meeting folder path when no defaultDir is provided
+  useEffect(() => {
+    if (!defaultDir) {
+      invoke<string | null>('get_meeting_folder_path')
+        .then(path => {
+          if (path) setSelectedDir(path);
+        })
+        .catch(() => {});
+    }
+  }, [defaultDir]);
+
   const handleBrowse = async () => {
     try {
       const result = await invoke<string | null>('select_recording_folder');
@@ -36,7 +47,8 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
   };
 
   const isKeyValid = keyInput.trim().startsWith('sk-ant-') && keyInput.trim().length > 20;
-  const canConfirm = isKeyValid;
+  const hasDirSelected = selectedDir.trim().length > 0;
+  const canConfirm = isKeyValid && hasDirSelected;
 
   // B026: Close on Escape key
   useEffect(() => {
@@ -107,7 +119,13 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
               />
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium">Meeting folder (default)</div>
-                <div className="text-xs text-muted-foreground truncate">{defaultDir}</div>
+                {useDefault && selectedDir ? (
+                  <div className="text-xs text-muted-foreground truncate">{selectedDir}</div>
+                ) : !useDefault && defaultDir ? (
+                  <div className="text-xs text-muted-foreground truncate">{defaultDir}</div>
+                ) : (
+                  <div className="text-xs text-amber-500">Waiting for meeting folder...</div>
+                )}
               </div>
             </label>
 

@@ -70,8 +70,8 @@ export function ClaudePanel() {
     const text = inputText.trim();
     if (!text || isStreaming) return;
 
-    // Show setup modal if no session yet or API key missing
-    if ((!sessionId && meetingId && meetingTitle) || !hasApiKey) {
+    // Show setup modal if no session yet, API key missing, or projectDir empty
+    if ((!sessionId && meetingId && meetingTitle) || !hasApiKey || !projectDir) {
       setPendingFirstMessage(text);
       setShowProjectModal(true);
       return;
@@ -280,12 +280,12 @@ export function ClaudePanel() {
             {isStreaming ? (
               <Button
                 size="sm"
-                variant="outline"
+                variant="destructive"
                 onClick={cancelStream}
                 className="flex-shrink-0"
                 title="Stop"
               >
-                <Square className="w-4 h-4" />
+                <Square className="w-3.5 h-3.5 fill-current" />
               </Button>
             ) : (
               <Button
