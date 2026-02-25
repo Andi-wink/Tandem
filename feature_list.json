@@ -3,7 +3,7 @@
   "description": "Discovery Call Assistant - fork of Meetily (Zackriya-Solutions/meeting-minutes) transformed for sales discovery calls with screenshots, clipboard integration, PII sanitization, and AI-powered insights",
   "base_branch": "main",
   "working_branch": "main",
-  "last_updated": "2026-02-23",
+  "last_updated": "2026-02-25",
   "features": [
     {
       "id": "F001",
@@ -828,6 +828,246 @@
       "dependencies": ["F018"],
       "output_format": "markdown",
       "output_example": "## Meeting: Discovery Call with Acme\\n## Date: 2026-02-24 | Duration: 47 min\\n\\n## Transcript\\n- [00:00] Hi everyone...\\n- [00:05] Thanks for joining...\\n\\n## Screenshots\\n- [02:30] screenshots/screenshot_20260224_120530_abc12345.png (1920x1080, fullscreen)\\n\\n## Clipboard Clips\\n- [02:45] Budget is $50k-75k for Q3\\n\\n## AI Conversation\\n**User**: /research Acme Corp competitors\\n**Assistant**: Based on the transcript...\\n\\n## Action Items\\n- [ ] Implement F019 (API key encryption)\\n- [ ] Fix dark mode on settings note box",
+      "passes": false
+    },
+    {
+      "id": "F021",
+      "category": "functional",
+      "name": "Calendar Integration & Auto-Recording",
+      "description": "Connect to Google Calendar and Outlook to detect upcoming meetings and auto-start recording when they begin. Every competitor has this — without it, users must manually press 'record' every time, leading to forgotten recordings and abandonment. Auto-stop on meeting end. Show next meeting in sidebar with countdown.",
+      "priority": "critical",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Rust OAuth module: new src-tauri/src/calendar/ with oauth.rs, google.rs, microsoft.rs, token_store.rs, commands.rs. Use `oauth2` crate (v4.4) with PKCE + `tauri-plugin-oauth` (v2.0.0) for localhost redirect capture. Google uses loopback redirect (http://127.0.0.1:{port}), scope calendar.events.readonly. Microsoft uses same pattern, scope Calendars.Read via Graph API /me/calendarView",
+        "Phase 2 — Calendar polling: new CalendarContext.tsx with adaptive polling (5min idle → 60s approaching → 15s imminent). Use Google syncToken / Microsoft deltaToken for efficient incremental sync (only changed events). Both APIs auto-expand recurring meetings (Google: singleEvents=true, Microsoft: /calendarView endpoint)",
+        "Phase 3 — Auto-record trigger: CalendarContext detects meeting within configurable lead time (30s default), shows toast with cancel button, then calls existing recordingService.startRecordingWithDevices() with meeting title pre-filled from calendar event",
+        "Phase 4 — Auto-stop: on calendar end time + 2min grace period, or VAD silence > 3min (reuse existing pipeline.rs VAD), show 'Stop recording?' toast with snooze option",
+        "Phase 5 — Sidebar widget: NextMeetingCard component showing countdown, title, attendees. Placed above meetings list",
+        "Phase 6 — Settings: CalendarSettings component — connect/disconnect Google/Microsoft accounts, toggle auto-record per calendar, configure lead time (0/30/60s)",
+        "Phase 7 — Token storage: use tauri-plugin-store (encrypted) initially, migrate to OS keychain when F019 lands"
+      ],
+      "dependencies": ["F019"],
+      "implementation": {
+        "rust_crates": ["oauth2 4.4", "tauri-plugin-oauth 2.0.0"],
+        "npm_packages": ["@fabianlars/tauri-plugin-oauth ^2.0.0"],
+        "google_auth": "Authorization Code + PKCE, loopback redirect, no client_secret needed for desktop app type",
+        "microsoft_auth": "Authorization Code + PKCE via @azure/msal-node PublicClientApplication, Graph API v1.0",
+        "rate_limits": "Google: 1M/day (sync tokens = ~300-500 calls/day). Microsoft: 4 req/s/mailbox",
+        "no_webhooks": "Desktop apps can't receive push notifications — polling with sync/delta tokens is the only option",
+        "new_files": [
+          "frontend/src-tauri/src/calendar/mod.rs",
+          "frontend/src-tauri/src/calendar/oauth.rs",
+          "frontend/src-tauri/src/calendar/google.rs",
+          "frontend/src-tauri/src/calendar/microsoft.rs",
+          "frontend/src-tauri/src/calendar/token_store.rs",
+          "frontend/src-tauri/src/calendar/commands.rs",
+          "frontend/src/contexts/CalendarContext.tsx",
+          "frontend/src/services/calendarService.ts",
+          "frontend/src/components/CalendarSettings.tsx",
+          "frontend/src/components/NextMeetingCard.tsx"
+        ],
+        "effort_estimate": "3-4 weeks"
+      },
+      "passes": false
+    },
+    {
+      "id": "F022",
+      "category": "functional",
+      "name": "Speaker Diarization (Who Said What)",
+      "description": "Identify and label different speakers in the transcript. Without diarization, transcripts are a single undifferentiated stream — useless for meeting notes where 'who said it' matters. Use pyannote.audio for local on-device diarization to maintain the privacy-first promise. Speaker labels appear inline with transcript segments.",
+      "priority": "critical",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Install: pip install pyannote-audio>=4.0.0 torch (CUDA). One-time download of pyannote/speaker-diarization-community-1 (CC-BY-4.0, ~1GB) from HuggingFace to local models/ dir. Runs fully offline after download",
+        "Phase 2 — Backend diarizer.py: DiarizationService class wrapping Pipeline.from_pretrained(local_path). POST /api/diarize endpoint accepts audio file path, runs pyannote pipeline, returns speaker segments [{speaker, start, end}]. Background task since GPU takes 1.5-5min for 30min audio",
+        "Phase 3 — Alignment: for each existing Whisper transcript segment (already has audio_start_time/audio_end_time), find pyannote speaker segment with greatest overlap at midpoint. Simple temporal intersection — no changes to Whisper pipeline needed",
+        "Phase 4 — Frontend: add optional speaker field to TranscriptUpdate type. Display 'Speaker 1:', 'Speaker 2:' prefixes with color-coded badges in TranscriptChunks.tsx and VirtualizedTranscriptView.tsx",
+        "Phase 5 — Speaker naming UI: after diarization completes, show modal where user can name speakers ('SPEAKER_00' → 'Sarah from Acme'). Names stored in backend SQLite speaker_profiles table",
+        "Phase 6 — Voice fingerprinting: extract 192-dim embeddings via pyannote/embedding model, store in speaker_profiles table (BLOB). On new meetings, match unknown speakers against known profiles via cosine similarity (threshold ~0.75). Running average updates embedding over multiple meetings",
+        "Phase 7 — Export: include speaker labels in all export formats (F010). Add speaker filter to transcript search"
+      ],
+      "dependencies": ["F010"],
+      "implementation": {
+        "library": "pyannote.audio 4.0 with speaker-diarization-community-1 (CC-BY-4.0, free, no gating)",
+        "alternatives_rejected": {
+          "WhisperX": "Uses its own faster-whisper engine — would duplicate Tandem's existing whisper-rs transcription",
+          "NeMo": "Overkill, 2x slower pipeline, 4-speaker limit for Sortformer, 3GB+ install",
+          "SpeechBrain": "Good embeddings but requires building own diarization pipeline, not batteries-included"
+        },
+        "performance": {
+          "gpu_rtx3090": "30min audio → 1.5-5min processing, 2-4GB VRAM",
+          "cpu_fallback": "30min audio → 15-40min processing, 4-8GB RAM",
+          "model_size": "~1GB on disk"
+        },
+        "architecture": "Post-processing (not real-time). After recording stops, send saved audio.mp4 path to backend /api/diarize. Pyannote runs on GPU, aligns with existing Whisper timestamps, returns speaker-labeled segments. Optional future: diart library for streaming real-time labels",
+        "new_files": [
+          "backend/app/diarizer.py",
+          "frontend/src/components/SpeakerNamingModal.tsx"
+        ],
+        "modified_files": [
+          "backend/requirements.txt",
+          "backend/app/main.py",
+          "backend/app/db.py",
+          "frontend/src/types/index.ts",
+          "frontend/src/components/TranscriptChunks.tsx",
+          "frontend/src/components/VirtualizedTranscriptView.tsx"
+        ],
+        "db_tables": ["speaker_profiles (id, display_name, embedding BLOB, sample_count)", "meeting_speakers (meeting_id, speaker_label, speaker_profile_id, confidence)"],
+        "effort_estimate": "3-4 weeks"
+      },
+      "passes": false
+    },
+    {
+      "id": "F023",
+      "category": "integration",
+      "name": "CRM Integration (Salesforce / HubSpot)",
+      "description": "Push meeting notes, action items, and structured insights to CRM records after a discovery call. For the sales use case (Tandem as Discovery Call Assistant), this is table-stakes — without CRM sync, the tool adds friction to the workflow rather than removing it. Support Salesforce and HubSpot as the two dominant CRMs, plus n8n webhook for everything else.",
+      "priority": "high",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Backend CRM module: new backend/app/crm/ package with base.py (abstract CRMClient interface), salesforce_client.py (simple-salesforce v1.12.9), hubspot_client.py (hubspot-api-client v9+), webhook_client.py (n8n/generic), oauth.py (route handlers), contact_matcher.py, models.py (Pydantic: MeetingCRMPayload, Attendee, ActionItem)",
+        "Phase 2 — Salesforce auth: Connected App with OAuth 2.0 + PKCE (no client_secret needed), redirect to localhost:5167/oauth/salesforce/callback. Scopes: api, refresh_token. Use simple-salesforce with session_id=access_token",
+        "Phase 3 — HubSpot auth: OAuth 2.0 (requires client_secret on backend side). Scopes: crm.objects.contacts.read/write, crm.objects.deals.read/write. Use hubspot-api-client official SDK",
+        "Phase 4 — Contact matching: 3-pass algorithm — (1) exact email match via SOSL/HubSpot search, (2) name search for unmatched, (3) company name from meeting title as fallback. Return candidates for user confirmation",
+        "Phase 5 — CRM push: create ContentNote (SF, base64 HTML) or hs_note_body (HS, raw HTML) linked to Contact/Opportunity. Create Task objects for each action item. Log Event/Call activity for the meeting itself. Both support HTML notes",
+        "Phase 6 — n8n webhook escape hatch: POST standardized JSON payload to user-configured webhook URL. Supports any CRM via n8n's 400+ integrations. Fire-and-forget with status callback",
+        "Phase 7 — Frontend: 'Push to CRM' button on meeting details, CRM connection settings in Settings page, sync status badges on sidebar meeting cards (synced/pending/failed)"
+      ],
+      "dependencies": ["F006", "F021", "F022"],
+      "implementation": {
+        "python_packages": ["simple-salesforce>=1.12.9 (sync — wrap with asyncio.to_thread)", "hubspot-api-client>=9.0.0 (official HubSpot SDK, updated Feb 2026)", "httpx>=0.27.0 (async webhook calls)"],
+        "salesforce_endpoints": {
+          "search": "SOSL FIND {email} IN EMAIL FIELDS RETURNING Contact, Lead",
+          "create_note": "POST /sobjects/ContentNote + ContentDocumentLink",
+          "create_task": "POST /sobjects/Task with WhoId/WhatId",
+          "log_meeting": "POST /sobjects/Event",
+          "rate_limit": "100K calls/day (Enterprise)"
+        },
+        "hubspot_endpoints": {
+          "search": "POST /crm/v3/objects/contacts/search with email filter",
+          "create_note": "POST /crm/v3/objects/notes with hs_note_body (HTML)",
+          "create_task": "POST /crm/v3/objects/tasks",
+          "log_call": "POST /crm/v3/objects/calls",
+          "association_type_ids": "Note→Contact=202, Task→Contact=204, Call→Contact=194",
+          "rate_limit": "190 req/10s burst, 650K/day (Pro)"
+        },
+        "note_format": "HTML with plain text fallback. Sections: summary, key points, action items, decisions. Tandem branding footer",
+        "token_storage": "New crm_connections table in backend SQLite (provider, access_token, refresh_token, instance_url, expires_at)",
+        "new_files": [
+          "backend/app/crm/__init__.py",
+          "backend/app/crm/base.py",
+          "backend/app/crm/salesforce_client.py",
+          "backend/app/crm/hubspot_client.py",
+          "backend/app/crm/webhook_client.py",
+          "backend/app/crm/oauth.py",
+          "backend/app/crm/contact_matcher.py",
+          "backend/app/crm/models.py",
+          "frontend/src/components/CRMSettings.tsx",
+          "frontend/src/components/CRMPushButton.tsx"
+        ],
+        "api_endpoints": [
+          "GET /api/crm/status",
+          "GET /api/crm/salesforce/auth",
+          "GET /api/crm/salesforce/callback",
+          "GET /api/crm/hubspot/auth",
+          "GET /api/crm/hubspot/callback",
+          "POST /api/crm/match-contacts",
+          "POST /api/crm/push",
+          "POST /api/crm/webhook/configure",
+          "POST /api/crm/webhook/test"
+        ],
+        "effort_estimate": "4-5 weeks"
+      },
+      "passes": false
+    },
+    {
+      "id": "F024",
+      "category": "infrastructure",
+      "name": "Enterprise Readiness (SOC 2, SSO, Admin Console)",
+      "description": "Enterprise buyers in regulated industries (legal, healthcare, finance) are the highest-value segment for a privacy-first tool, but they require SOC 2 certification, SSO/SCIM, admin controls, and audit logs before procurement will approve. This is the gate between 'interesting tool' and 'purchasable product' for enterprise.",
+      "priority": "high",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Audit logging (no server needed, 2 weeks): append-only SQLite table with hash chain for tamper evidence. Log auth, recording, transcript access, AI queries, settings changes, exports. Structured JSON events with ULID IDs. SQLite triggers prevent UPDATE/DELETE. Periodic Merkle root for verification",
+        "Phase 2 — Data retention (no server needed, 2 weeks): retention_policies and legal_holds tables in Rust SQLite. RetentionEnforcer runs on startup + hourly. Legal holds override retention. Secure file deletion (zero-overwrite before unlink) for audio files. Configurable per-org policy",
+        "Phase 3 — SSO via OIDC + PKCE (requires server, 4 weeks): use `openidconnect` Rust crate (v4.x) for OIDC Authorization Code + PKCE. System browser auth (not embedded webview per RFC 8252). Localhost loopback redirect. Supports Okta/Azure AD/Google Workspace natively. ALTERNATIVE: WorkOS ($0.25/MAU) handles SAML+OIDC+SCIM as single API, eliminates months of IdP work",
+        "Phase 4 — Lightweight identity server (requires hosting, 3 weeks): new FastAPI service with PostgreSQL. Handles user directory, license management, device enrollment, policy distribution. Desktop app polls for policy updates (pull model — works behind firewalls). Revocation check on launch + every 15-30min",
+        "Phase 5 — SCIM (requires server, 2 weeks): SCIM endpoint on identity server receives user create/update/delete from IdP. Critical for deprovisioning — revoking access within minutes when employee leaves. ALTERNATIVE: WorkOS SCIM handles all IdP quirks",
+        "Phase 6 — Admin console (3-4 weeks): React SPA web dashboard. User management, policy editor (retention, AI usage, recording rules), audit log search/filter/export, device enrollment status, compliance dashboard",
+        "Phase 7 — SOC 2 audit (6-14 months total): engage GRC platform (Vanta $10-25K/yr for automated evidence collection), readiness assessment ($15-30K), Type 1 audit ($20-50K, 2-3 months), then Type 2 observation period (6 months) + audit ($30-80K). Total first-year: ~$75K-185K including engineering"
+      ],
+      "implementation": {
+        "architecture_decision": "Data stays local on devices (privacy differentiator). Central server ONLY handles organizational metadata (users, policies, audit aggregation) — never meeting content. Hybrid model: 'compliance controls of centralized management + privacy guarantees of local data processing'",
+        "sso_libraries": {
+          "rust": "openidconnect v4.x (full OIDC RP with PKCE, discovery, token validation)",
+          "python": "authlib (OAuth/OIDC server-side), PyJWT (token validation)",
+          "shortcut": "WorkOS ($0.25/MAU) — unified SSO+SCIM API across all IdPs"
+        },
+        "audit_log_schema": "Structured JSON: {id (ULID), timestamp, event_type, severity, actor {user_id, email, device_id}, resource {type, id}, context {}, result, chain_hash, prev_hash}",
+        "retention_schema": "Tables: retention_policies, legal_holds, meeting_legal_holds. Legal hold is additive — meeting only eligible for deletion when ALL holds released",
+        "server_requirement": "SSO, SCIM, admin console, and audit aggregation ALL require a hosted server component. Cannot be fully local. MDM (Intune/Jamf) is a limited alternative for policy distribution only",
+        "soc2_auditors": ["Schellman", "A-LIGN", "Prescient Assurance", "Johanson Group"],
+        "grc_platforms": ["Vanta (recommended, has non-SaaS templates)", "Drata", "Secureframe"],
+        "total_budget": "$150K-$250K including engineering, tooling, and audit fees",
+        "total_timeline": "12-14 months to SOC 2 Type 2",
+        "effort_estimate": "Phase 1-2: 1.5 eng-months. Phase 3-6: 3 eng-months. Phase 7: ongoing support during audit"
+      },
+      "notes": "The hard truth: to sell to regulated enterprises, you need a central server component. WorkOS ($0.25/MAU) can shortcut SSO+SCIM by 2-3 months. Start with audit logging + retention (no server needed) to build SOC 2 foundation, then add identity server + admin console.",
+      "passes": false
+    },
+    {
+      "id": "F025",
+      "category": "functional",
+      "name": "Solo Mode (Mic-Only Recording)",
+      "description": "Add a 'Solo' recording mode alongside the default 'Meeting' mode. Solo skips system audio capture entirely (mic-only), uses a solo-optimized summary template (Key Ideas / Action Items / Reminders / Open Questions instead of meeting minutes), and gives the AI assistant a conversational single-speaker prompt. Mode selector appears as a toggle before recording starts. Titles auto-generate as 'Solo Note DD_MM_YY...' vs 'Meeting DD_MM_YY...'.",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Mode selector UI: segmented control (Meeting / Solo) on RecordingControls.tsx, state in page.tsx, passed through useRecordingStart → recordingService → Tauri invoke",
+        "Phase 2 — Mic-only capture: add recording_mode param to start_recording Tauri command, skip system device resolution and WASAPI loopback stream when solo, log 'Solo mode: skipping system audio capture'",
+        "Phase 3 — Store recording_mode: add column to both Rust SQLite (transcript.rs) and Python SQLite (db.py) meetings tables, default 'meeting', pass through save flow",
+        "Phase 4 — Solo summary template: define SOLO_SUMMARY_PROMPT in transcript_processor.py (Key Ideas / Action Items / Reminders / Open Questions / Raw Notes), inject via existing custom_prompt mechanism when recording_mode == 'solo'",
+        "Phase 5 — AI assistant awareness: append mode-specific context to claude_agent.py system prompt, pass recording_mode from ClaudeContext.tsx → claudeService.ts → backend SSE endpoints",
+        "Phase 6 — Sidebar differentiation: include recording_mode in CurrentMeeting interface, show different icon or 'Solo Note' label for solo recordings"
+      ],
+      "dependencies": [],
+      "modified_files": [
+        "frontend/src/components/RecordingControls.tsx",
+        "frontend/src/app/page.tsx",
+        "frontend/src/hooks/useRecordingStart.ts",
+        "frontend/src/services/recordingService.ts",
+        "frontend/src-tauri/src/lib.rs",
+        "frontend/src-tauri/src/audio/recording_commands.rs",
+        "frontend/src-tauri/src/audio/recording_preferences.rs",
+        "frontend/src-tauri/src/database/repositories/transcript.rs",
+        "frontend/src-tauri/src/api/api.rs",
+        "frontend/src/contexts/ClaudeContext.tsx",
+        "frontend/src/services/claudeService.ts",
+        "frontend/src/components/Sidebar/SidebarProvider.tsx",
+        "frontend/src/components/Sidebar/index.tsx",
+        "backend/app/db.py",
+        "backend/app/main.py",
+        "backend/app/transcript_processor.py",
+        "backend/app/claude_agent.py"
+      ],
+      "future_enhancements": [
+        "Filler word detection & speaking analytics (um/uh/like counts, WPM, pause patterns)",
+        "Voice trigger commands ('note to self', 'action item', 'new topic' → auto-tag transcript segments)",
+        "Auto-pause on extended silence (>30s VAD silence → auto-pause, resume on speech)",
+        "Practice/Rehearsal sub-mode (timer overlay, real-time filler counter, AI pacing feedback, compare takes)",
+        "Quick Capture mode (one-tap start, auto-stop on silence, AI-generated title, 'Quick Notes' sidebar section)"
+      ],
+      "notes": "The audio pipeline already supports optional system audio (system_device = None pads with zeros). Core implementation is mostly wiring — the main new logic is the solo summary prompt template and AI prompt awareness. No structural changes to the audio pipeline needed.",
       "passes": false
     }
   ]

@@ -1,10 +1,11 @@
 {
   "project": "Tandem",
   "description": "Comprehensive bug review across frontend (React/TypeScript), backend (Python/FastAPI), and Rust (Tauri audio system). Identified via static analysis of source code.",
-  "last_updated": "2026-02-24",
+  "last_updated": "2026-02-25",
   "summary": {
     "total": 33,
-    "critical": 3,
+    "critical": 1,
+    "critical_fixed": 2,
     "high": 8,
     "medium": 17,
     "low": 5
@@ -15,13 +16,14 @@
       "category": "backend",
       "component": "database",
       "severity": "critical",
-      "status": "open",
+      "status": "fixed",
       "name": "conn.total_changes AttributeError on aiosqlite",
       "description": "aiosqlite connections do not have a total_changes attribute (only synchronous sqlite3.Connection does). Will raise AttributeError at runtime when create_process() or save_transcript() is called. Should use cursor.rowcount instead, which is already used correctly elsewhere in the codebase.",
       "file": "backend/app/db.py",
       "lines": [191, 311],
       "fix": "Replace conn.total_changes with cursor.rowcount after the execute() call",
-      "passes": false
+      "fix_notes": "Verified 2026-02-25: all instances now use cursor.rowcount correctly. No references to total_changes remain.",
+      "passes": true
     },
     {
       "id": "B002",
@@ -34,7 +36,8 @@
       "file": "frontend/src-tauri/src/lib.rs",
       "lines": [66, 99, 100, 113],
       "related_files": ["frontend/src-tauri/src/audio/recording_commands.rs"],
-      "fix": "Consolidate into a single source of truth, or ensure both flags are updated atomically within the same error-handling boundary",
+      "fix": "Remove static IS_RECORDING and always derive from RECORDING_MANAGER.as_ref().map(|m| m.is_recording()).unwrap_or(false)",
+      "fix_notes": "Verified 2026-02-25: partially mitigated — frontend now polls backend state every 500ms via syncWithBackend(), reducing user-visible impact. But dual flags (IS_RECORDING AtomicBool + RecordingState.is_recording) still exist and can diverge on partial init failure.",
       "passes": false
     },
     {
@@ -44,11 +47,12 @@
       "severity": "critical",
       "name": "Unsafe static mut data race in pipeline.rs",
       "description": "SAMPLE_COUNTER is a non-atomic u64 mutated from multiple audio threads (mic + system capture) with no synchronization. This is undefined behavior per Rust semantics. Two threads can read/write simultaneously causing lost updates, torn reads, or compiler-optimized incorrect results.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src-tauri/src/audio/pipeline.rs",
       "lines": [51, 52, 53, 54, 55, 56, 57, 58],
       "fix": "Replace with static SAMPLE_COUNTER: AtomicU64 = AtomicU64::new(0) and use .fetch_add(1, Ordering::Relaxed)",
-      "passes": false
+      "fix_notes": "Verified 2026-02-25: now uses AtomicU64 with Ordering::Relaxed. No unsafe static mut remains in active code.",
+      "passes": true
     },
     {
       "id": "B004",

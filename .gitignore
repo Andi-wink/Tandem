@@ -86,3 +86,6 @@ __pycache__/
 
 # Claude Code
 .claude/
+
+# Dogfooding — local meeting recordings
+meetings/

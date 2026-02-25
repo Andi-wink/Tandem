@@ -98,6 +98,8 @@ cd frontend && pnpm tsc --noEmit     # TypeScript type check (no emit)
 cd frontend/src-tauri && cargo check  # Rust compilation check
 ```
 
+**CI requirement**: No tests run in CI yet. PRs should not merge without `pnpm tsc --noEmit`, `pnpm test`, and `pytest` passing. See `.github/workflows/` — test steps need to be added to `pr-main-check.yml`.
+
 ### Service Endpoints
 - **Whisper Server**: http://localhost:8178
 - **Backend API**: http://localhost:5167
