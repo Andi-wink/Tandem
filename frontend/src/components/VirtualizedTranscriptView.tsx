@@ -116,7 +116,7 @@ const DraggableClipboardItem = memo(function DraggableClipboardItem({
     return (
         <div
             {...dragHandlers}
-            className={`flex items-start gap-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/30 rounded-lg px-3 py-2 text-xs ${onClick ? 'cursor-grab hover:bg-amber-100' : ''} ${isDragging ? 'opacity-50' : ''}`}
+            className={`flex items-start gap-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/30 rounded-lg px-3 py-2 text-xs select-none ${onClick ? 'cursor-grab hover:bg-amber-100' : ''} ${isDragging ? 'opacity-60 ring-2 ring-blue-400 shadow-[0_0_12px_rgba(59,130,246,0.4)] scale-[0.97]' : ''}`}
             onClick={() => onClick?.(clip)}
         >
             <Clipboard className="w-3.5 h-3.5 text-amber-500 mt-0.5 shrink-0" />
@@ -151,7 +151,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
 
     return (
         <div id={`segment-${id}`} className="mb-3" {...dragHandlers}>
-            <div className={`flex items-start gap-2 ${isDragging ? 'opacity-50' : ''} ${basketItem ? 'cursor-grab' : ''}`}>
+            <div className={`flex items-start gap-2 select-none ${isDragging ? 'opacity-60 ring-2 ring-blue-400 shadow-[0_0_12px_rgba(59,130,246,0.4)] scale-[0.97] rounded-lg' : ''} ${basketItem ? 'cursor-grab' : ''}`}>
                 <Tooltip>
                     <TooltipTrigger>
                         <span className="text-xs text-muted-foreground mt-1 flex-shrink-0 min-w-[50px]">

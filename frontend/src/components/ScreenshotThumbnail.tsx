@@ -43,7 +43,7 @@ export const ScreenshotThumbnail = memo(function ScreenshotThumbnail({
   return (
     <div
       {...dragHandlers}
-      className={`group flex items-start gap-3 px-3 py-2 rounded-lg bg-blue-950/30 border border-blue-800/30 hover:border-blue-600/50 cursor-pointer transition-colors ${isDragging ? 'opacity-50' : ''} ${!inBasket ? 'cursor-grab' : ''}`}
+      className={`group relative flex items-start gap-3 px-3 py-2 rounded-lg bg-blue-950/30 border border-blue-800/30 hover:border-blue-600/50 cursor-pointer select-none transition-all ${isDragging ? 'opacity-60 ring-2 ring-blue-400 shadow-[0_0_12px_rgba(59,130,246,0.4)] scale-[0.97]' : ''} ${!inBasket ? 'cursor-grab' : ''}`}
       onClick={() => onClick(screenshot)}
     >
       {/* Timestamp */}
@@ -57,6 +57,7 @@ export const ScreenshotThumbnail = memo(function ScreenshotThumbnail({
           src={screenshot.thumbnail_base64}
           alt="Screenshot"
           className="h-16 w-auto object-cover"
+          draggable={false}
         />
         <div className="absolute top-1 left-1 bg-black/60 rounded px-1 py-0.5 flex items-center gap-1">
           <Camera className="w-3 h-3 text-blue-300" />
@@ -76,20 +77,19 @@ export const ScreenshotThumbnail = memo(function ScreenshotThumbnail({
         </span>
       </div>
 
-      {/* Add to AI button — visible when Claude panel is open */}
+      {/* Add to AI button — small, bottom-right corner */}
       {isPanelOpen && (
         <button
           onClick={handleAddToAI}
           disabled={inBasket}
-          className={`ml-auto self-center shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium border transition-colors ${
+          className={`absolute bottom-1.5 right-1.5 shrink-0 p-1 rounded transition-all ${
             inBasket
-              ? 'bg-blue-500/20 border-blue-500/30 text-blue-300 cursor-default'
-              : 'bg-blue-600/20 border-blue-500/30 text-blue-300 hover:bg-blue-500/30 hover:border-blue-400/50'
+              ? 'bg-blue-500/30 text-blue-300'
+              : 'bg-blue-600/30 text-blue-300 hover:bg-blue-500/40 opacity-0 group-hover:opacity-100'
           }`}
           title={inBasket ? 'Already in context' : 'Add screenshot to AI context'}
         >
           {inBasket ? <Check className="w-3 h-3" /> : <Plus className="w-3 h-3" />}
-          {inBasket ? 'Added' : 'AI'}
         </button>
       )}
     </div>
