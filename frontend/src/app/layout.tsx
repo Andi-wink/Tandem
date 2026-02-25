@@ -24,6 +24,7 @@ import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcess
 import { ScreenshotProvider } from '@/contexts/ScreenshotContext'
 import { ClipboardProvider } from '@/contexts/ClipboardContext'
 import { ClaudeProvider } from '@/contexts/ClaudeContext'
+import { ContextBasketProvider } from '@/contexts/ContextBasketContext'
 import { SelectionProvider } from '@/contexts/SelectionContext'
 import { ClaudePanel } from '@/components/ClaudePanel'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
@@ -124,6 +125,7 @@ export default function RootLayout({
           [ClipboardProvider],
           [ScreenshotProvider],
           [SelectionProvider],
+          [ContextBasketProvider],  // R009: Must be above ClaudeProvider
           [ClaudeProvider],
         ]}>
           {/* Download progress toast provider - listens for background downloads */}

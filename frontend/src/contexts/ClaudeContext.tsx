@@ -11,20 +11,13 @@ import {
 } from '@/services/claudeService';
 import { anonymizeTexts } from '@/services/anonymizationService';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { useContextBasket } from '@/contexts/ContextBasketContext';
+
+// R009: Re-export basket types so existing imports from ClaudeContext still work
+export type { ContextBasketItemType, ContextBasketItem } from '@/contexts/ContextBasketContext';
+import type { ContextBasketItem } from '@/contexts/ContextBasketContext';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
-
-export type ContextBasketItemType = 'transcript_chunk' | 'screenshot' | 'clipboard' | 'highlight' | 'note';
-
-export interface ContextBasketItem {
-  id: string;
-  type: ContextBasketItemType;
-  label: string;       // short display label, e.g. "14:00–14:05" or "Screenshot 3"
-  preview: string;     // first ~80 chars for display
-  fullContent: string; // complete content for sending to Claude
-  timestamp?: number;  // recording_elapsed_secs
-  anonymize?: boolean; // per-item override: true=force on, false=force off, undefined=follow global
-}
 
 export type ClaudeMessageRole = 'user' | 'assistant';
 
@@ -44,6 +37,7 @@ export interface ClaudeMessage {
   recording_elapsed_secs?: number; // F020: seconds from recording start, for timeline ordering
 }
 
+// R009: ClaudeState no longer includes contextBasket (lives in ContextBasketContext)
 interface ClaudeState {
   isPanelOpen: boolean;
   isStreaming: boolean;
@@ -52,7 +46,6 @@ interface ClaudeState {
   meetingId: string | null;
   meetingTitle: string | null;
   conversation: ClaudeMessage[];
-  contextBasket: ContextBasketItem[];
   apiKey: string | null;
   selectedModel: string;
   // F005: PII Anonymization
@@ -69,12 +62,16 @@ const MODEL_OPTIONS = [
 
 export { MODEL_OPTIONS };
 
+// R009: The public interface still includes basket fields for backward compat
 interface ClaudeContextValue extends ClaudeState {
-  openPanel: (meetingId: string, meetingTitle: string, defaultProjectDir: string) => void;
-  closePanel: () => void;
+  // Basket (delegated to ContextBasketContext)
+  contextBasket: ContextBasketItem[];
   addToBasket: (item: ContextBasketItem) => void;
   removeFromBasket: (itemId: string) => void;
   clearBasket: () => void;
+  // Session
+  openPanel: (meetingId: string, meetingTitle: string, defaultProjectDir: string) => void;
+  closePanel: () => void;
   sendMessage: (message: string) => Promise<void>;
   clearSession: () => Promise<void>;
   cancelStream: () => void;
@@ -97,6 +94,12 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
   // F020: Access recording duration for timestamping AI messages
   const { recordingDuration } = useRecordingState();
 
+  // R009: Basket state now lives in ContextBasketContext
+  const { contextBasket, addToBasket, removeFromBasket, clearBasket, updateItem } = useContextBasket();
+  // Keep a ref for basket so sendMessage can read it without stale closures
+  const basketRef = useRef(contextBasket);
+  basketRef.current = contextBasket;
+
   const [state, setState] = useState<ClaudeState>(() => ({
     isPanelOpen: false,
     isStreaming: false,
@@ -105,7 +108,6 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     meetingId: null,
     meetingTitle: null,
     conversation: [],
-    contextBasket: [],
     apiKey: null,
     selectedModel: typeof window !== 'undefined'
       ? (localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_MODEL)
@@ -337,24 +339,6 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     setState(prev => ({ ...prev, isPanelOpen: false }));
   }, []);
 
-  const addToBasket = useCallback((item: ContextBasketItem) => {
-    setState(prev => {
-      if (prev.contextBasket.some(b => b.id === item.id)) return prev;
-      return { ...prev, contextBasket: [...prev.contextBasket, item] };
-    });
-  }, []);
-
-  const removeFromBasket = useCallback((itemId: string) => {
-    setState(prev => ({
-      ...prev,
-      contextBasket: prev.contextBasket.filter(b => b.id !== itemId),
-    }));
-  }, []);
-
-  const clearBasket = useCallback(() => {
-    setState(prev => ({ ...prev, contextBasket: [] }));
-  }, []);
-
   const setApiKey = useCallback((key: string) => {
     setState(prev => ({ ...prev, apiKey: key }));
     // Save via native Tauri command (primary), backend HTTP fallback
@@ -384,24 +368,24 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const toggleItemAnonymization = useCallback((itemId: string) => {
-    setState(prev => ({
-      ...prev,
-      contextBasket: prev.contextBasket.map(item =>
-        item.id === itemId
-          ? { ...item, anonymize: item.anonymize === undefined ? !prev.anonymizationEnabled : !item.anonymize }
-          : item
-      ),
-    }));
-  }, []);
+    // R009: Uses basket's updateItem + reads anonymizationEnabled from stateRef
+    const s = stateRef.current;
+    const item = basketRef.current.find(i => i.id === itemId);
+    if (item) {
+      const newAnonymize = item.anonymize === undefined ? !s.anonymizationEnabled : !item.anonymize;
+      updateItem(itemId, { anonymize: newAnonymize });
+    }
+  }, [updateItem]);
 
   const clearEntityMapAction = useCallback(() => {
-    if (state.meetingId) {
-      fetch(`${BACKEND}/api/anonymize/entity-map/${encodeURIComponent(state.meetingId)}`, {
+    const mid = stateRef.current.meetingId;
+    if (mid) {
+      fetch(`${BACKEND}/api/anonymize/entity-map/${encodeURIComponent(mid)}`, {
         method: 'DELETE',
       }).catch(() => {});
     }
     setState(prev => ({ ...prev, entityMap: {}, lastAnonymizedCount: 0 }));
-  }, [state.meetingId]);
+  }, []);
 
   const sendMessage = useCallback(async (message: string) => {
     // B015: Use ref for synchronous double-send guard
@@ -417,7 +401,8 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     // B015: Set synchronous guard immediately
     isStreamingRef.current = true;
 
-    const basket = s.contextBasket;
+    // R009: Read basket from ref (basket state lives in ContextBasketContext)
+    const basket = basketRef.current;
 
     // Build context summary for display
     const typeCounts: Record<string, number> = {};
@@ -435,9 +420,6 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     // F005: Split basket into items to anonymize vs. raw items
     const itemsToAnonymize = basket.filter(item =>
       item.anonymize ?? s.anonymizationEnabled
-    );
-    const rawItems = basket.filter(item =>
-      !(item.anonymize ?? s.anonymizationEnabled)
     );
 
     // Anonymize items that need it
@@ -501,10 +483,11 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     streamingTextRef.current = '';
     streamingToolCallsRef.current = [];
 
+    // R009: Clear basket via context, update conversation in local state
+    clearBasket();
     setState(prev => ({
       ...prev,
       conversation: [...prev.conversation, userMsg, assistantMsg],
-      contextBasket: [], // Clear basket after send
       isStreaming: true,
     }));
 
@@ -545,7 +528,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       },
     );
     abortRef.current = controller;
-  }, [handleStreamEvent]);
+  }, [handleStreamEvent, clearBasket]);
 
   const cancelStream = useCallback(() => {
     flushPendingRaf();
@@ -578,22 +561,26 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         console.error('clearClaudeSession:', err);
       }
     }
+    // R009: Clear basket via context
+    clearBasket();
     setState(prev => ({
       ...prev,
       sessionId: null,
       conversation: [],
-      contextBasket: [],
       isStreaming: false,
     }));
-  }, []);
+  }, [clearBasket]);
 
   const value = useMemo<ClaudeContextValue>(() => ({
     ...state,
-    openPanel,
-    closePanel,
+    // R009: Basket fields from ContextBasketContext (backward compat)
+    contextBasket,
     addToBasket,
     removeFromBasket,
     clearBasket,
+    // Session actions
+    openPanel,
+    closePanel,
     sendMessage,
     clearSession: clearSessionAction,
     cancelStream,
@@ -602,7 +589,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     toggleAnonymization,
     toggleItemAnonymization,
     clearEntityMap: clearEntityMapAction,
-  }), [state, openPanel, closePanel, addToBasket, removeFromBasket, clearBasket, sendMessage, clearSessionAction, cancelStream, setApiKey, setModel, toggleAnonymization, toggleItemAnonymization, clearEntityMapAction]);
+  }), [state, contextBasket, addToBasket, removeFromBasket, clearBasket, openPanel, closePanel, sendMessage, clearSessionAction, cancelStream, setApiKey, setModel, toggleAnonymization, toggleItemAnonymization, clearEntityMapAction]);
 
   return (
     <ClaudeContext.Provider value={value}>
