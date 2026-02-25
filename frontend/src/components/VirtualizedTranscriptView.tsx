@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useReducer, startTransition, useEffect, useState, memo } from "react";
+import { useCallback, useRef, useReducer, startTransition, useEffect, useState, memo, useMemo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useAutoScroll } from "@/hooks/useAutoScroll";
 import { useTranscriptStreaming } from "@/hooks/useTranscriptStreaming";
@@ -14,6 +14,8 @@ import { ScreenshotThumbnail } from "./ScreenshotThumbnail";
 import { Clipboard } from "lucide-react";
 import { ContextBasketItem } from "@/contexts/ClaudeContext";
 import { useDraggableBasketItem } from "@/hooks/useDragAndDrop";
+import { useSelection } from "@/contexts/SelectionContext";
+import { useRubberBandSelect, SelectionRect } from "@/hooks/useRubberBandSelect";
 
 export interface VirtualizedTranscriptViewProps {
     /** Transcript segments to display */
@@ -106,17 +108,22 @@ function clipboardToBasketItem(clip: ClipboardData): ContextBasketItem {
 const DraggableClipboardItem = memo(function DraggableClipboardItem({
     clip,
     onClick,
+    isSelected,
+    selectedItems,
 }: {
     clip: ClipboardData;
     onClick?: (clip: ClipboardData) => void;
+    isSelected?: boolean;
+    selectedItems?: ContextBasketItem[];
 }) {
     const basketItem = clipboardToBasketItem(clip);
-    const { isDragging, dragHandlers } = useDraggableBasketItem(basketItem);
+    const { isDragging, dragHandlers } = useDraggableBasketItem(basketItem, selectedItems);
 
     return (
         <div
             {...dragHandlers}
-            className={`flex items-start gap-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/30 rounded-lg px-3 py-2 text-xs ${onClick ? 'cursor-grab hover:bg-amber-100' : ''} ${isDragging ? 'opacity-50' : ''}`}
+            data-selectable-id={clip.id}
+            className={`flex items-start gap-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/30 rounded-lg px-3 py-2 text-xs select-none transition-all ${onClick ? 'cursor-grab hover:bg-amber-100' : ''} ${isDragging ? 'opacity-60 ring-2 ring-blue-400 shadow-[0_0_12px_rgba(59,130,246,0.4)] scale-[0.97]' : ''} ${isSelected ? 'ring-2 ring-blue-400 bg-blue-50 dark:bg-blue-900/30' : ''}`}
             onClick={() => onClick?.(clip)}
         >
             <Clipboard className="w-3.5 h-3.5 text-amber-500 mt-0.5 shrink-0" />
@@ -137,6 +144,8 @@ const TranscriptSegment = memo(function TranscriptSegment({
     isStreaming,
     showConfidence,
     basketItem,
+    isSelected,
+    selectedItems,
 }: {
     id: string;
     timestamp: number;
@@ -145,13 +154,15 @@ const TranscriptSegment = memo(function TranscriptSegment({
     isStreaming: boolean;
     showConfidence: boolean;
     basketItem?: ContextBasketItem;
+    isSelected?: boolean;
+    selectedItems?: ContextBasketItem[];
 }) {
-    const { isDragging, dragHandlers } = useDraggableBasketItem(basketItem ?? null);
+    const { isDragging, dragHandlers } = useDraggableBasketItem(basketItem ?? null, selectedItems);
     const displayText = cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
 
     return (
-        <div id={`segment-${id}`} className="mb-3" {...dragHandlers}>
-            <div className={`flex items-start gap-2 ${isDragging ? 'opacity-50' : ''} ${basketItem ? 'cursor-grab' : ''}`}>
+        <div id={`segment-${id}`} data-selectable-id={`segment-${id}`} className="mb-3" {...dragHandlers}>
+            <div className={`flex items-start gap-2 select-none transition-all ${isDragging ? 'opacity-60 ring-2 ring-blue-400 shadow-[0_0_12px_rgba(59,130,246,0.4)] scale-[0.97] rounded-lg' : ''} ${isSelected ? 'bg-blue-50 dark:bg-blue-900/30 ring-1 ring-blue-300 rounded-lg px-1' : ''} ${basketItem ? 'cursor-grab' : ''}`}>
                 <Tooltip>
                     <TooltipTrigger>
                         <span className="text-xs text-muted-foreground mt-1 flex-shrink-0 min-w-[50px]">
@@ -200,6 +211,68 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     clipboardCount = 0,
     onClipboardItemClick,
 }) => {
+    const { selectedIds, isSelected, replaceSelection, toggle, rangeTo } = useSelection();
+
+    // Build ordered IDs for Shift+click range selection
+    const orderedIds = useMemo(() => {
+        if (timelineItems && timelineItems.length > 0) {
+            return timelineItems.map(item => {
+                if (item.type === 'transcript') {
+                    const seg = item.data as TranscriptSegmentData;
+                    return `segment-${seg.id}`;
+                }
+                return item.id;
+            });
+        }
+        return segments.map(seg => `segment-${seg.id}`);
+    }, [timelineItems, segments]);
+
+    // Build selected basket items for multi-drag
+    const selectedBasketItems: ContextBasketItem[] = useMemo(() => {
+        if (selectedIds.size === 0) return [];
+        const items: ContextBasketItem[] = [];
+        if (timelineItems && timelineItems.length > 0) {
+            timelineItems.forEach(item => {
+                const id = item.type === 'transcript'
+                    ? `segment-${(item.data as TranscriptSegmentData).id}`
+                    : item.id;
+                if (!selectedIds.has(id)) return;
+                if (item.type === 'transcript') {
+                    items.push(segmentToBasketItem(item.data as TranscriptSegmentData));
+                } else if (item.type === 'clipboard') {
+                    items.push(clipboardToBasketItem(item.data as ClipboardData));
+                }
+            });
+        } else {
+            segments.forEach(seg => {
+                if (selectedIds.has(`segment-${seg.id}`)) {
+                    items.push(segmentToBasketItem(seg));
+                }
+            });
+        }
+        return items;
+    }, [selectedIds, timelineItems, segments]);
+
+    // Ctrl+click to toggle, Shift+click to range-select
+    const handleItemClick = useCallback((e: React.MouseEvent, itemId: string) => {
+        if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            e.stopPropagation();
+            toggle(itemId);
+        } else if (e.shiftKey) {
+            e.preventDefault();
+            e.stopPropagation();
+            rangeTo(itemId, orderedIds);
+        }
+    }, [toggle, rangeTo, orderedIds]);
+
+    // Rubber-band selection for the transcript container
+    const { containerRef: setRubberBandRef, selectionRect, containerProps: rubberBandProps } = useRubberBandSelect({
+        selectableSelector: '[data-selectable-id]',
+        onSelectionChange: replaceSelection,
+        onSelectionEnd: replaceSelection,
+    });
+
     // Create scroll ref first - shared between virtualizer and auto-scroll hook
     const scrollRef = useRef<HTMLDivElement>(null);
     // Ref for infinite scroll trigger element
@@ -301,7 +374,11 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     const useVirtualization = !hasTimeline && segments.length >= VIRTUALIZATION_THRESHOLD;
 
     return (
-        <div ref={scrollRef} className="flex flex-col h-full overflow-y-auto px-4 py-2">
+        <div
+            ref={(el) => { (scrollRef as React.MutableRefObject<HTMLDivElement | null>).current = el; setRubberBandRef(el); }}
+            className="flex flex-col h-full overflow-y-auto px-4 py-2 relative"
+            {...rubberBandProps}
+        >
             {/* Recording Status Bar - Sticky at top, always visible when recording */}
             <AnimatePresence>
                 {isRecording && (
@@ -362,6 +439,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         initial={{ opacity: 0, y: 5 }}
                                         animate={{ opacity: 1, y: 0 }}
                                         transition={{ duration: 0.15 }}
+                                        onClickCapture={(e) => handleItemClick(e, ss.id)}
                                     >
                                         <ScreenshotThumbnail
                                             screenshot={ss}
@@ -380,6 +458,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         animate={{ opacity: 1, y: 0 }}
                                         transition={{ duration: 0.15 }}
                                         className="px-3 py-1"
+                                        onClickCapture={(e) => handleItemClick(e, clip.id)}
                                     >
                                         {clip.content_type === 'image' && clip.thumbnail_base64 ? (
                                             // Image clip — reuse screenshot thumbnail style (already draggable)
@@ -406,6 +485,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                             <DraggableClipboardItem
                                                 clip={clip}
                                                 onClick={onClipboardItemClick}
+                                                isSelected={isSelected(clip.id)}
+                                                selectedItems={selectedBasketItems}
                                             />
                                         )}
                                     </motion.div>
@@ -421,6 +502,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                     initial={{ opacity: 0, y: 5 }}
                                     animate={{ opacity: 1, y: 0 }}
                                     transition={{ duration: 0.15 }}
+                                    onClickCapture={(e) => handleItemClick(e, `segment-${seg.id}`)}
                                 >
                                     <TranscriptSegment
                                         id={seg.id}
@@ -430,6 +512,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         isStreaming={isStreamingSeg}
                                         showConfidence={showConfidence}
                                         basketItem={segmentToBasketItem(seg)}
+                                        isSelected={isSelected(`segment-${seg.id}`)}
+                                        selectedItems={selectedBasketItems}
                                     />
                                 </motion.div>
                             );
@@ -475,6 +559,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         width: "100%",
                                         transform: `translateY(${virtualRow.start}px)`,
                                     }}
+                                    onClickCapture={(e) => handleItemClick(e, `segment-${segment.id}`)}
                                 >
                                     <TranscriptSegment
                                         id={segment.id}
@@ -484,6 +569,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
                                         basketItem={segmentToBasketItem(segment)}
+                                        isSelected={isSelected(`segment-${segment.id}`)}
+                                        selectedItems={selectedBasketItems}
                                     />
                                 </div>
                             );
@@ -532,6 +619,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                     initial={{ opacity: 0, y: 5 }}
                                     animate={{ opacity: 1, y: 0 }}
                                     transition={{ duration: 0.15 }}
+                                    onClickCapture={(e) => handleItemClick(e, `segment-${segment.id}`)}
                                 >
                                     <TranscriptSegment
                                         id={segment.id}
@@ -541,6 +629,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
                                         basketItem={segmentToBasketItem(segment)}
+                                        isSelected={isSelected(`segment-${segment.id}`)}
+                                        selectedItems={selectedBasketItems}
                                     />
                                 </motion.div>
                             );
@@ -578,6 +668,19 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                 </>
             )}
             </div>
+
+            {/* Rubber-band selection rectangle */}
+            {selectionRect && (
+                <div
+                    className="absolute border-2 border-dashed border-blue-500 bg-blue-500/10 pointer-events-none z-10 rounded"
+                    style={{
+                        left: selectionRect.left,
+                        top: selectionRect.top,
+                        width: selectionRect.width,
+                        height: selectionRect.height,
+                    }}
+                />
+            )}
         </div>
     );
 };

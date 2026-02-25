@@ -572,6 +572,25 @@ pub async fn api_save_model_config<R: Runtime>(
 }
 
 #[tauri::command]
+pub async fn api_save_api_key<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    provider: String,
+    api_key: String,
+) -> Result<(), String> {
+    log_info!(
+        "api_save_api_key called (native) for provider '{}'",
+        &provider
+    );
+    SettingsRepository::save_api_key(&state.db_manager.pool(), &provider, &api_key)
+        .await
+        .map_err(|e| {
+            log_error!("Failed to save API key for provider '{}': {}", &provider, e);
+            e.to_string()
+        })
+}
+
+#[tauri::command]
 pub async fn api_get_api_key<R: Runtime>(
     _app: AppHandle<R>,
     state: tauri::State<'_, AppState>,

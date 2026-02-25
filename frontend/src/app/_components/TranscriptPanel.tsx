@@ -3,7 +3,7 @@ import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptVie
 import { PermissionWarning } from '@/components/PermissionWarning';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, GlobeIcon, Camera, Scan, Clipboard } from 'lucide-react';
+import { Copy, GlobeIcon, Camera, PenLine, Clipboard } from 'lucide-react';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
@@ -50,6 +50,7 @@ export function TranscriptPanel({
     regionSelectInfo,
     captureFullscreen,
     captureRegion,
+    captureAnnotatedRegion,
     startRegionSelect,
     cancelRegionSelect,
     openLightbox,
@@ -130,11 +131,11 @@ export function TranscriptPanel({
                   variant="outline"
                   size="sm"
                   onClick={startRegionSelect}
-                  title="Region Screenshot (Alt+Shift+R)"
+                  title="Annotate (Alt+Shift+R)"
                 >
-                  <Scan className="w-4 h-4" />
+                  <PenLine className="w-4 h-4" />
                   <span className='hidden md:inline'>
-                    Region
+                    Annotate
                   </span>
                 </Button>
                 <Button
@@ -207,6 +208,7 @@ export function TranscriptPanel({
           monitorWidth={regionSelectInfo.monitorWidth}
           monitorHeight={regionSelectInfo.monitorHeight}
           onSelect={captureRegion}
+          onAnnotatedCapture={captureAnnotatedRegion}
           onCancel={cancelRegionSelect}
         />
       )}
