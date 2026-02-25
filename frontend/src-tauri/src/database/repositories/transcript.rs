@@ -98,7 +98,9 @@ impl TranscriptsRepository {
             "SELECT m.id, m.title, t.transcript, t.timestamp
              FROM meetings m
              JOIN transcripts t ON m.id = t.meeting_id
-             WHERE LOWER(t.transcript) LIKE ?",
+             WHERE LOWER(t.transcript) LIKE ?
+             ORDER BY t.timestamp DESC
+             LIMIT 50",
         )
         .bind(&search_query)
         .fetch_all(pool)

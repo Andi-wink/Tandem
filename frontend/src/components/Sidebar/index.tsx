@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar } from './SidebarProvider';
@@ -234,85 +234,57 @@ const Sidebar: React.FC = () => {
     }
   };
 
-  // Handle search input changes
-  const handleSearchChange = useCallback(async (value: string) => {
+  // Handle search input changes (debounced IPC call, instant UI update)
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const handleSearchChange = useCallback((value: string) => {
     setSearchQuery(value);
 
-    // If search query is empty, just return to normal view
-    if (!value.trim()) return;
+    // Clear any pending debounced search
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
 
-    // Search through transcripts
-    await searchTranscripts(value);
-
-    // Make sure the meetings folder is expanded when searching
-    if (!expandedFolders.has('meetings')) {
-      const newExpanded = new Set(expandedFolders);
-      newExpanded.add('meetings');
-      setExpandedFolders(newExpanded);
+    // If search query is empty, clear results immediately
+    if (!value.trim()) {
+      searchTranscripts('');
+      return;
     }
+
+    // Debounce the actual IPC/DB search by 300ms
+    searchDebounceRef.current = setTimeout(async () => {
+      await searchTranscripts(value);
+
+      // Make sure the meetings folder is expanded when searching
+      if (!expandedFolders.has('meetings')) {
+        setExpandedFolders(prev => new Set(prev).add('meetings'));
+      }
+    }, 300);
   }, [expandedFolders, searchTranscripts]);
+
+  // O(1) lookup map for search result snippets (replaces linear .find() per item)
+  const snippetMap = useMemo(
+    () => new Map(searchResults.map(r => [r.id, r])),
+    [searchResults],
+  );
 
   // Combine search results with sidebar items
   const filteredSidebarItems = useMemo(() => {
     if (!searchQuery.trim()) return sidebarItems;
 
-    // If we have search results, highlight matching meetings
-    if (searchResults.length > 0) {
-      // Get the IDs of meetings that matched in transcripts
-      const matchedMeetingIds = new Set(searchResults.map(result => result.id));
+    const queryLower = searchQuery.toLowerCase();
+    const matchedIds = new Set(searchResults.map(r => r.id));
 
-      return sidebarItems
-        .map(folder => {
-          // Always include folders in the results
-          if (folder.type === 'folder') {
-            if (!folder.children) return folder;
+    const matches = (item: SidebarItem) =>
+      matchedIds.has(item.id) || item.title.toLowerCase().includes(queryLower);
 
-            // Filter children based on search results or title match
-            const filteredChildren = folder.children.filter(item => {
-              // Include if the meeting ID is in our search results
-              if (matchedMeetingIds.has(item.id)) return true;
-
-              // Or if the title matches the search query
-              return item.title.toLowerCase().includes(searchQuery.toLowerCase());
-            });
-
-            return {
-              ...folder,
-              children: filteredChildren
-            };
-          }
-
-          // For non-folder items, check if they match the search
-          return (matchedMeetingIds.has(folder.id) ||
-            folder.title.toLowerCase().includes(searchQuery.toLowerCase()))
-            ? folder : undefined;
-        })
-        .filter((item): item is SidebarItem => item !== undefined); // Type-safe filter
-    } else {
-      // Fall back to title-only filtering if no transcript results
-      return sidebarItems
-        .map(folder => {
-          // Always include folders in the results
-          if (folder.type === 'folder') {
-            if (!folder.children) return folder;
-
-            // Filter children based on search query
-            const filteredChildren = folder.children.filter(item =>
-              item.title.toLowerCase().includes(searchQuery.toLowerCase())
-            );
-
-            return {
-              ...folder,
-              children: filteredChildren
-            };
-          }
-
-          // For non-folder items, check if they match the search
-          return folder.title.toLowerCase().includes(searchQuery.toLowerCase()) ? folder : undefined;
-        })
-        .filter((item): item is SidebarItem => item !== undefined); // Type-safe filter
-    }
-  }, [sidebarItems, searchQuery, searchResults, expandedFolders]);
+    return sidebarItems
+      .map(folder => {
+        if (folder.type === 'folder') {
+          if (!folder.children) return folder;
+          return { ...folder, children: folder.children.filter(matches) };
+        }
+        return matches(folder) ? folder : undefined;
+      })
+      .filter((item): item is SidebarItem => item !== undefined);
+  }, [sidebarItems, searchQuery, searchResults]);
 
 
   const handleDelete = async (itemId: string) => {
@@ -527,10 +499,10 @@ const Sidebar: React.FC = () => {
     );
   };
 
-  // Find matching transcript snippet for a meeting item
+  // Find matching transcript snippet for a meeting item (O(1) via snippetMap)
   const findMatchingSnippet = (itemId: string) => {
-    if (!searchQuery.trim() || !searchResults.length) return null;
-    return searchResults.find(result => result.id === itemId);
+    if (!searchQuery.trim() || snippetMap.size === 0) return null;
+    return snippetMap.get(itemId) ?? null;
   };
 
   const renderItem = (item: SidebarItem, depth = 0) => {

@@ -1,0 +1,324 @@
+{
+  "review": "F007 AI Assistant Panel — Bug Review",
+  "reviewed_date": "2026-02-22",
+  "last_updated": "2026-02-22",
+  "branch": "feature/claude-panel",
+  "worktree": "D:\\Dev projects\\Tandem-f007",
+  "summary": {
+    "total_issues": 34,
+    "high_severity": 6,
+    "medium_severity": 13,
+    "low_severity": 15,
+    "fixed": 27,
+    "acknowledged": 2,
+    "open": 5
+  },
+  "issues": [
+    {
+      "id": "B001",
+      "severity": "high",
+      "category": "security",
+      "title": "Server binds to 0.0.0.0 — API key exposed on network",
+      "file": "backend/app/main.py",
+      "status": "fixed",
+      "fix_applied": "Changed host from 0.0.0.0 to 127.0.0.1"
+    },
+    {
+      "id": "B002",
+      "severity": "high",
+      "category": "security",
+      "title": "Path traversal via project_dir — no validation",
+      "file": "backend/app/claude_agent.py",
+      "status": "acknowledged",
+      "notes": "Accepted risk for local desktop app. project_dir flexibility is a core feature. Mitigated by B001 fix (localhost-only)."
+    },
+    {
+      "id": "B003",
+      "severity": "high",
+      "category": "security",
+      "title": "Bash tool with acceptEdits — no approval for shell commands",
+      "file": "backend/app/claude_agent.py",
+      "status": "acknowledged",
+      "notes": "Accepted risk. Bash access is a desired feature. Future: add tool_approval SSE event so frontend can show approve/deny dialog."
+    },
+    {
+      "id": "B004",
+      "severity": "high",
+      "category": "security",
+      "title": "API key potentially logged on exception",
+      "file": "backend/app/claude_agent.py",
+      "status": "fixed",
+      "fix_applied": "Sanitize API key from error messages before logging: error_str.replace(api_key, 'sk-ant-***')"
+    },
+    {
+      "id": "B005",
+      "severity": "high",
+      "category": "data-corruption",
+      "title": "setApiKey hardcodes model to claude-sonnet-4-20250514",
+      "file": "frontend/src/contexts/ClaudeContext.tsx",
+      "status": "fixed",
+      "fix_applied": "Removed model and whisperModel fields from save-model-config body. Only persists apiKey."
+    },
+    {
+      "id": "B006",
+      "severity": "high",
+      "category": "logic",
+      "title": "Setup modal condition broken — project dir selection unreachable",
+      "file": "frontend/src/components/ClaudePanel/ClaudePanel.tsx",
+      "status": "fixed",
+      "fix_applied": "Changed condition to (!sessionId && meetingId && meetingTitle) || !hasApiKey. Modal now shows for both first session setup and missing API key."
+    },
+    {
+      "id": "B007",
+      "severity": "medium",
+      "category": "race-condition",
+      "title": "No locking on _sessions dict — concurrent requests can orphan threads",
+      "file": "backend/app/claude_agent.py",
+      "status": "fixed",
+      "fix_applied": "Added _sessions_lock = asyncio.Lock(). Session creation wrapped in async with _sessions_lock."
+    },
+    {
+      "id": "B008",
+      "severity": "medium",
+      "category": "resource-leak",
+      "title": "No cleanup when SSE client disconnects mid-stream",
+      "file": "backend/app/main.py",
+      "status": "fixed",
+      "fix_applied": "Wrapped _sse_generator in try/except for asyncio.CancelledError — calls cancel_session() on client disconnect."
+    },
+    {
+      "id": "B009",
+      "severity": "medium",
+      "category": "reliability",
+      "title": "No SSE heartbeat during long tool executions",
+      "file": "backend/app/main.py",
+      "status": "open",
+      "notes": "Lower priority. Desktop app connects via localhost, unlikely to hit proxy timeouts."
+    },
+    {
+      "id": "B010",
+      "severity": "medium",
+      "category": "resource-leak",
+      "title": "Sessions never expire — memory grows without bound",
+      "file": "backend/app/claude_agent.py",
+      "status": "fixed",
+      "fix_applied": "Added _SESSION_TTL_SECS = 24h, last_active field on SessionState, _cleanup_expired_sessions() called on each request."
+    },
+    {
+      "id": "B011",
+      "severity": "medium",
+      "category": "resource-leak",
+      "title": "thread.join(timeout=5) with no follow-up — zombie threads",
+      "file": "backend/app/claude_agent.py",
+      "status": "fixed",
+      "fix_applied": "Added check: if thread.is_alive() after join, log warning."
+    },
+    {
+      "id": "B012",
+      "severity": "medium",
+      "category": "race-condition",
+      "title": "cancel_event.clear() creates race window",
+      "file": "backend/app/claude_agent.py",
+      "status": "open",
+      "notes": "Edge case. Would require generation counter which adds complexity. Acceptable for current usage."
+    },
+    {
+      "id": "B013",
+      "severity": "medium",
+      "category": "race-condition",
+      "title": "clear_session during active streaming orphans the generator",
+      "file": "backend/app/claude_agent.py",
+      "status": "open",
+      "notes": "Rare edge case. Would need significant refactor to separate cancel from clear. B008 mitigates via client disconnect cleanup."
+    },
+    {
+      "id": "B014",
+      "severity": "medium",
+      "category": "security",
+      "title": "CORS allows all origins",
+      "file": "backend/app/main.py",
+      "status": "fixed",
+      "fix_applied": "Restricted origins to ['http://localhost:3118', 'http://127.0.0.1:3118', 'tauri://localhost', 'https://tauri.localhost']."
+    },
+    {
+      "id": "B015",
+      "severity": "medium",
+      "category": "race-condition",
+      "title": "isStreaming guard uses stale closure — double-sends possible",
+      "file": "frontend/src/contexts/ClaudeContext.tsx",
+      "status": "fixed",
+      "fix_applied": "Added isStreamingRef = useRef(false) for synchronous double-send guard. Set/cleared in all relevant handlers."
+    },
+    {
+      "id": "B016",
+      "severity": "medium",
+      "category": "performance",
+      "title": "sendMessage recreated on every state change — cascade re-renders",
+      "file": "frontend/src/contexts/ClaudeContext.tsx",
+      "status": "fixed",
+      "fix_applied": "Added stateRef = useRef(state). sendMessage reads from ref, dependency array reduced to [handleStreamEvent]."
+    },
+    {
+      "id": "B017",
+      "severity": "medium",
+      "category": "resource-leak",
+      "title": "No RAF/AbortController cleanup on unmount",
+      "file": "frontend/src/contexts/ClaudeContext.tsx",
+      "status": "fixed",
+      "fix_applied": "Added useEffect cleanup: cancelAnimationFrame(rafIdRef) + abortRef.abort() on unmount."
+    },
+    {
+      "id": "B018",
+      "severity": "medium",
+      "category": "performance",
+      "title": "Pending message useEffect fires on sendMessage identity changes",
+      "file": "frontend/src/components/ClaudePanel/ClaudePanel.tsx",
+      "status": "fixed",
+      "fix_applied": "Added sendMessageRef pattern. useEffect dependency array reduced to [pendingFirstMessage, projectDir]."
+    },
+    {
+      "id": "B019",
+      "severity": "medium",
+      "category": "ux",
+      "title": "Auto-scroll may not reflect latest content",
+      "file": "frontend/src/components/ClaudePanel/ConversationView.tsx",
+      "status": "fixed",
+      "fix_applied": "Wrapped scroll in requestAnimationFrame to ensure scrollHeight reflects new content after paint."
+    },
+    {
+      "id": "B020",
+      "severity": "medium",
+      "category": "validation",
+      "title": "Start Session button enabled with any non-empty text as API key",
+      "file": "frontend/src/components/ClaudePanel/ProjectDirModal.tsx",
+      "status": "fixed",
+      "fix_applied": "Changed canConfirm to use isKeyValid (requires sk-ant- prefix and min length)."
+    },
+    {
+      "id": "B021",
+      "severity": "medium",
+      "category": "logic",
+      "title": "Modal confirms even with empty API key",
+      "file": "frontend/src/components/ClaudePanel/ProjectDirModal.tsx",
+      "status": "fixed",
+      "fix_applied": "handleConfirm now returns early if !isKeyValid."
+    },
+    {
+      "id": "B022",
+      "severity": "medium",
+      "category": "ux",
+      "title": "Context basket promises drag-and-drop that does not exist",
+      "file": "frontend/src/components/ClaudePanel/ContextBasket.tsx",
+      "status": "fixed",
+      "fix_applied": "Changed text to 'Use the Add to AI buttons to add context'."
+    },
+    {
+      "id": "B023",
+      "severity": "medium",
+      "category": "ux",
+      "title": "Errors silently caught — no user-visible feedback",
+      "file": "frontend/src/components/ClaudePanel/ClaudePanel.tsx",
+      "status": "fixed",
+      "fix_applied": "Added toast error notification on sendMessage failure."
+    },
+    {
+      "id": "B024",
+      "severity": "low",
+      "category": "ux",
+      "title": "Streaming cursor appears on new line instead of inline",
+      "file": "frontend/src/components/ClaudePanel/ConversationView.tsx",
+      "status": "fixed",
+      "fix_applied": "Appended cursor character to msg.text before passing to ReactMarkdown."
+    },
+    {
+      "id": "B025",
+      "severity": "low",
+      "category": "ux",
+      "title": "Panel pops in/out with no slide animation",
+      "file": "frontend/src/components/ClaudePanel/ClaudePanel.tsx",
+      "status": "fixed",
+      "fix_applied": "Removed early return null. Component stays mounted with CSS: translate-x-0/translate-x-full + pointer-events-none."
+    },
+    {
+      "id": "B026",
+      "severity": "low",
+      "category": "ux",
+      "title": "Modal does not close on Escape key",
+      "file": "frontend/src/components/ClaudePanel/ProjectDirModal.tsx",
+      "status": "fixed",
+      "fix_applied": "Added useEffect with document keydown listener for Escape key."
+    },
+    {
+      "id": "B027",
+      "severity": "low",
+      "category": "ux",
+      "title": "Modal backdrop does not close on click",
+      "file": "frontend/src/components/ClaudePanel/ProjectDirModal.tsx",
+      "status": "fixed",
+      "fix_applied": "Added onClick={onCancel} on backdrop div + stopPropagation on modal content."
+    },
+    {
+      "id": "B028",
+      "severity": "low",
+      "category": "ux",
+      "title": "Remove button invisible on touch devices",
+      "file": "frontend/src/components/ClaudePanel/ContextBasket.tsx",
+      "status": "open",
+      "notes": "Desktop app only. Touch devices not a primary target. Low impact."
+    },
+    {
+      "id": "B029",
+      "severity": "low",
+      "category": "validation",
+      "title": "API key prefix check is redundant and too permissive",
+      "file": "frontend/src/components/ClaudePanel/ProjectDirModal.tsx",
+      "status": "fixed",
+      "fix_applied": "Simplified to startsWith('sk-ant-') with minimum length check (>20 chars)."
+    },
+    {
+      "id": "B030",
+      "severity": "low",
+      "category": "correctness",
+      "title": "Date.now() message IDs could collide",
+      "file": "frontend/src/contexts/ClaudeContext.tsx",
+      "status": "fixed",
+      "fix_applied": "Changed to crypto.randomUUID() for unique message IDs."
+    },
+    {
+      "id": "B031",
+      "severity": "low",
+      "category": "correctness",
+      "title": "SSE parser does not flush final buffer",
+      "file": "frontend/src/services/claudeService.ts",
+      "status": "fixed",
+      "fix_applied": "Added buffer flush after read loop exits to process remaining SSE data."
+    },
+    {
+      "id": "B032",
+      "severity": "low",
+      "category": "maintenance",
+      "title": "BACKEND URL duplicated across files",
+      "files": ["frontend/src/services/claudeService.ts", "frontend/src/contexts/ClaudeContext.tsx"],
+      "status": "fixed",
+      "fix_applied": "Exported BACKEND from claudeService.ts, imported in ClaudeContext.tsx."
+    },
+    {
+      "id": "B033",
+      "severity": "low",
+      "category": "resource-leak",
+      "title": "API key fetch useEffect has no cleanup",
+      "file": "frontend/src/contexts/ClaudeContext.tsx",
+      "status": "fixed",
+      "fix_applied": "Added AbortController with cleanup in useEffect return."
+    },
+    {
+      "id": "B034",
+      "severity": "low",
+      "category": "correctness",
+      "title": "model parameter not validated on backend",
+      "file": "backend/app/claude_agent.py",
+      "status": "fixed",
+      "fix_applied": "Added _VALID_MODELS set and validation at start of stream_session."
+    }
+  ]
+}

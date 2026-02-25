@@ -7,14 +7,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Tandem** is a privacy-first AI meeting assistant that captures, transcribes, and summarizes meetings entirely on local infrastructure. The project consists of two main components:
 
 1. **Frontend**: Tauri-based desktop application (Rust + Next.js + TypeScript)
-2. **Backend**: FastAPI server for meeting storage and LLM-based summarization (Python)
+2. **Backend**: FastAPI server for meeting storage, LLM summarization, AI assistant (Claude Agent SDK), and PII anonymization (Python)
 
 ### Key Technology Stack
 - **Desktop App**: Tauri 2.x (Rust) + Next.js 14 + React 18
 - **Audio Processing**: Rust (cpal, whisper-rs, professional audio mixing)
 - **Transcription**: Whisper.cpp (local, GPU-accelerated)
-- **Backend API**: FastAPI + SQLite (aiosqlite)
+- **Backend API**: FastAPI + SQLite (aiosqlite for backend, sqlx for Rust frontend)
+- **AI Assistant**: Claude Agent SDK (Python) with SSE streaming to frontend
+- **PII Anonymization**: Microsoft Presidio + spaCy NER (on-device)
 - **LLM Integration**: Ollama (local), Claude, Groq, OpenRouter
+- **UI**: Tailwind CSS with dark mode (next-themes), shadcn/ui components
+
+## Project Tracking (IMPORTANT)
+
+**Always check these files before starting work — they are the source of truth for project status:**
+
+- **`feature_list.json`** — All features (F001-F020+), their status (complete/in-progress/planned), implementation steps, file lists, and which branch/worktree they live on. **Read this first** when asked about feature status or what to work on next.
+- **`bug_list.json`** — All known bugs (B001-B029) and refactoring items (R001-R004) with severity, affected files, line numbers, and fix descriptions. **Check this** before modifying any file to see if there are known issues.
+- **`refactoring_list.json`** — Additional refactoring opportunities.
+
+When completing work, **update these files** to reflect the new status.
+
+## Git Worktrees
+
+Feature branches are developed in separate worktrees to allow parallel work:
+
+```bash
+git worktree list                                           # See active worktrees
+git worktree add ../Tandem-f{NNN} -b feature/{name}        # Create new feature worktree
+```
+
+Worktrees live at `D:\Dev projects\Tandem-{id}` (e.g., `Tandem-f018` for F018). The main repo is at `D:\Dev projects\Tandem` on branch `main`. When working in a worktree, `pnpm install` is needed separately since `node_modules` isn't shared.
 
 ## Essential Development Commands
 
@@ -67,6 +91,13 @@ clean_start_backend.cmd               # Start server
 
 **Available Whisper Models**: `tiny`, `tiny.en`, `base`, `base.en`, `small`, `small.en`, `medium`, `medium.en`, `large-v1`, `large-v2`, `large-v3`, `large-v3-turbo`
 
+### Verification Commands (run after every change)
+
+```bash
+cd frontend && pnpm tsc --noEmit     # TypeScript type check (no emit)
+cd frontend/src-tauri && cargo check  # Rust compilation check
+```
+
 ### Service Endpoints
 - **Whisper Server**: http://localhost:8178
 - **Backend API**: http://localhost:5167
@@ -78,24 +109,31 @@ clean_start_backend.cmd               # Start server
 ### Three-Tier System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Frontend (Tauri Desktop App)                  │
-│  ┌──────────────────┐  ┌─────────────────┐  ┌────────────────┐ │
-│  │   Next.js UI     │  │  Rust Backend   │  │ Whisper Engine │ │
-│  │  (React/TS)      │←→│  (Audio + IPC)  │←→│  (Local STT)   │ │
-│  └──────────────────┘  └─────────────────┘  └────────────────┘ │
-│         ↑ Tauri Events           ↑ Audio Pipeline               │
-└─────────┼────────────────────────┼─────────────────────────────┘
-          │ HTTP/WebSocket         │
-          ↓                        │
-┌─────────────────────────────────┼─────────────────────────────┐
-│              Backend (FastAPI)  │                              │
-│  ┌────────────┐  ┌─────────────┴──────┐  ┌────────────────┐  │
-│  │   SQLite   │←→│  Meeting Manager   │←→│  LLM Provider  │  │
-│  │ (Meetings) │  │  (CRUD + Summary)  │  │ (Ollama/etc.)  │  │
-│  └────────────┘  └────────────────────┘  └────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                      Frontend (Tauri Desktop App)                     │
+│  ┌──────────────────┐  ┌─────────────────┐  ┌────────────────────┐  │
+│  │   Next.js UI     │  │  Rust Backend   │  │  Whisper Engine    │  │
+│  │  (React/TS)      │←→│  (Audio + IPC)  │←→│  (Local STT)      │  │
+│  │  AI Panel        │  │  SQLite (sqlx)  │  │                    │  │
+│  └──────────────────┘  └─────────────────┘  └────────────────────┘  │
+│    ↑ Tauri Events + SSE        ↑ Audio Pipeline                      │
+└────┼───────────────────────────┼─────────────────────────────────────┘
+     │ HTTP/SSE                  │
+     ↓                           │
+┌────┼───────────────────────────┼─────────────────────────────────────┐
+│    │         Backend (FastAPI) │                                      │
+│  ┌─┴──────────┐  ┌────────────┴───────┐  ┌───────────────────────┐  │
+│  │  SQLite    │←→│  Meeting Manager   │←→│  LLM Provider         │  │
+│  │ (aiosqlite)│  │  (CRUD + Summary)  │  │  (Ollama/Claude/Groq) │  │
+│  └────────────┘  └────────────────────┘  └───────────────────────┘  │
+│                  ┌────────────────────┐  ┌───────────────────────┐   │
+│                  │  Claude Agent SDK  │  │  Presidio Anonymizer  │   │
+│                  │  (SSE streaming)   │  │  (PII → surrogates)   │   │
+│                  └────────────────────┘  └───────────────────────┘   │
+└──────────────────────────────────────────────────────────────────────┘
 ```
+
+**Two SQLite databases**: The Rust frontend has its own SQLite via `sqlx` (meetings, transcripts, settings, API keys in `src-tauri/src/database/`). The Python backend has a separate SQLite via `aiosqlite` (meeting summaries, processes). Don't confuse them.
 
 ### Audio Processing Pipeline (Critical Understanding)
 
@@ -119,9 +157,9 @@ Raw Audio (Mic + System)
 
 **Key Insight**: The pipeline performs **professional audio mixing** (RMS-based ducking, clipping prevention) for recording, while simultaneously applying **Voice Activity Detection (VAD)** to send only speech segments to Whisper for transcription.
 
-### Audio Device Modularization (Recently Completed)
+### Audio Device Modularization
 
-**Context**: The audio system was refactored from a monolithic 1028-line `core.rs` file into focused modules. See [AUDIO_MODULARIZATION_PLAN.md](AUDIO_MODULARIZATION_PLAN.md) for details.
+The audio system is organized into focused modules (refactored from a monolithic `core.rs`). See [AUDIO_MODULARIZATION_PLAN.md](AUDIO_MODULARIZATION_PLAN.md) for details.
 
 ```
 audio/
@@ -255,12 +293,21 @@ macro_rules! perf_debug {
 
 ### 4. Frontend State Management
 
-**Sidebar Context** (components/Sidebar/SidebarProvider.tsx):
-- Global state for meetings list, current meeting, recording status
-- Communicates with backend API (http://localhost:5167)
-- Manages WebSocket connections for real-time updates
+The app uses multiple React contexts. Key ones:
+
+| Context | File | Purpose |
+|---------|------|---------|
+| **SidebarProvider** | `components/Sidebar/SidebarProvider.tsx` | Meetings list, current meeting, server address |
+| **RecordingStateContext** | `contexts/RecordingStateContext.tsx` | Single source of truth for recording state (isRecording, isPaused, status) |
+| **TranscriptContext** | `contexts/TranscriptContext.tsx` | Live transcript segments from Whisper via Tauri `transcript-update` events |
+| **ClaudeContext** | `contexts/ClaudeContext.tsx` | AI panel: session, conversation, context basket, SSE streaming with RAF batching |
+| **ScreenshotContext** | `contexts/ScreenshotContext.tsx` | Screenshot capture events (Alt+Shift+S) |
+| **ClipboardContext** | `contexts/ClipboardContext.tsx` | Clipboard capture events (Alt+Shift+V) |
+| **ConfigContext** | `contexts/ConfigContext.tsx` | App config, transcript model settings |
 
 **Pattern**: Tauri commands update Rust state → Emit events → Frontend listeners update React state → Context propagates to components
+
+**AI Panel pattern**: Frontend sends HTTP POST to backend → backend streams SSE events → frontend reads via `fetch()` + `ReadableStream` → RAF-batched state updates (max 60fps)
 
 ## Common Development Tasks
 
@@ -404,6 +451,8 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat
 - React state updates batched via Sidebar context
 - Transcript rendering virtualized for large meetings
 - Audio level monitoring throttled to 60fps
+- AI streaming uses `requestAnimationFrame` batching (max 60 setState/sec instead of unbounded SSE events)
+- Sidebar search debounced at 300ms to avoid IPC spam; search results bounded to 50 via SQL LIMIT
 
 ## Important Constraints and Gotchas
 
@@ -416,7 +465,7 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat
 
 3. **Whisper Model Loading**: Models are loaded once and cached. Changing models requires app restart or manual unload/reload.
 
-4. **Backend Dependency**: Frontend can run standalone (local Whisper), but meeting persistence and LLM features require backend running.
+4. **Backend Dependency**: Frontend can run standalone (local Whisper), but meeting persistence, AI assistant, and PII anonymization require the backend running.
 
 5. **CORS Configuration**: Backend allows all origins (`"*"`) for development. Restrict for production deployment.
 
@@ -424,32 +473,62 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat
 
 7. **Audio Permissions**: Request permissions early. macOS requires both microphone AND screen recording for system audio.
 
+8. **AI Panel Branding**: Per Claude Agent SDK docs, third-party apps must NOT use "Claude Code" branding. All user-facing text says "AI Assistant". Internal code names (ClaudeContext, claudeService) are fine.
+
+9. **API Keys**: Anthropic API key stored in localStorage, passed per-request to backend, never stored server-side. Other API keys (Groq, OpenAI, etc.) stored in Rust SQLite.
+
+10. **Two SQLite Databases**: The Rust frontend and Python backend each have their own SQLite. Don't mix up `sqlx` queries (Rust) with `aiosqlite` queries (Python). See architecture diagram.
+
 ## Repository-Specific Conventions
 
 - **Logging Format**: Backend uses detailed formatting with filename:line:function
 - **Error Handling**: Rust uses `anyhow::Result`, frontend uses try-catch with user-friendly messages
 - **Naming**: Audio devices use "microphone" and "system" consistently (not "input"/"output")
+- **Dark Mode**: All new components MUST include `dark:` Tailwind variants. Use semantic colors (`bg-background`, `text-foreground`, `border-border`) from shadcn/ui where possible.
 - **Git Branches**:
   - `main`: Stable releases
+  - `feature/*`: New features (developed in worktrees, see "Git Worktrees" above)
   - `fix/*`: Bug fixes
   - `enhance/*`: Feature enhancements
-  - Current: `fix/audio-mixing` (working on audio pipeline improvements)
 
 ## Key Files Reference
 
 **Core Coordination**:
 - [frontend/src-tauri/src/lib.rs](frontend/src-tauri/src/lib.rs) - Main Tauri entry point, command registration
 - [frontend/src-tauri/src/audio/mod.rs](frontend/src-tauri/src/audio/mod.rs) - Audio module exports
-- [backend/app/main.py](backend/app/main.py) - FastAPI application, API endpoints
+- [backend/app/main.py](backend/app/main.py) - FastAPI application, all API endpoints (meetings, summaries, AI, anonymization)
 
 **Audio System**:
 - [frontend/src-tauri/src/audio/recording_manager.rs](frontend/src-tauri/src/audio/recording_manager.rs) - Recording orchestration
 - [frontend/src-tauri/src/audio/pipeline.rs](frontend/src-tauri/src/audio/pipeline.rs) - Audio mixing and VAD
 - [frontend/src-tauri/src/audio/recording_saver.rs](frontend/src-tauri/src/audio/recording_saver.rs) - Audio file writing
 
+**Rust Database** (frontend-side SQLite via sqlx):
+- [frontend/src-tauri/src/database/repositories/transcript.rs](frontend/src-tauri/src/database/repositories/transcript.rs) - Transcript save + search
+- [frontend/src-tauri/src/api/api.rs](frontend/src-tauri/src/api/api.rs) - Tauri commands wrapping DB operations
+
+**AI Assistant (F007)**:
+- [frontend/src/contexts/ClaudeContext.tsx](frontend/src/contexts/ClaudeContext.tsx) - AI panel state, streaming, context basket assembly
+- [frontend/src/services/claudeService.ts](frontend/src/services/claudeService.ts) - SSE fetch to backend AI endpoints
+- [frontend/src/components/ClaudePanel/ClaudePanel.tsx](frontend/src/components/ClaudePanel/ClaudePanel.tsx) - AI panel UI shell
+- [backend/app/claude_agent.py](backend/app/claude_agent.py) - Claude Agent SDK wrapper, session management
+
+**PII Anonymization (F005)**:
+- [backend/app/anonymizer.py](backend/app/anonymizer.py) - Presidio + spaCy NER, entity registry, surrogate generation
+
+**Slash Commands (F018)**:
+- [frontend/src/lib/slashCommands.ts](frontend/src/lib/slashCommands.ts) - Command registry, built-in + custom commands
+- [frontend/src/hooks/useSlashCommand.ts](frontend/src/hooks/useSlashCommand.ts) - Live transcript capture hook
+- [frontend/src/components/CommandSettings.tsx](frontend/src/components/CommandSettings.tsx) - Custom command CRUD in Settings
+
 **UI Components**:
 - [frontend/src/app/page.tsx](frontend/src/app/page.tsx) - Main recording interface
-- [frontend/src/components/Sidebar/SidebarProvider.tsx](frontend/src/components/Sidebar/SidebarProvider.tsx) - Global state management
+- [frontend/src/components/Sidebar/SidebarProvider.tsx](frontend/src/components/Sidebar/SidebarProvider.tsx) - Meetings list, server address
+- [frontend/src/app/settings/page.tsx](frontend/src/app/settings/page.tsx) - Settings page (5 tabs: General, Recordings, Transcription, Summary, Commands)
 
 **Whisper Integration**:
 - [frontend/src-tauri/src/whisper_engine/whisper_engine.rs](frontend/src-tauri/src/whisper_engine/whisper_engine.rs) - Whisper model management and transcription
+
+**Project Tracking**:
+- [feature_list.json](feature_list.json) - Feature status, steps, branches, worktrees
+- [bug_list.json](bug_list.json) - Known bugs and refactoring items with severity/fix details

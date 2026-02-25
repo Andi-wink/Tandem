@@ -1,0 +1,834 @@
+{
+  "project": "Tandem",
+  "description": "Discovery Call Assistant - fork of Meetily (Zackriya-Solutions/meeting-minutes) transformed for sales discovery calls with screenshots, clipboard integration, PII sanitization, and AI-powered insights",
+  "base_branch": "main",
+  "working_branch": "main",
+  "last_updated": "2026-02-23",
+  "features": [
+    {
+      "id": "F001",
+      "category": "infrastructure",
+      "name": "Windows Dev Environment Setup",
+      "description": "Configure Tandem to build and run on Windows with MSVC, LLVM, Rust, Node/pnpm, and CPU-only whisper-rs",
+      "priority": "critical",
+      "status": "complete",
+      "branch": "feature/screenshot-capture",
+      "commit": "596d7dd",
+      "steps": [
+        "Install MSVC 14.40+, LLVM 18, Rust toolchain",
+        "Fix Cargo.toml to use CPU-only whisper-rs on Windows",
+        "Build llama-helper binary and copy to binaries/",
+        "Verify pnpm install, cargo check, and tauri:dev:cpu all pass",
+        "Add .venv/, __pycache__ to .gitignore"
+      ],
+      "passes": true
+    },
+    {
+      "id": "F002",
+      "category": "functional",
+      "name": "Screenshot Capture During Meetings",
+      "description": "Capture fullscreen and region screenshots during active meetings via global hotkeys, with thumbnail timeline display and persistence across sessions",
+      "priority": "high",
+      "status": "complete",
+      "branch": "feature/screenshot-capture",
+      "commit": "f84dbf3",
+      "steps": [
+        "Rust screenshot module (xcap capture, PNG/JPEG encoding, thumbnail generation)",
+        "Tauri commands for fullscreen and region capture",
+        "Global hotkeys Alt+Shift+S (fullscreen) and Alt+Shift+R (region)",
+        "ScreenshotContext with event-driven state management",
+        "RegionSelectOverlay with mouse-driven selection and preview",
+        "ScreenshotThumbnail and ScreenshotLightbox components",
+        "Timeline integration merging transcripts and screenshots",
+        "Persistence via screenshots.json saved on recording stop",
+        "Meeting details page loads and displays saved screenshots",
+        "Asset protocol scope expansion for $APPDATA/** and $AUDIO/**"
+      ],
+      "passes": true
+    },
+    {
+      "id": "F003",
+      "category": "functional",
+      "name": "Pre-capture Region Screenshot (Snipping Tool Speed)",
+      "description": "Capture the screen at hotkey time and store in memory, then show full-res overlay instantly and crop from the stored image when user finishes selection - eliminates second capture roundtrip",
+      "priority": "high",
+      "status": "complete",
+      "branch": "feature/screenshot-capture",
+      "commit": "0c1362c",
+      "steps": [
+        "Rust pre_capture_screen() stores RgbaImage in static LazyLock",
+        "Full-res JPEG preview encoded as base64 data URI in Rust memory (bypasses asset protocol)",
+        "crop_from_pre_captured() crops from memory, saves PNG, clears static",
+        "AtomicBool guard with self-healing (clears stale state on next press)",
+        "Alt+Shift+R hotkey registered via .with_shortcuts() on plugin builder (not gs.register())",
+        "Global shortcut handler pre-captures then emits event with preview_data_uri + dimensions",
+        "start_region_capture Tauri command added for UI button path",
+        "Frontend loads preview via base64 data URI (not convertFileSrc asset protocol)",
+        "RegionSelectOverlay uses CSS background-image with preloaded data URI",
+        "Physical pixel dimensions shown in size indicator",
+        "Cancel clears Rust memory via cancel_region_capture command",
+        "cargo check and tsc --noEmit pass clean"
+      ],
+      "notes": "Initial implementation in 9fcd0e9, two bug fixes: f1c43f0 (base64 data URI instead of asset protocol, self-healing AtomicBool), 0c1362c (plugin builder .with_shortcuts() binding, start_region_capture command for UI button). User verified working.",
+      "passes": true
+    },
+    {
+      "id": "F004",
+      "category": "functional",
+      "name": "Clipboard Integration",
+      "description": "Global hotkey Alt+Shift+V captures current clipboard (text or image) as a timestamped clip during meetings. Clips appear in the timeline alongside transcripts and screenshots, persisted to clipboard.json.",
+      "priority": "high",
+      "status": "complete",
+      "branch": "feature/screenshot-capture",
+      "commit": "9fcd0e9",
+      "steps": [
+        "Add arboard = \"3\" to Cargo.toml",
+        "New Rust module: src/clipboard/{mod,types,capture,commands}.rs",
+        "ClipboardData struct: id, content_type (text|image), text?, file_path?, thumbnail_base64?, timestamp, recording_elapsed_secs?, width?, height?",
+        "capture.rs: read_clipboard() tries text first, then image — reuses screenshot::capture::generate_thumbnail_from_path() for image thumbs",
+        "commands.rs: read_clipboard_content (hotkey+button), save_clipboard_json, load_clipboard_json",
+        "lib.rs: declare module, register Alt+Shift+V global shortcut, add 3 commands to invoke_handler",
+        "types/index.ts: add ClipboardData, extend TimelineItemType to include 'clipboard', extend TimelineFilter to include 'clipboard'",
+        "New services/clipboardService.ts: invoke wrappers (mirrors screenshotService.ts)",
+        "New contexts/ClipboardContext.tsx: listens for clipboard-captured event, auto-saves on recording-stopped (mirrors ScreenshotContext.tsx)",
+        "hooks/useTimeline.ts: add clipboardItems param, merge and sort all three item types",
+        "components/TimelineFilterBar.tsx: add 'Clips' filter with clipboardCount badge",
+        "components/VirtualizedTranscriptView.tsx: render clipboard timeline items (text preview card or image thumbnail)",
+        "app/_components/TranscriptPanel.tsx: add 'Clip' button, pass clipboard data to timeline",
+        "components/MeetingDetails/TranscriptPanel.tsx: accept clipboardItems prop, pass to timeline",
+        "hooks/usePaginatedTranscripts.ts: load clipboard.json for past meeting details view",
+        "app/meeting-details/page.tsx + page-content.tsx: pass clipboardItems through chain",
+        "app/layout.tsx: wrap with ClipboardProvider alongside ScreenshotProvider",
+        "cargo check and tsc --noEmit pass clean",
+        "Fix: clear clipboard + screenshot state on every new recording start (useRecordingStart.ts)",
+        "Fix: add toast feedback (success/info/error) to captureClipboard so button failures are visible to user"
+      ],
+      "dependencies": ["F002"],
+      "new_types": ["ClipboardData", "ClipboardContentType"],
+      "new_events": ["clipboard-captured"],
+      "new_hotkeys": ["Alt+Shift+V"],
+      "new_files": [
+        "frontend/src-tauri/src/clipboard/mod.rs",
+        "frontend/src-tauri/src/clipboard/types.rs",
+        "frontend/src-tauri/src/clipboard/capture.rs",
+        "frontend/src-tauri/src/clipboard/commands.rs",
+        "frontend/src/services/clipboardService.ts",
+        "frontend/src/contexts/ClipboardContext.tsx"
+      ],
+      "modified_files": [
+        "frontend/src-tauri/Cargo.toml",
+        "frontend/src-tauri/src/lib.rs",
+        "frontend/src/types/index.ts",
+        "frontend/src/hooks/useTimeline.ts",
+        "frontend/src/components/TimelineFilterBar.tsx",
+        "frontend/src/components/VirtualizedTranscriptView.tsx",
+        "frontend/src/app/_components/TranscriptPanel.tsx",
+        "frontend/src/components/MeetingDetails/TranscriptPanel.tsx",
+        "frontend/src/hooks/usePaginatedTranscripts.ts",
+        "frontend/src/app/meeting-details/page.tsx",
+        "frontend/src/app/meeting-details/page-content.tsx",
+        "frontend/src/app/layout.tsx"
+      ],
+      "conflict_notes": {
+        "F003": "No conflict — F004 uses Alt+Shift+V and separate clipboard module; F003 uses Alt+Shift+R and screenshot module",
+        "F005": "Clipboard text clips may need PII routing when F005 is implemented — coordinate then",
+        "F006": "Clipboard clips could be additional AI insights input — forward compatible, no changes needed now",
+        "types_index": "Extends TimelineItemType and TimelineFilter — merge carefully if another feature also modifies these",
+        "useTimeline": "Signature change (adds clipboardItems param) — both callers (TranscriptPanel.tsx and MeetingDetails/TranscriptPanel.tsx) updated in this feature"
+      },
+      "passes": true
+    },
+    {
+      "id": "F005",
+      "category": "functional",
+      "name": "Presidio PII Anonymization Pipeline",
+      "description": "On-device PII anonymization using Microsoft Presidio + spaCy NER, integrated directly into the FastAPI backend. Anonymization happens at send-time (not storage-time): raw transcripts stay local and real; only context basket payloads sent to the AI panel are anonymized. Two-tier detection: Tier 1 (PERSON, EMAIL, PHONE, LOCATION, DATE, URL) replaced with realistic Faker surrogates; Tier 2 (SSN, CREDIT_CARD, PASSPORT, IBAN, BANK_NUMBER) hard-redacted to [TYPE] placeholders. Per-meeting entity registry persisted to {meeting_id}/.tandem/entity_map.json ensures consistent aliases throughout a session. Union-Find name clustering resolves variants.",
+      "priority": "medium",
+      "status": "complete",
+      "branch": "feature/pii-anonymization",
+      "commit": "98f170f",
+      "steps": [
+        "Phase 1 — Backend dependencies: add presidio-analyzer, presidio-anonymizer, spacy, faker, nameparser to backend/requirements.txt; run python -m spacy download en_core_web_trf to pull transformer NER model; verify imports in backend/app/main.py",
+        "Phase 2 — Anonymizer module: new backend/app/anonymizer.py with PresidioAnonymizer class; load AnalyzerEngine + AnonymizerEngine once at module level (spaCy model loaded once, shared across requests); define SURROGATE_ENTITIES list (PERSON, EMAIL_ADDRESS, PHONE_NUMBER, LOCATION, DATE_TIME, URL, IP_ADDRESS) with threshold=0.7; define REDACT_ENTITIES list (CREDIT_CARD, US_SSN, US_ITIN, US_BANK_NUMBER, IBAN_CODE, CRYPTO, US_PASSPORT, US_DRIVER_LICENSE, MEDICAL_LICENSE) with threshold=0.3",
+        "anonymizer.py: EntityRegistry class — per-meeting dict mapping real_value → surrogate; load/save to entity_map.json; collision-free surrogate generation via Faker",
+        "anonymizer.py: NameClusterer class — Union-Find algorithm clustering name variants",
+        "anonymizer.py: UUID false-positive filter — regex detects hex segments within UUID patterns and excludes them from Presidio results",
+        "anonymizer.py: anonymize(text, entity_map) → (sanitized_text, updated_entity_map)",
+        "Phase 3 — FastAPI endpoint: POST /api/anonymize",
+        "Phase 4 — Entity map management endpoints",
+        "Phase 5 — Frontend service: new services/anonymizationService.ts",
+        "Phase 6 — ClaudeContext integration: anonymize before sending to backend AI endpoint",
+        "Phase 7 — Entity map viewer UI",
+        "Phase 8 — Per-meeting sanitization toggle",
+        "Phase 9 — Screenshot basket items converted to text descriptions"
+      ],
+      "dependencies": ["F007"],
+      "new_files": [
+        "backend/app/anonymizer.py",
+        "frontend/src/services/anonymizationService.ts",
+        "frontend/src/components/ClaudePanel/EntityMapViewer.tsx"
+      ],
+      "modified_files": [
+        "backend/requirements.txt",
+        "backend/app/main.py",
+        "frontend/src/contexts/ClaudeContext.tsx",
+        "frontend/src/components/ClaudePanel/ClaudePanel.tsx",
+        "frontend/src/components/ClaudePanel/ContextBasket.tsx"
+      ],
+      "passes": true
+    },
+    {
+      "id": "F006",
+      "category": "functional",
+      "name": "Discovery Call AI Insights",
+      "description": "AI-powered analysis of discovery calls extracting key information like pain points, requirements, budget signals, decision makers, next steps, and competitive mentions",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Define discovery call analysis prompt template",
+        "Extract structured insights: pain points, requirements, objections, next steps",
+        "Identify decision makers and stakeholders mentioned",
+        "Detect budget/timeline signals",
+        "Flag competitive mentions",
+        "Generate call summary with actionable items",
+        "UI panel displaying structured insights alongside transcript",
+        "Export insights as structured data (JSON/CSV)"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F007",
+      "category": "integration",
+      "name": "AI Assistant Panel (formerly Claude Code Panel)",
+      "description": "Right slide-over panel with AI assistant powered by Claude Agent SDK (Python) via the FastAPI backend. Context basket (5-min transcript chunks, screenshots, clipboard clips, highlighted text) assembles curated context. Each meeting gets its own folder with auto-generated CLAUDE.md. Sessions persist via session ID. User provides own Anthropic API key. Originally used CLI subprocess (ToS violation) — migrating to Agent SDK (Commercial ToS compliant).",
+      "priority": "high",
+      "status": "complete",
+      "branch": "feature/claude-panel",
+      "commit": "5b1e4e7",
+      "review_findings": {
+        "bugs_found": 6,
+        "bugs_fixed": "27 bugs resolved in f478770, R004 error handling in 4c73918",
+        "performance_issues": 1,
+        "tos_violation": "Resolved — migrated from CLI subprocess to Agent SDK with API key auth (WU6-WU9)",
+        "missing_features": "Resolved — useTranscriptChunks wired to UI (WU11), drag-and-drop added (WU12)"
+      },
+      "steps": [
+        "Phase 1 — Meeting Folder Infrastructure (DONE)",
+        "Phase 2 — Rust claude module (DONE — will be replaced by Agent SDK)",
+        "Phase 3 — Frontend service + context (DONE — needs bug fixes)",
+        "Phase 4 — ProjectDirModal (DONE — needs setTimeout fix + API key input)",
+        "Phase 5 — ContextBasket component (DONE)",
+        "Phase 6 — ConversationView component (DONE — needs markdown rendering + smart scroll)",
+        "Phase 7 — ClaudePanel shell (DONE — needs branding rename)",
+        "Phase 8 — Timeline 5-min chunks (INCOMPLETE — hook exists, UI not wired)",
+        "Phase 9 — Text highlight to basket (DEFERRED)",
+        "Phase 10 — Layout integration (DONE)"
+      ],
+      "dependencies": ["F002", "F003", "F004"],
+      "passes": true
+    },
+    {
+      "id": "F007-WU1",
+      "category": "bugfix",
+      "parent": "F007",
+      "name": "Markdown Rendering for Assistant Messages",
+      "description": "Claude responses contain markdown (headers, code blocks, lists, bold) but ConversationView.tsx renders raw text with whitespace-pre-wrap. react-markdown 9.0.1 and remark-gfm 4.0.1 already in package.json but unused.",
+      "priority": "high",
+      "status": "complete",
+      "branch": "feature/claude-panel",
+      "dependencies": [],
+      "steps": [
+        "Import ReactMarkdown from react-markdown and remarkGfm from remark-gfm (already in deps)",
+        "Replace {msg.text} with <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown> in assistant message block",
+        "Keep streaming cursor span outside ReactMarkdown",
+        "Remove whitespace-pre-wrap class (Tailwind prose handles spacing)"
+      ],
+      "modified_files": [
+        "frontend/src/components/ClaudePanel/ConversationView.tsx"
+      ],
+      "test": "Send 'Summarize in bullet points with code examples' → verify headers, lists, code blocks, bold render properly",
+      "passes": true
+    },
+    {
+      "id": "F007-WU2",
+      "category": "bugfix",
+      "parent": "F007",
+      "name": "Smart Auto-Scroll in ConversationView",
+      "description": "Every messages state change scrolls to bottom via useEffect, yanking user back to bottom during streaming even if they scrolled up to read earlier messages.",
+      "priority": "high",
+      "status": "complete",
+      "branch": "feature/claude-panel",
+      "dependencies": [],
+      "steps": [
+        "Add isNearBottomRef = useRef(true)",
+        "Add handleScroll callback: check if scrollHeight - scrollTop - clientHeight < 100 → set ref",
+        "Attach/detach scroll listener via useEffect on the scrollRef element",
+        "Modify auto-scroll useEffect: only scroll if isNearBottomRef.current is true"
+      ],
+      "modified_files": [
+        "frontend/src/components/ClaudePanel/ConversationView.tsx"
+      ],
+      "test": "During streaming, scroll up → view stays in place. Scroll back to bottom → auto-scroll resumes. New message when at bottom → auto-scrolls.",
+      "passes": true
+    },
+    {
+      "id": "F007-WU3",
+      "category": "bugfix",
+      "parent": "F007",
+      "name": "Fix setTimeout Race Condition in ProjectDirModal",
+      "description": "ClaudePanel.tsx line 83-91 uses setTimeout(100ms) after handleProjectDirConfirm hoping React re-renders before sendMessage reads new projectDir. This is fragile and fails on slow machines.",
+      "priority": "medium",
+      "status": "complete",
+      "branch": "feature/claude-panel",
+      "dependencies": [],
+      "steps": [
+        "Replace setTimeout with useEffect watching [pendingFirstMessage, projectDir, sendMessage]",
+        "Effect body: if pendingFirstMessage && projectDir → call sendMessage(msg), then setPendingFirstMessage(null) and setInputText('')",
+        "Simplify handleProjectDirConfirm to just: setShowProjectModal(false), openPanel(meetingId, meetingTitle, dir)"
+      ],
+      "modified_files": [
+        "frontend/src/components/ClaudePanel/ClaudePanel.tsx"
+      ],
+      "test": "Open panel fresh (no session), type message, send → ProjectDirModal shows → pick dir → message sends immediately without timing issues",
+      "passes": true
+    },
+    {
+      "id": "F007-WU4",
+      "category": "performance",
+      "parent": "F007",
+      "name": "Streaming Performance — requestAnimationFrame Batching",
+      "description": "Each text_delta event from Claude triggers setState which copies the entire conversation array and triggers a full React re-render. During fast streaming this can be hundreds of updates per second, causing jank.",
+      "priority": "medium",
+      "status": "complete",
+      "branch": "feature/claude-panel",
+      "dependencies": [],
+      "steps": [
+        "Add rafPendingRef = useRef(false) in ClaudeContext",
+        "In text_delta case: accumulate text in streamingTextRef.current, then check rafPendingRef",
+        "If !rafPendingRef.current: set it true, call requestAnimationFrame(() => { rafPendingRef.current = false; setState(...) })",
+        "Result: max 60 setState calls/sec instead of unbounded, matching display refresh rate"
+      ],
+      "modified_files": [
+        "frontend/src/contexts/ClaudeContext.tsx"
+      ],
+      "test": "Send message generating long response. Open DevTools Performance tab, record during streaming. Verify render frequency is capped at ~60fps (16ms intervals).",
+      "passes": true
+    },
+    {
+      "id": "F007-WU5",
+      "category": "bugfix",
+      "parent": "F007",
+      "name": "Context Memoization + Meeting ID Event Filtering",
+      "description": "Two issues: (1) ClaudeContext value object recreated every render causing unnecessary consumer re-renders. (2) listenClaudeStreamEvent callback processes ALL claude-stream-event events without checking meeting_id — events can cross-contaminate if user switches meetings. (3) as any cast in listenClaudeSessionReady.",
+      "priority": "high",
+      "status": "complete",
+      "branch": "feature/claude-panel",
+      "dependencies": [],
+      "steps": [
+        "Add meetingIdRef = useRef<string | null>(null) in ClaudeContext",
+        "Add useEffect syncing meetingIdRef.current = state.meetingId",
+        "Add guard at top of stream event listener: if (event.meeting_id !== meetingIdRef.current) return",
+        "Wrap context value in useMemo(...) with proper deps array",
+        "In claudeService.ts: add ClaudeSessionReadyPayload interface, use listen<ClaudeSessionReadyPayload>(...) generic instead of as any"
+      ],
+      "notes": "Steps 1-4 fully implemented. Step 5 (typed payload) is moot — architecture moved from Tauri event listeners to SSE fetch streams, eliminating the as-any cast entirely.",
+      "modified_files": [
+        "frontend/src/contexts/ClaudeContext.tsx",
+        "frontend/src/services/claudeService.ts"
+      ],
+      "test": "Open panel for meeting A, send message, close panel. Open for meeting B → verify no stale events from A appear. Run tsc --noEmit → no type errors.",
+      "passes": true
+    },
+    {
+      "id": "F007-WU6",
+      "category": "integration",
+      "parent": "F007",
+      "name": "Backend — Claude Agent SDK Service",
+      "description": "Replace the Rust CLI subprocess approach (ToS violation: OAuth tokens restricted to official products) with the Python Claude Agent SDK in the existing FastAPI backend. The Agent SDK provides identical capabilities (Read, Write, Edit, Bash, Glob, Grep, sessions, streaming) under Anthropic Commercial Terms of Service. User provides own API key.",
+      "priority": "critical",
+      "status": "done",
+      "branch": "feature/claude-panel",
+      "dependencies": [],
+      "steps": [
+        "pip install claude-agent-sdk in backend venv",
+        "Add claude-agent-sdk to backend/requirements.txt",
+        "Create backend/app/claude_agent.py with: start_session(prompt, cwd, allowed_tools, api_key) using query() with streaming, resume_session(session_id, prompt, api_key) using resume option",
+        "Session state stored in memory dict keyed by meeting_id, also persisted to .tandem/session.json",
+        "API key passed per-request from frontend (not stored in backend)",
+        "Tools allowed: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep']",
+        "CLAUDE.md generation in Python (port existing Rust generate_claude_md logic)",
+        "Add SSE streaming endpoints to backend/app/main.py:",
+        "POST /api/claude/start — start new session, returns SSE stream",
+        "POST /api/claude/message — resume session, returns SSE stream",
+        "GET /api/claude/session/{meeting_id} — get session state",
+        "DELETE /api/claude/session/{meeting_id} — clear session + cancel running query",
+        "POST /api/claude/cancel/{meeting_id} — cancel running query",
+        "SSE event format: {event_type, text, tool_name, tool_input, tool_output, session_id, cost_usd, meeting_id}"
+      ],
+      "new_files": [
+        "backend/app/claude_agent.py"
+      ],
+      "modified_files": [
+        "backend/requirements.txt",
+        "backend/app/main.py"
+      ],
+      "test": "curl -N -X POST http://localhost:5167/api/claude/start -d '{\"meeting_id\":\"test\",\"message\":\"hello\",\"api_key\":\"sk-ant-...\",\"project_dir\":\"/tmp/test\",\"meeting_title\":\"Test\"}' -H 'Content-Type: application/json' → verify SSE stream with session_init, text_delta, done events",
+      "passes": true
+    },
+    {
+      "id": "F007-WU7",
+      "category": "integration",
+      "parent": "F007",
+      "name": "Frontend — Replace Tauri Invoke with Backend SSE",
+      "description": "Replace all Tauri invoke() calls and event listeners in claudeService.ts and ClaudeContext.tsx with fetch() + ReadableStream to connect to the backend SSE endpoints from WU6. Same event_type switch/case logic, different transport.",
+      "priority": "critical",
+      "status": "done",
+      "branch": "feature/claude-panel",
+      "dependencies": ["F007-WU6"],
+      "steps": [
+        "Rewrite claudeService.ts: remove all invoke<> calls and Tauri event listeners",
+        "Add streamClaudeSession(params) using fetch() + ReadableStream to read SSE lines from backend",
+        "Add getClaudeSession(meetingId) via fetch GET to /api/claude/session/{meeting_id}",
+        "Add clearClaudeSession(meetingId) via fetch DELETE",
+        "Add cancelClaudeSession(meetingId) via fetch POST to /api/claude/cancel/{meeting_id}",
+        "Reuse serverAddress from SidebarProvider (already http://localhost:5167)",
+        "Update ClaudeContext.tsx: replace listenClaudeStreamEvent with SSE reader callback",
+        "Same event_type switch/case logic (session_init, text_delta, tool_call, tool_result, done, error)",
+        "closePanel and clearSession call cancel endpoint to stop running queries",
+        "Cancel any running stream when sending a new message"
+      ],
+      "modified_files": [
+        "frontend/src/services/claudeService.ts",
+        "frontend/src/contexts/ClaudeContext.tsx"
+      ],
+      "test": "Open panel, send message → see streaming response via SSE from backend. Cancel mid-stream → response stops. Session resumes after panel close/reopen.",
+      "passes": true
+    },
+    {
+      "id": "F007-WU8",
+      "category": "functional",
+      "parent": "F007",
+      "name": "Add API Key Input to Settings",
+      "description": "User must provide their own Anthropic API key (from console.anthropic.com) to use the AI assistant. Add input field to ProjectDirModal and a way to change it from the panel header.",
+      "priority": "high",
+      "status": "done",
+      "branch": "feature/claude-panel",
+      "dependencies": ["F007-WU7"],
+      "steps": [
+        "Add API key text input to ProjectDirModal (password type, shown on first session setup)",
+        "Store key in localStorage (key: tandem_anthropic_api_key) — passed to backend with every request, never stored server-side",
+        "Add 'Get an API key' link to https://console.anthropic.com/",
+        "Validate key format on input (starts with sk-ant-)",
+        "In ClaudePanel header: show small key icon if API key is set, click opens small popover to view/change key",
+        "Load key from localStorage on mount, pass to all claudeService calls"
+      ],
+      "modified_files": [
+        "frontend/src/components/ClaudePanel/ClaudePanel.tsx",
+        "frontend/src/components/ClaudePanel/ProjectDirModal.tsx",
+        "frontend/src/contexts/ClaudeContext.tsx"
+      ],
+      "test": "First open → modal asks for API key + project dir. Enter valid key, save. Subsequent opens skip modal. Key persists across app restart. Change key via header icon.",
+      "passes": true
+    },
+    {
+      "id": "F007-WU9",
+      "category": "cleanup",
+      "parent": "F007",
+      "name": "Delete Rust Claude Module",
+      "description": "Remove the now-unused Rust claude/ module that was replaced by the Python Agent SDK backend. Clean up lib.rs registrations.",
+      "priority": "medium",
+      "status": "done",
+      "branch": "feature/claude-panel",
+      "dependencies": ["F007-WU7"],
+      "steps": [
+        "Delete frontend/src-tauri/src/claude/ directory (types.rs, session.rs, commands.rs, mod.rs)",
+        "Remove 'pub mod claude;' from frontend/src-tauri/src/lib.rs",
+        "Remove 5 command registrations from invoke_handler in lib.rs: start_claude_session, send_claude_message, get_claude_session, clear_claude_session, check_claude_cli_available",
+        "Remove 'which' crate from Cargo.toml if no other module uses it (check first)"
+      ],
+      "deleted_files": [
+        "frontend/src-tauri/src/claude/mod.rs",
+        "frontend/src-tauri/src/claude/types.rs",
+        "frontend/src-tauri/src/claude/session.rs",
+        "frontend/src-tauri/src/claude/commands.rs"
+      ],
+      "modified_files": [
+        "frontend/src-tauri/src/lib.rs"
+      ],
+      "test": "cargo check passes. No Rust compilation errors related to missing claude module. pnpm run tauri:dev:cpu builds successfully.",
+      "passes": true
+    },
+    {
+      "id": "F007-WU10",
+      "category": "compliance",
+      "parent": "F007",
+      "name": "Rename Panel Branding",
+      "description": "Per Claude Agent SDK documentation: third-party apps must NOT use 'Claude Code' or 'Claude Code Agent' branding. Rename all references to 'AI Assistant' or 'Tandem AI'.",
+      "priority": "medium",
+      "status": "done",
+      "branch": "feature/claude-panel",
+      "dependencies": ["F007-WU7"],
+      "steps": [
+        "Search all frontend files for 'Claude Code' text strings",
+        "Rename to 'AI Assistant' (or 'Tandem AI') in: panel title, toggle button tooltip, modal title, CLI-not-found warning, placeholder text",
+        "Update component names if desired (optional — internal names can stay as-is)",
+        "Context/service file names can stay as-is (not user-visible)",
+        "Allowed branding per SDK docs: 'Powered by Claude' is OK"
+      ],
+      "modified_files": [
+        "frontend/src/components/ClaudePanel/ClaudePanel.tsx",
+        "frontend/src/components/ClaudePanel/ProjectDirModal.tsx",
+        "frontend/src/app/page.tsx",
+        "frontend/src/app/meeting-details/page-content.tsx"
+      ],
+      "test": "Visual check — no 'Claude Code' text visible anywhere in the UI. Search codebase for user-facing strings containing 'Claude Code'.",
+      "passes": true
+    },
+    {
+      "id": "F007-WU11",
+      "category": "functional",
+      "parent": "F007",
+      "name": "Wire useTranscriptChunks into TranscriptPanel UI",
+      "description": "The useTranscriptChunks hook exists in useTimeline.ts (groups transcript segments into 5-minute windows) but is NEVER imported or called by any component. Users currently cannot add transcript chunks to the AI context basket. This completes F007 Phase 8.",
+      "priority": "high",
+      "status": "done",
+      "branch": "feature/claude-panel",
+      "dependencies": ["F007-WU7"],
+      "steps": [
+        "Import useTranscriptChunks from @/hooks/useTimeline in both TranscriptPanel components",
+        "Call useTranscriptChunks(segments) to get chunk array",
+        "Render chunk cards in the transcript panel — each card shows: time range label (e.g. '00:00–05:00'), segment count badge, preview text (first 60 chars)",
+        "Add 'Add to AI' button on each chunk card → calls addToBasket({ type: 'transcript_chunk', id: chunk.id, label: chunk.label, preview: chunk.preview, fullContent: chunk.fullText })",
+        "Style: small cards with FileText icon from lucide-react, matching ContextBasket item style (blue-50 bg, blue-100 border)",
+        "Only show chunks section when AI panel is open (check isPanelOpen from useClaude()) to save space",
+        "Import useClaude in both TranscriptPanel components for addToBasket and isPanelOpen access"
+      ],
+      "modified_files": [
+        "frontend/src/app/_components/TranscriptPanel.tsx",
+        "frontend/src/components/MeetingDetails/TranscriptPanel.tsx"
+      ],
+      "test": "Start recording, accumulate 5+ minutes of transcript. See chunk cards appear in transcript panel. Click 'Add to AI' → chunk appears in context basket. Send message → context block includes chunk text with time range header.",
+      "passes": true
+    },
+    {
+      "id": "F008",
+      "category": "infrastructure",
+      "name": "GitHub Fork Setup",
+      "description": "Create proper GitHub fork, set up origin remote, configure CI/CD for Tandem-specific builds",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Create GitHub fork via browser (requires auth)",
+        "Set origin remote to fork URL",
+        "Push feature branches to origin",
+        "Configure GitHub Actions for Windows builds",
+        "Update release endpoints in tauri.conf.json"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F009",
+      "category": "infrastructure",
+      "name": "GPU Acceleration (CUDA)",
+      "description": "Enable CUDA GPU acceleration for whisper-rs transcription using the RTX 3090, providing 5-10x speed improvement over CPU-only mode",
+      "priority": "low",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Fix CUDA 12 installation (install nvcc) or configure CUDA 11.8 path",
+        "Update Cargo.toml to enable cuda feature for whisper-rs on Windows",
+        "Verify CUDA toolkit integrates with MSBuild",
+        "Test transcription speed improvement",
+        "Add GPU detection and fallback logic"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F010",
+      "category": "functional",
+      "name": "Export Formats (PDF / Markdown / DOCX)",
+      "description": "Export meeting transcript + summary + screenshots as PDF, Markdown, or DOCX. All data already exists in SQLite and on disk — this adds formatting and packaging.",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Add backend endpoint POST /api/meetings/{id}/export?format=pdf|md|docx",
+        "Markdown exporter: assemble transcript segments, summary, screenshot references into .md",
+        "PDF exporter: render Markdown to PDF via weasyprint or reportlab, embed screenshot thumbnails",
+        "DOCX exporter: build document with python-docx, embed images inline",
+        "Frontend: add Export button to meeting details header with format dropdown",
+        "Trigger download via Tauri save-file dialog (or browser download fallback)",
+        "Include meeting metadata header (title, date, duration) in all formats"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F011",
+      "category": "functional",
+      "name": "Meeting Search (Full-Text Search)",
+      "description": "Full-text search across all past meeting transcripts using SQLite FTS5. Find any word or phrase across your entire meeting history instantly.",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Add FTS5 virtual table mirroring transcript segments (meeting_id, timestamp, text)",
+        "Populate FTS index when meetings are saved, add migration for existing data",
+        "Add backend endpoint GET /api/meetings/search?q=query with ranked results",
+        "Return matched segments with meeting title, timestamp, and highlighted snippet",
+        "Frontend: add search bar to sidebar or top-level navigation",
+        "Render results as clickable cards that navigate to meeting details at the matching timestamp",
+        "Debounce input, show result count, handle empty/no-results states"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F012",
+      "category": "ui",
+      "name": "Recording Indicator Overlay",
+      "description": "Small floating 'recording' badge that stays visible even when the app is minimized, so the user always knows a recording is active.",
+      "priority": "optional",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Create a small always-on-top Tauri window (e.g. 120x32) with recording dot + duration timer",
+        "Show overlay when recording starts, hide on stop",
+        "Make it draggable so user can reposition",
+        "Click on overlay brings main window to focus",
+        "Respect system tray / taskbar placement on Windows"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F013",
+      "category": "ui",
+      "name": "Keyboard Shortcuts Panel",
+      "description": "Cheat sheet modal showing all available hotkeys (global and in-app). Accessible via a menu item or Ctrl+/ shortcut.",
+      "priority": "optional",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Create ShortcutsModal component listing all hotkeys grouped by category (recording, screenshots, navigation, AI panel)",
+        "Register Ctrl+/ (or Cmd+/) global shortcut to toggle the modal",
+        "Add menu item or ? icon in header to open it",
+        "Pull shortcut definitions from a single source-of-truth config object",
+        "Style as a clean grid: action name on left, key combo badge on right"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F014",
+      "category": "functional",
+      "name": "Meeting Tags and Folders",
+      "description": "Organize past meetings by client, project, or custom tags. Filter and group the sidebar meeting list by tag or folder.",
+      "priority": "optional",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Add tags table in SQLite (meeting_id, tag_name) with unique constraint",
+        "Add backend CRUD endpoints for tags: GET/POST/DELETE /api/meetings/{id}/tags",
+        "Frontend: tag chips on meeting cards in sidebar, click to filter",
+        "Add tag input (combobox with autocomplete from existing tags) to meeting details header",
+        "Sidebar filter: dropdown or chip bar to filter meetings by one or more tags",
+        "Optional: virtual folders that are just saved tag filters with a custom name"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F015",
+      "category": "branding",
+      "name": "Rebrand Meetily to Tandem",
+      "description": "Complete rebrand from Meetily to Tandem across 105 files. Includes app identity configs, Rust source, frontend UI, build scripts, Docker configs, CI/CD workflows, documentation, icons/logos, and a data migration module that moves old Meetily user data to Tandem paths on first launch.",
+      "priority": "medium",
+      "status": "complete",
+      "branch": "feature/rebrand-tandem",
+      "worktree": "D:\\Dev projects\\Tandem-f015",
+      "commit": "d3d4a63",
+      "steps": [
+        "Phase 1 — App identity: tauri.conf.json (productName, identifier, title), package.json (name), Cargo.toml (name, description), build.rs (build message)",
+        "Phase 2 — Rust source (12 files): tray tooltip, 8 notification titles, settings path, recording dirs, model dirs, audio tap ID, console process name, env var (with MEETILY_LLAMA_HELPER fallback)",
+        "Phase 3 — Frontend UI (20 files): metadata, Logo, Sidebar, About, onboarding, permissions, transcript views, analytics (with meetily_user_id fallback), IndexedDB name, database import migration text",
+        "Phase 4 — Build scripts & Docker (17 files): frontend build-gpu/dev-gpu/build scripts, backend docker-compose, run-docker, setup-db, start_with_output",
+        "Phase 5 — Data migration: new migration.rs module runs once at startup, migrates app data, models, recordings, and config from old Meetily paths to Tandem paths via rename (atomic) or recursive copy fallback",
+        "Phase 6 — CI/CD workflows (8 files): TANDEM_RSA_PUBLIC_KEY env var with MEETILY fallback, artifact names, release titles, S3 refs",
+        "Phase 7 — Documentation (15 .md files): all markdown docs updated",
+        "Phase 8 — Icons & logos: all app icons (icns, ico, png variants), public logos, favicon replaced with Tandem artwork",
+        "Phase 9 — Verified: cargo check passes, tsc --noEmit passes, remaining meetily refs are intentional (CDN URLs, migration module, backwards-compat fallbacks)"
+      ],
+      "backwards_compat": [
+        "CDN URLs (meetily.towardsgeneralintelligence.com) kept as-is with TODO comments — needs server-side change",
+        "MEETILY_LLAMA_HELPER env var fallback in sidecar.rs",
+        "meetily_user_id sessionStorage fallback in analytics.ts",
+        "secrets.MEETILY_RSA_PUBLIC_KEY fallback in CI workflows",
+        "Tandem/Meetily wording in database import dialogs for migrating users"
+      ],
+      "new_files": [
+        "frontend/src-tauri/src/migration.rs",
+        "frontend/public/favicon.png",
+        "frontend/src-tauri/icons/64x64.png"
+      ],
+      "passes": true
+    },
+    {
+      "id": "F016",
+      "category": "ui",
+      "name": "Dark Mode",
+      "description": "Add a system/light/dark theme toggle. Currently the app is hardcoded to a white/gray-50 light theme with no dark variant. Tailwind CSS dark mode support needs to be enabled, a theme context added, and all components updated to use dark: variants.",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Tailwind config: enable darkMode: 'class' in tailwind.config.ts (currently not set); this allows toggling via a 'dark' class on <html>",
+        "Phase 2 — Theme context: create ThemeContext with useTheme hook; persist preference to localStorage; support 'system' (prefers-color-scheme), 'light', 'dark' modes; add 'dark' class to document.documentElement when active",
+        "Phase 3 — CSS variables: define color tokens in globals.css for both themes (e.g., --bg-primary, --text-primary, --border) so components can reference semantic colors instead of hardcoded gray-50/white/etc.",
+        "Phase 4 — Core layout: update page.tsx (bg-gray-50 → dark:bg-gray-900), Sidebar (bg-white → dark:bg-gray-800, border-r → dark:border-gray-700), MainContent wrapper",
+        "Phase 5 — Component sweep: add dark: variants to all major components — currently ~8 files reference theme/dark but only in shadcn/ui primitives (alert.tsx, input-group.tsx); the main app components (TranscriptPanel, ClaudePanel, ConversationView, ContextBasket, ProjectDirModal, RecordingControls, SettingsModal, MeetingDetails) all use hardcoded light colors",
+        "Phase 6 — AI Panel: ClaudePanel uses bg-white, border-gray-200, bg-gray-50 header — all need dark equivalents; ConversationView message bubbles (bg-blue-50 user, bg-gray-50 assistant) need dark variants",
+        "Phase 7 — Toggle UI: add sun/moon icon toggle in sidebar footer or settings page; use shadcn/ui dropdown for system/light/dark selection",
+        "Phase 8 — Tauri window: ensure Tauri webview respects the theme (no white flash on load — set background-color in tauri.conf.json or via preload script)",
+        "Phase 9 — Test: verify all pages (home, meeting-details, settings) render correctly in both themes; check contrast ratios meet WCAG AA"
+      ],
+      "notes": "Tailwind dark mode with 'class' strategy is the standard approach. globals.css already has one prefers-color-scheme media query (in a Next.js error page reset), but no app-level dark theme exists. The shadcn/ui components (5 files) already support dark: variants via CSS variables — we should extend this pattern to the rest of the app. Consider using next-themes package for SSR-safe theme management.",
+      "passes": false
+    },
+    {
+      "id": "F007-WU12",
+      "category": "functional",
+      "parent": "F007",
+      "name": "Drag-and-Drop Items into AI Context Basket",
+      "description": "Drag transcript segments, transcript chunks, screenshots, or clipboard items from the transcript stream and drop them onto the AI panel to add them to the context basket. Uses native HTML5 Drag and Drop API with a custom MIME type to avoid interference with OS file drops.",
+      "priority": "high",
+      "status": "done",
+      "branch": "feature/claude-panel",
+      "dependencies": ["F007-WU11"],
+      "steps": [
+        "Create useDragAndDrop.ts with useDraggableBasketItem and useDropZone hooks",
+        "Add drop zone to ContextBasket.tsx with visual feedback (blue dashed border on drag-over)",
+        "Add panel-level drop zone to ClaudePanel.tsx as fallback (larger target, blue ring on drag-over)",
+        "Make TranscriptChunks buttons draggable via DraggableChunkButton inner component",
+        "Make ScreenshotThumbnail draggable (entire thumbnail is drag handle)",
+        "Make individual TranscriptSegment items draggable across all 3 rendering paths (timeline, virtualized, simple)",
+        "Make clipboard text items draggable via DraggableClipboardItem component",
+        "Items already in basket are not draggable (draggable=false)"
+      ],
+      "new_files": [
+        "frontend/src/hooks/useDragAndDrop.ts"
+      ],
+      "modified_files": [
+        "frontend/src/components/ClaudePanel/ContextBasket.tsx",
+        "frontend/src/components/ClaudePanel/ClaudePanel.tsx",
+        "frontend/src/components/TranscriptChunks.tsx",
+        "frontend/src/components/ScreenshotThumbnail.tsx",
+        "frontend/src/components/VirtualizedTranscriptView.tsx"
+      ],
+      "test": "Drag transcript chunk → drop on basket → item appears. Drag screenshot → drop on panel body → item appears. Drag individual segment → drop → appears. Drag clipboard text → drop → appears. Already-in-basket items not draggable. Existing click buttons still work.",
+      "notes": "Follow-up fix 8712d9c: WebView2 on Windows doesn't expose custom MIME types in dataTransfer.types during dragenter/dragover. Added module-level _internalDragActive flag as primary detection, with MIME check as fallback. Also added text/plain fallback transport and item validation in drop handler.",
+      "passes": true
+    },
+    {
+      "id": "F017",
+      "category": "infrastructure",
+      "name": "Mobile Platform Icons (Android & iOS)",
+      "description": "Add Tandem-branded icon sets for Android (mipmap-hdpi through xxxhdpi, adaptive icons) and iOS (AppIcon sizes 20x20 through 512@2x). Icon files were generated by Tauri CLI during F015 but not committed — they need review and inclusion when mobile targets are pursued.",
+      "priority": "low",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Review generated Android icons in frontend/src-tauri/icons/android/ (mipmap-hdpi, mdpi, xhdpi, xxhdpi, xxxhdpi + adaptive icon XML)",
+        "Review generated iOS icons in frontend/src-tauri/icons/ios/ (AppIcon sizes 20x20@1x through 512@2x)",
+        "Verify icon quality at each resolution (no artifacts, proper padding/margins)",
+        "Commit android/ and ios/ icon directories",
+        "Update tauri.conf.json bundle targets if adding mobile builds",
+        "Test on Android emulator and iOS simulator if available"
+      ],
+      "notes": "Icon files already exist at frontend/src-tauri/icons/android/ and frontend/src-tauri/icons/ios/ in the f015 worktree (untracked). Generated during F015 Phase 8 by Tauri icon generation CLI.",
+      "passes": false
+    },
+    {
+      "id": "F018",
+      "category": "functional",
+      "name": "Slash Commands with Live Transcript Capture",
+      "description": "Type /command in the AI panel input to trigger pre-built AI workflows (research, summarize, actions, objections, pain-points, brief). From the moment a command is selected, live transcript segments are captured as context. Hit Enter to fire the command with its prompt template + captured transcript + any typed args. Users can also create custom commands via Settings > Commands tab. Built-in commands can be overridden.",
+      "priority": "high",
+      "status": "in-progress",
+      "branch": "feature/slash-commands",
+      "worktree": "D:\\Dev projects\\Tandem-f018",
+      "commit": null,
+      "steps": [
+        "Phase 1 — Command registry: slashCommands.ts with SlashCommand type, 6 built-in commands, matchCommands(), parseCommandInput(), expandTemplate()",
+        "Phase 2 — Custom commands: loadCustomCommands()/saveCustomCommands() via localStorage, getAllCommands() merges built-in + custom",
+        "Phase 3 — useSlashCommand hook: manages activeCommand state, captureStartIndex ref, transcript capture via useTranscripts(), buildCommandMessage() expands template",
+        "Phase 4 — SlashCommandAutocomplete dropdown: appears above textarea on '/' input, arrow key + Tab/Enter selection, icon + name + description per row",
+        "Phase 5 — ClaudePanel integration: handleInputChange detects '/', handleKeyDown routes arrow/Tab/Enter/Escape, handleSend builds expanded message, capture indicator with pulsing dot + segment count",
+        "Phase 6 — Settings tab: CommandSettings component with create/edit/delete custom commands, built-in reference list, how-it-works guide, added as 'Commands' tab in settings page"
+      ],
+      "dependencies": ["F007"],
+      "new_files": [
+        "frontend/src/lib/slashCommands.ts",
+        "frontend/src/hooks/useSlashCommand.ts",
+        "frontend/src/components/ClaudePanel/SlashCommandAutocomplete.tsx",
+        "frontend/src/components/CommandSettings.tsx"
+      ],
+      "modified_files": [
+        "frontend/src/components/ClaudePanel/ClaudePanel.tsx",
+        "frontend/src/app/settings/page.tsx"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F019",
+      "category": "security",
+      "name": "API Key Encryption (OS Keychain)",
+      "description": "All API keys (Anthropic, OpenAI, Groq, OpenRouter, Deepgram, etc.) are stored in plain text in the SQLite database (meeting_minutes.sqlite). Migrate to OS-native credential stores: Windows Credential Manager, macOS Keychain, Linux Secret Service. Keys should never touch the SQLite DB. Use the Rust 'keyring' crate for cross-platform support.",
+      "priority": "high",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Add keyring crate to Cargo.toml",
+        "Create new Rust module: src/secrets/mod.rs with get_secret(service, key) and set_secret(service, key, value) wrappers around keyring API",
+        "Migrate SettingsRepository::save_api_key to use OS keychain instead of SQLite columns",
+        "Migrate SettingsRepository::get_api_key to read from OS keychain",
+        "Add migration path: on first launch after update, read any existing plain-text keys from SQLite, store them in keychain, then NULL out the SQLite columns",
+        "Handle keychain access errors gracefully (locked keychain, permission denied) with user-friendly toast messages",
+        "Remove plain-text API key columns from SQLite schema in a future migration (after transition period)",
+        "Update Tauri commands (api_save_api_key, api_get_api_key) to use new secrets module",
+        "Test on Windows (Credential Manager), macOS (Keychain), Linux (Secret Service)"
+      ],
+      "affected_tables": ["settings (groqApiKey, openaiApiKey, anthropicApiKey, ollamaApiKey, openRouterApiKey, customOpenAIConfig)", "transcript_settings (whisperApiKey, deepgramApiKey, elevenLabsApiKey, groqApiKey, openaiApiKey)"],
+      "passes": false
+    },
+    {
+      "id": "F020",
+      "category": "functional",
+      "name": "Meeting Handoff to Claude Code (.md export)",
+      "description": "Export a structured markdown file from the AI panel that hands off meeting context to Claude Code for deep implementation work. The .md file includes meeting metadata, full transcript, screenshot/clip file paths with timestamps, the AI conversation history, decisions made, and action items. Saved to the meeting folder as HANDOFF.md. Claude Code reads it naturally as project context.",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — /handoff slash command: add to slashCommands.ts built-in list, triggers export instead of sending to AI",
+        "Phase 2 — Gather meeting data: collect transcript segments (from TranscriptContext), screenshots (from ScreenshotContext with file_path + recording_elapsed_secs), clipboard clips (from ClipboardContext with text or file_path), AI conversation (from ClaudeContext messages array)",
+        "Phase 3 — Generate markdown: template with sections — ## Meeting Info (title, date, duration), ## Transcript (chronological, with timestamps), ## Screenshots (file paths with elapsed time position in transcript), ## Clipboard Clips (text inline or image file paths with elapsed time), ## AI Conversation (user/assistant messages), ## Action Items (extracted from AI conversation or manually tagged)",
+        "Phase 4 — Save to meeting folder: write HANDOFF.md to {meeting_folder}/ via Tauri invoke (reuse save pattern from screenshots.json)",
+        "Phase 5 — Toast confirmation with 'Open in Explorer' button pointing to the file"
+      ],
+      "dependencies": ["F018"],
+      "output_format": "markdown",
+      "output_example": "## Meeting: Discovery Call with Acme\\n## Date: 2026-02-24 | Duration: 47 min\\n\\n## Transcript\\n- [00:00] Hi everyone...\\n- [00:05] Thanks for joining...\\n\\n## Screenshots\\n- [02:30] screenshots/screenshot_20260224_120530_abc12345.png (1920x1080, fullscreen)\\n\\n## Clipboard Clips\\n- [02:45] Budget is $50k-75k for Q3\\n\\n## AI Conversation\\n**User**: /research Acme Corp competitors\\n**Assistant**: Based on the transcript...\\n\\n## Action Items\\n- [ ] Implement F019 (API key encryption)\\n- [ ] Fix dark mode on settings note box",
+      "passes": false
+    }
+  ]
+}

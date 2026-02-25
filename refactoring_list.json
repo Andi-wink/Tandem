@@ -1,0 +1,89 @@
+{
+    "project": "Tandem",
+    "description": "List of planned refactors to improve code quality, type safety, and robustness.",
+    "base_branch": "main",
+    "working_branch": "refactor/claude-service",
+    "last_updated": "2026-02-22",
+    "features": [
+        {
+            "id": "R001",
+            "category": "refactor",
+            "name": "Environment-based Backend Configuration",
+            "description": "Current backend URL is hardcoded to localhost:5167. This should be moved to an environment variable to allow building for staging or production without code changes.",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Create or update .env files with VITE_BACKEND_URL or NEXT_PUBLIC_BACKEND_URL",
+                "Update BACKEND export in claudeService.ts to use the environment variable with a fallback to localhost"
+            ],
+            "passes": false
+        },
+        {
+            "id": "R002",
+            "category": "type-safety",
+            "name": "Discriminated Unions for Events",
+            "description": "ClaudeFrontendEvent currently has all payload fields set as nullable (string | null). Refactoring to a Discriminated Union based on event_type will improve TypeScript autocompletion and prevent null errors when accessing fields.",
+            "priority": "high",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Define BaseEvent with common fields like meeting_id and session_id",
+                "Define strict payload types for text_delta, tool_call, tool_result, error, and done events",
+                "Combine into a union type for ClaudeFrontendEvent",
+                "Update components using the event to leverage the new type narrowing"
+            ],
+            "passes": false
+        },
+        {
+            "id": "R003",
+            "category": "robustness",
+            "name": "Robust SSE Stream Parsing",
+            "description": "Manual string splitting on '\\n' for SSE events in streamClaudeSession can break if chunks are split unexpectedly or if payloads contain escaped characters irregularly. Standardizing SSE parsing will prevent stream hangs.",
+            "priority": "high",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Consider integrating a standard SSE parser library (e.g., @microsoft/fetch-event-source)",
+                "Alternatively, improve the manual buffer reading to correctly accumulate and parse '\\n\\n' separated events",
+                "Ensure reader.releaseLock() is guaranteed in a finally block to prevent resource leaks on errors"
+            ],
+            "passes": false
+        },
+        {
+            "id": "R004",
+            "category": "error-handling",
+            "name": "Explicit REST Error Handling",
+            "description": "REST helpers like clearClaudeSession and cancelClaudeSession swallow HTTP errors silently. getClaudeSession returns null on 500 errors, hiding crashes. They should throw explicit errors so the UI can display appropriate notifications.",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Check res.ok in clearClaudeSession and cancelClaudeSession, and throw an Error with status text if false",
+                "Update getClaudeSession to only return null on a 404 status, and throw for 500s or other errors",
+                "Ensure calling UI components wrap these calls in try/catch to show toast notifications on failure"
+            ],
+            "passes": false
+        },
+        {
+            "id": "R005",
+            "category": "architecture",
+            "name": "Promise-Wrapped Streaming",
+            "description": "streamClaudeSession uses an async IIFE, meaning the caller receives the AbortController but has no Promise to await to know when the stream finishes. Returning a Promise enables better UI state management (e.g., loading spinners).",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Wrap the IIFE logic inside streamClaudeSession into a Promise",
+                "Return an object containing both the abort function (from the controller) and the Promise",
+                "Update callers in ClaudeContext to optionally await the stream completion for cleaner async flow"
+            ],
+            "passes": false
+        }
+    ]
+}
