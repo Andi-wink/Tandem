@@ -118,10 +118,12 @@ export function useSlashCommand(): SlashCommandState & SlashCommandActions {
     const parsed = parseCommandInput(inputText);
     const userInput = parsed?.userInput || '';
 
-    // Gather captured transcript segments
+    // Gather transcript segments: captured window first, fall back to all transcripts
     const startIdx = captureStartIndexRef.current ?? transcripts.length;
     const capturedSegments = transcripts.slice(startIdx);
-    const capturedText = capturedSegments.map(s => {
+    // If no new segments arrived since activation, use all available transcript as context
+    const segmentsToUse = capturedSegments.length > 0 ? capturedSegments : transcripts;
+    const capturedText = segmentsToUse.map(s => {
       const time = s.audio_start_time !== undefined
         ? `[${formatSecs(s.audio_start_time)}]`
         : `[${s.timestamp}]`;
@@ -131,16 +133,19 @@ export function useSlashCommand(): SlashCommandState & SlashCommandActions {
     // Expand the prompt template
     const message = expandTemplate(activeCommand, capturedText, userInput);
 
-    // Create a basket item for the captured transcript (if any segments were captured)
+    // Create a basket item for the captured transcript (if any segments were used)
     let capturedBasketItem: ContextBasketItem | null = null;
-    if (capturedSegments.length > 0) {
+    if (segmentsToUse.length > 0) {
+      const label = capturedSegments.length > 0
+        ? `/${activeCommand.name} capture (${capturedSegments.length} new segments)`
+        : `/${activeCommand.name} context (${segmentsToUse.length} segments)`;
       capturedBasketItem = {
         id: `slash-capture-${Date.now()}`,
         type: 'transcript_chunk',
-        label: `/${activeCommand.name} capture (${capturedSegments.length} segments)`,
+        label,
         preview: capturedText.slice(0, 80) + (capturedText.length > 80 ? '...' : ''),
         fullContent: capturedText,
-        timestamp: capturedSegments[0]?.audio_start_time,
+        timestamp: segmentsToUse[0]?.audio_start_time,
       };
     }
 

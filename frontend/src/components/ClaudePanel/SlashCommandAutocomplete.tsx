@@ -1,6 +1,6 @@
 // F018: Autocomplete dropdown for slash commands
 import React, { useEffect, useRef } from 'react';
-import { Search, FileText, ListChecks, ShieldAlert, AlertTriangle, ClipboardList } from 'lucide-react';
+import { Search, FileText, ListChecks, ShieldAlert, AlertTriangle, ClipboardList, Download } from 'lucide-react';
 import type { SlashCommand } from '@/lib/slashCommands';
 
 const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -10,6 +10,7 @@ const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
   ShieldAlert,
   AlertTriangle,
   ClipboardList,
+  Download, // F020: handoff command icon
 };
 
 interface SlashCommandAutocompleteProps {

@@ -226,6 +226,20 @@ export function useRecordingStop(
       console.log('Waiting for transcript state updates to complete...');
       await new Promise(resolve => setTimeout(resolve, 500));
 
+      // F020: Auto-trigger handoff generation (non-blocking — runs in parallel with DB save)
+      try {
+        const handoffFolderPath = sessionStorage.getItem('last_recording_folder_path');
+        const handoffMeetingName = sessionStorage.getItem('last_recording_meeting_name');
+        if (handoffFolderPath && window.triggerHandoff) {
+          window.triggerHandoff(
+            handoffFolderPath,
+            handoffMeetingName || meetingTitle || 'New Meeting',
+          );
+        }
+      } catch (handoffError) {
+        console.error('Failed to trigger handoff:', handoffError);
+      }
+
       // Save to SQLite
       // NOTE: enabled to save COMPLETE transcripts after frontend receives all updates
       // This ensures user sees all transcripts streaming in before database save

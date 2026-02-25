@@ -8,6 +8,8 @@ export interface SlashCommand {
   icon: string; // lucide-react icon name
   promptTemplate: string;
   isBuiltIn?: boolean; // true for default commands, false/undefined for user-created
+  type?: 'ai' | 'action'; // F020: 'ai' = send to Claude (default), 'action' = execute locally
+  action?: string;         // F020: action identifier (e.g., 'handoff')
 }
 
 const STORAGE_KEY = 'tandem_custom_commands';
@@ -98,6 +100,16 @@ For each pain point, note: what the problem is, how severe it seems, and any sol
 
 ## Conversation
 {transcript_context}`,
+  },
+  // F020: Action command — exports meeting data as HANDOFF.md
+  {
+    name: 'handoff',
+    description: 'Export meeting as HANDOFF.md for Claude Code',
+    icon: 'Download',
+    isBuiltIn: true,
+    type: 'action',
+    action: 'handoff',
+    promptTemplate: '',
   },
 ];
 

@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { X, Send, Trash2, AlertCircle, Square, ChevronUp, Check, Shield } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -95,6 +96,20 @@ export function ClaudePanel() {
     const text = inputText.trim();
     if (!text || isStreaming) return;
 
+    // F020: If this is an action command, dispatch locally instead of sending to AI
+    if (activeCommand?.type === 'action' && activeCommand.action === 'handoff') {
+      cancelCommand();
+      setInputText('');
+      // Trigger handoff via window function (registered by useHandoffExport in page.tsx)
+      const folderPath = await invoke<string | null>('get_meeting_folder_path').catch(() => null);
+      if (folderPath && window.triggerHandoff) {
+        window.triggerHandoff(folderPath, meetingTitle || 'Meeting');
+      } else if (window.triggerHandoff) {
+        toast.error('No active recording folder. Start a recording first.');
+      }
+      return;
+    }
+
     // F018: If a slash command is active, build the expanded message
     let messageToSend = text;
     if (activeCommand) {
@@ -164,6 +179,21 @@ export function ClaudePanel() {
         e.preventDefault();
         const cmd = getSelectedCommand();
         if (cmd) {
+          // F020: Action commands execute immediately on selection
+          if (cmd.type === 'action' && cmd.action === 'handoff') {
+            dismissAutocomplete();
+            setInputText('');
+            invoke<string | null>('get_meeting_folder_path').then(folderPath => {
+              if (folderPath && window.triggerHandoff) {
+                window.triggerHandoff(folderPath, meetingTitle || 'Meeting');
+              } else if (window.triggerHandoff) {
+                toast.error('No active recording folder. Start a recording first.');
+              }
+            }).catch(() => {
+              toast.error('Failed to get meeting folder path');
+            });
+            return;
+          }
           const newText = activateCommand(cmd);
           setInputText(newText);
         }
@@ -173,6 +203,21 @@ export function ClaudePanel() {
         e.preventDefault();
         const cmd = getSelectedCommand();
         if (cmd) {
+          // F020: Action commands execute immediately on selection
+          if (cmd.type === 'action' && cmd.action === 'handoff') {
+            dismissAutocomplete();
+            setInputText('');
+            invoke<string | null>('get_meeting_folder_path').then(folderPath => {
+              if (folderPath && window.triggerHandoff) {
+                window.triggerHandoff(folderPath, meetingTitle || 'Meeting');
+              } else if (window.triggerHandoff) {
+                toast.error('No active recording folder. Start a recording first.');
+              }
+            }).catch(() => {
+              toast.error('Failed to get meeting folder path');
+            });
+            return;
+          }
           // Select the command (don't send yet)
           const newText = activateCommand(cmd);
           setInputText(newText);

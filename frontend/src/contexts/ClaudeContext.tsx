@@ -10,6 +10,7 @@ import {
   ClaudeFrontendEvent,
 } from '@/services/claudeService';
 import { anonymizeTexts } from '@/services/anonymizationService';
+import { useRecordingState } from '@/contexts/RecordingStateContext';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -40,6 +41,7 @@ export interface ClaudeMessage {
   toolCalls?: ClaudeToolCall[];
   contextSummary?: string; // e.g. "[+2 chunks, 1 screenshot]"
   costUsd?: number;
+  recording_elapsed_secs?: number; // F020: seconds from recording start, for timeline ordering
 }
 
 interface ClaudeState {
@@ -92,6 +94,9 @@ const DEFAULT_MODEL = 'claude-opus-4-6';
 // ─── Provider ───────────────────────────────────────────────────────────────
 
 export function ClaudeProvider({ children }: { children: React.ReactNode }) {
+  // F020: Access recording duration for timestamping AI messages
+  const { recordingDuration } = useRecordingState();
+
   const [state, setState] = useState<ClaudeState>(() => ({
     isPanelOpen: false,
     isStreaming: false,
@@ -483,12 +488,14 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       contextSummary: contextSummary
         ? contextSummary + (anonymizedCount > 0 ? ` (${anonymizedCount} PII entities anonymized)` : '')
         : (anonymizedCount > 0 ? `(${anonymizedCount} PII entities anonymized)` : undefined),
+      recording_elapsed_secs: recordingDuration ?? undefined, // F020
     };
 
     const assistantMsg: ClaudeMessage = {
       id: `assistant-${crypto.randomUUID()}`,
       role: 'assistant',
       text: '',
+      recording_elapsed_secs: recordingDuration ?? undefined, // F020
     };
 
     streamingTextRef.current = '';
