@@ -54,11 +54,33 @@ export function useHandoffExport(): UseHandoffExportReturn {
   const folderPathRef = useRef<string>('');
   const meetingNameRef = useRef<string>('');
 
+  // Snapshot refs — capture data at trigger time to survive clearTranscripts() race
+  const snapshotRef = useRef<{
+    transcripts: typeof transcriptsRef.current;
+    screenshots: typeof screenshots;
+    clipboardItems: typeof clipboardItems;
+    conversation: typeof conversation;
+    recordingDuration: typeof recordingDuration;
+    meetingId: typeof meetingId;
+    entityMap: typeof entityMap;
+  } | null>(null);
+
   // ─── Trigger ─────────────────────────────────────────────────────────────
 
   const triggerHandoff = useCallback(async (folderPath: string, meetingName: string) => {
     folderPathRef.current = folderPath;
     meetingNameRef.current = meetingName;
+
+    // Snapshot all data NOW — before clearTranscripts() wipes it after 2s
+    snapshotRef.current = {
+      transcripts: [...transcriptsRef.current],
+      screenshots: [...screenshots],
+      clipboardItems: [...clipboardItems],
+      conversation: [...conversation],
+      recordingDuration,
+      meetingId,
+      entityMap: entityMap ? { ...entityMap } : entityMap,
+    };
 
     // Check PII health
     setPiiAvailable(null);
@@ -72,7 +94,7 @@ export function useHandoffExport(): UseHandoffExportReturn {
       setPiiAvailable(false);
       setAnonymizeChecked(false);
     }
-  }, [anonymizationEnabled]);
+  }, [anonymizationEnabled, transcriptsRef, screenshots, clipboardItems, conversation, recordingDuration, meetingId, entityMap]);
 
   // ─── Register window function ────────────────────────────────────────────
 
@@ -94,10 +116,18 @@ export function useHandoffExport(): UseHandoffExportReturn {
     setIsGenerating(true);
 
     try {
-      const transcripts = transcriptsRef.current;
+      // Use snapshot data captured at trigger time (survives clearTranscripts race)
+      const snap = snapshotRef.current;
+      if (!snap) {
+        throw new Error('No handoff snapshot available — was triggerHandoff called?');
+      }
+
+      const { transcripts, screenshots: snappedScreenshots, clipboardItems: snappedClipboard,
+              conversation: snappedConversation, recordingDuration: snappedDuration,
+              meetingId: snappedMeetingId, entityMap: snappedEntityMap } = snap;
 
       // Build unified timeline
-      let timeline = buildTimeline(transcripts, screenshots, clipboardItems, conversation);
+      let timeline = buildTimeline(transcripts, snappedScreenshots, snappedClipboard, snappedConversation);
 
       // Optionally anonymize text items (transcripts + AI messages)
       let anonymized = false;
@@ -115,8 +145,8 @@ export function useHandoffExport(): UseHandoffExportReturn {
           if (textEntries.length > 0) {
             const result = await anonymizeTexts(
               textEntries.map(e => e.text),
-              meetingId || 'handoff',
-              entityMap,
+              snappedMeetingId || 'handoff',
+              snappedEntityMap,
             );
 
             // Replace texts with sanitized versions
@@ -140,7 +170,7 @@ export function useHandoffExport(): UseHandoffExportReturn {
       const data: HandoffData = {
         meetingName: meetingNameRef.current || 'Meeting',
         date: new Date().toISOString(),
-        durationSeconds: recordingDuration ?? null,
+        durationSeconds: snappedDuration ?? null,
         timeline,
         anonymized,
       };
@@ -162,11 +192,9 @@ export function useHandoffExport(): UseHandoffExportReturn {
     } finally {
       setIsGenerating(false);
       setShowHandoffDialog(false);
+      snapshotRef.current = null;
     }
-  }, [
-    transcriptsRef, screenshots, clipboardItems, conversation,
-    meetingId, entityMap, anonymizeChecked, piiAvailable, recordingDuration,
-  ]);
+  }, [anonymizeChecked, piiAvailable]);
 
   return {
     triggerHandoff,
