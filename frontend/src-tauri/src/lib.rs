@@ -422,12 +422,46 @@ pub fn run() {
                                 }
                             });
                         } else if shortcut == &fullscreen_shortcut {
-                            log::info!("Global shortcut pressed: Alt+Shift+S (fullscreen screenshot)");
+                            log::info!("Global shortcut pressed: Alt+Shift+S (region screenshot)");
+
+                            // Self-healing guard: clear stale state from previous capture
+                            if screenshot::capture::is_region_capture_in_progress() {
+                                log::warn!("Region capture flag still set — clearing stale state");
+                                screenshot::capture::clear_pre_captured();
+                            }
+
                             let app_for_task = app.clone();
                             tauri::async_runtime::spawn(async move {
-                                match screenshot::commands::take_screenshot(app_for_task).await {
-                                    Ok(data) => log::info!("Fullscreen screenshot via hotkey: {}", data.file_path),
-                                    Err(e) => log::error!("Hotkey screenshot failed: {}", e),
+                                use tauri::Emitter as _;
+
+                                match tokio::task::spawn_blocking(move || {
+                                    screenshot::capture::pre_capture_screen()
+                                })
+                                .await
+                                {
+                                    Ok(Ok(result)) => {
+                                        log::info!(
+                                            "Pre-captured screen for region select: {}x{}",
+                                            result.monitor_width,
+                                            result.monitor_height,
+                                        );
+                                        let _ = app_for_task.emit(
+                                            "screenshot-region-select",
+                                            serde_json::json!({
+                                                "preview_data_uri": result.preview_data_uri,
+                                                "monitor_width": result.monitor_width,
+                                                "monitor_height": result.monitor_height,
+                                            }),
+                                        );
+                                    }
+                                    Ok(Err(e)) => {
+                                        log::error!("Pre-capture failed: {}", e);
+                                        screenshot::capture::clear_pre_captured();
+                                    }
+                                    Err(e) => {
+                                        log::error!("Pre-capture task panicked: {}", e);
+                                        screenshot::capture::clear_pre_captured();
+                                    }
                                 }
                             });
                         } else if shortcut == &region_shortcut {

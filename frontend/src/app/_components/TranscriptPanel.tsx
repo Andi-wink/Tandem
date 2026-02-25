@@ -48,7 +48,7 @@ export function TranscriptPanel({
     selectedScreenshot,
     isRegionSelecting,
     regionSelectInfo,
-    captureFullscreen,
+    annotateAfterSelect,
     captureRegion,
     captureAnnotatedRegion,
     startRegionSelect,
@@ -119,7 +119,7 @@ export function TranscriptPanel({
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={captureFullscreen}
+                  onClick={() => startRegionSelect()}
                   title="Screenshot (Alt+Shift+S)"
                 >
                   <Camera className="w-4 h-4" />
@@ -130,7 +130,7 @@ export function TranscriptPanel({
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={startRegionSelect}
+                  onClick={() => startRegionSelect(true)}
                   title="Annotate (Alt+Shift+R)"
                 >
                   <PenLine className="w-4 h-4" />
@@ -208,7 +208,7 @@ export function TranscriptPanel({
           monitorWidth={regionSelectInfo.monitorWidth}
           monitorHeight={regionSelectInfo.monitorHeight}
           onSelect={captureRegion}
-          onAnnotatedCapture={captureAnnotatedRegion}
+          onAnnotatedCapture={annotateAfterSelect ? captureAnnotatedRegion : undefined}
           onCancel={cancelRegionSelect}
         />
       )}

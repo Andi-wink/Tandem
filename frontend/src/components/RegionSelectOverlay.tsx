@@ -147,7 +147,7 @@ export function RegionSelectOverlay({
             onSelect(physX, physY, physW, physH);
           }
         } else {
-          // No annotation: original behavior
+          // No annotation: save region directly
           await restoreWindow();
           onSelect(physX, physY, physW, physH);
         }

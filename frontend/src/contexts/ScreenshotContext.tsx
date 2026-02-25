@@ -16,11 +16,12 @@ interface ScreenshotContextType {
   selectedScreenshot: ScreenshotData | null;
   isRegionSelecting: boolean;
   regionSelectInfo: RegionSelectInfo | null;
+  annotateAfterSelect: boolean;
   isCapturing: boolean;
   captureFullscreen: () => Promise<void>;
   captureRegion: (x: number, y: number, width: number, height: number) => Promise<void>;
   captureAnnotatedRegion: (annotatedBase64: string) => Promise<void>;
-  startRegionSelect: () => void;
+  startRegionSelect: (annotate?: boolean) => void;
   cancelRegionSelect: () => void;
   openLightbox: (screenshot: ScreenshotData) => void;
   closeLightbox: () => void;
@@ -43,6 +44,7 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
   const [selectedScreenshot, setSelectedScreenshot] = useState<ScreenshotData | null>(null);
   const [isRegionSelecting, setIsRegionSelecting] = useState(false);
   const [regionSelectInfo, setRegionSelectInfo] = useState<RegionSelectInfo | null>(null);
+  const [annotateAfterSelect, setAnnotateAfterSelect] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const unlistenRegionRef = useRef<UnlistenFn | null>(null);
@@ -56,14 +58,18 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
 
   // Listen for screenshot-taken, region-select, and recording-stopped events
   useEffect(() => {
-    let mounted = true;
+    const abortController = new AbortController();
 
     const setup = async () => {
+      if (abortController.signal.aborted) return;
+
       unlistenRef.current = await listen<ScreenshotData>('screenshot-taken', (event) => {
-        if (mounted) {
+        if (!abortController.signal.aborted) {
           setScreenshots((prev) => [...prev, event.payload]);
         }
       });
+
+      if (abortController.signal.aborted) { unlistenRef.current?.(); return; }
 
       // Region select event now carries pre-capture metadata from the hotkey handler
       unlistenRegionRef.current = await listen<{
@@ -71,7 +77,7 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
         monitor_width: number;
         monitor_height: number;
       }>('screenshot-region-select', (event) => {
-        if (mounted) {
+        if (!abortController.signal.aborted) {
           setRegionSelectInfo({
             previewDataUri: event.payload.preview_data_uri,
             monitorWidth: event.payload.monitor_width,
@@ -80,6 +86,8 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
           setIsRegionSelecting(true);
         }
       });
+
+      if (abortController.signal.aborted) { unlistenRegionRef.current?.(); return; }
 
       // Auto-save screenshots when recording stops
       unlistenStoppedRef.current = await listen<{
@@ -102,7 +110,7 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
     setup();
 
     return () => {
-      mounted = false;
+      abortController.abort();
       unlistenRef.current?.();
       unlistenRegionRef.current?.();
       unlistenStoppedRef.current?.();
@@ -151,7 +159,8 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
     }
   }, []);
 
-  const startRegionSelect = useCallback(async () => {
+  const startRegionSelect = useCallback(async (annotate: boolean = false) => {
+    setAnnotateAfterSelect(annotate);
     try {
       await startRegionCapture();
       // The Rust command emits 'screenshot-region-select' event,
@@ -165,6 +174,7 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
   const cancelRegionSelect = useCallback(async () => {
     setIsRegionSelecting(false);
     setRegionSelectInfo(null);
+    setAnnotateAfterSelect(false);
     try {
       await cancelRegionCapture();
     } catch (err) {
@@ -201,6 +211,7 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
         selectedScreenshot,
         isRegionSelecting,
         regionSelectInfo,
+        annotateAfterSelect,
         isCapturing,
         captureFullscreen,
         captureRegion,
