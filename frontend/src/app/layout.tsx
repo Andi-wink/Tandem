@@ -26,6 +26,7 @@ import { ClipboardProvider } from '@/contexts/ClipboardContext'
 import { ClaudeProvider } from '@/contexts/ClaudeContext'
 import { SelectionProvider } from '@/contexts/SelectionContext'
 import { ClaudePanel } from '@/components/ClaudePanel'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ThemeProvider } from 'next-themes'
 
 const sourceSans3 = Source_Sans_3({
@@ -129,9 +130,15 @@ export default function RootLayout({
                               <OnboardingFlow onComplete={handleOnboardingComplete} />
                             ) : (
                               <div className="flex">
-                                <Sidebar />
-                                <MainContent>{children}</MainContent>
-                                <ClaudePanel />
+                                <ErrorBoundary fallbackLabel="Sidebar">
+                                  <Sidebar />
+                                </ErrorBoundary>
+                                <ErrorBoundary fallbackLabel="Main content">
+                                  <MainContent>{children}</MainContent>
+                                </ErrorBoundary>
+                                <ErrorBoundary fallbackLabel="AI Panel">
+                                  <ClaudePanel />
+                                </ErrorBoundary>
                               </div>
                             )}
                           </ClaudeProvider>
