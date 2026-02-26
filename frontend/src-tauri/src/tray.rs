@@ -248,7 +248,7 @@ async fn get_current_recording_state() -> RecordingState {
     }
 
     // Check if paused
-    let is_paused = crate::audio::recording_commands::is_recording_paused().await;
+    let is_paused = crate::audio::recording_commands::is_recording_paused().await.unwrap_or(false);
     log::info!("Tray: is_paused: {}", is_paused);
 
     if is_paused {
