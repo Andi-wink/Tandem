@@ -6,6 +6,7 @@ import { ConfidenceIndicator } from './ConfidenceIndicator';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { RecordingStatusBar } from './RecordingStatusBar';
 import { motion, AnimatePresence } from 'framer-motion';
+import { logger } from '@/lib/logger';
 
 interface TranscriptViewProps {
   transcripts: Transcript[];
@@ -108,7 +109,7 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts, isR
   const [speechDetected, setSpeechDetected] = useState(false);
 
   // Debug: Log the props to understand what's happening
-  console.log('TranscriptView render:', {
+  logger.log('TranscriptView render:', {
     isRecording,
     isPaused,
     isProcessing,

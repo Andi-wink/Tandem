@@ -13,6 +13,7 @@ import { SlashCommandAutocomplete } from './SlashCommandAutocomplete';
 import { useDropZone, useDragActive } from '@/hooks/useDragAndDrop';
 import { useSelection } from '@/contexts/SelectionContext';
 import { useSlashCommand } from '@/hooks/useSlashCommand';
+import { TEXTAREA_MAX_HEIGHT_PX } from '@/lib/constants';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 
 export function ClaudePanel() {
@@ -86,7 +87,7 @@ export function ClaudePanel() {
     setInputText(value);
     const el = e.target;
     el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+    el.style.height = Math.min(el.scrollHeight, TEXTAREA_MAX_HEIGHT_PX) + 'px';
 
     // F018: Detect slash commands for autocomplete
     handleInputForCommands(value);
@@ -447,7 +448,7 @@ export function ClaudePanel() {
                 value={inputText}
                 onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
-                placeholder={activeCommand ? `Type additional context for /${activeCommand.name}...` : 'Ask about this meeting... (type / for commands)'}
+                placeholder={activeCommand ? `Type additional context for /${activeCommand.name}...` : 'Ask anything... (type / for commands)'}
                 disabled={isStreaming}
                 rows={1}
                 className="w-full resize-none border border-border rounded-lg px-3 py-2 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:bg-muted"

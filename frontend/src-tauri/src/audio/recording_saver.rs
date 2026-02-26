@@ -181,36 +181,39 @@ impl RecordingSaver {
             tokio::spawn(async move {
                 info!("Recording saver accumulation task started (save_audio: {})", save_audio);
 
-                while let Some(chunk) = receiver.recv().await {
-                    // Check if we should continue
-                    let should_continue = if let Ok(is_saving) = is_saving_clone.lock() {
-                        *is_saving
-                    } else {
-                        false
-                    };
-
-                    if !should_continue {
-                        break;
-                    }
-
-                    // Only process audio chunks if auto_save is enabled
-                    if save_audio {
-                        // Add chunk to incremental saver
-                        if let Some(saver_arc) = &incremental_saver_arc {
-                            let mut saver_guard = saver_arc.lock().await;
-                            if let Err(e) = saver_guard.add_chunk(chunk) {
-                                error!("Failed to add chunk to incremental saver: {}", e);
-                            }
+                let result = std::panic::AssertUnwindSafe(async {
+                    while let Some(chunk) = receiver.recv().await {
+                        // Check if we should continue
+                        let should_continue = if let Ok(is_saving) = is_saving_clone.lock() {
+                            *is_saving
                         } else {
-                            error!("Incremental saver not available while accumulating");
-                        }
-                    } else {
-                        // auto_save is false: discard audio chunk (no-op)
-                        // Transcription already happened in the pipeline before this point
-                    }
-                }
+                            false
+                        };
 
-                info!("Recording saver accumulation task ended");
+                        if !should_continue {
+                            break;
+                        }
+
+                        // Only process audio chunks if auto_save is enabled
+                        if save_audio {
+                            // Add chunk to incremental saver
+                            if let Some(saver_arc) = &incremental_saver_arc {
+                                let mut saver_guard = saver_arc.lock().await;
+                                if let Err(e) = saver_guard.add_chunk(chunk) {
+                                    error!("Failed to add chunk to incremental saver: {}", e);
+                                }
+                            } else {
+                                error!("Incremental saver not available while accumulating");
+                            }
+                        }
+                    }
+                });
+
+                use futures_util::FutureExt;
+                match result.catch_unwind().await {
+                    Ok(()) => info!("Recording saver accumulation task ended"),
+                    Err(panic) => error!("Recording saver accumulation task panicked: {:?}", panic),
+                }
             });
         }
 
@@ -481,5 +484,30 @@ impl RecordingSaver {
 impl Default for RecordingSaver {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for RecordingSaver {
+    fn drop(&mut self) {
+        // Signal the accumulation task to stop by setting the flag
+        if let Ok(mut is_saving) = self.is_saving.lock() {
+            if *is_saving {
+                info!("RecordingSaver dropped while saving — signalling accumulation task to stop");
+                *is_saving = false;
+            }
+        }
+
+        // Drop the chunk receiver to close the channel and unblock the accumulation task
+        self.chunk_receiver.take();
+
+        // Clear any accumulated transcript segments
+        if let Ok(mut segments) = self.transcript_segments.lock() {
+            if !segments.is_empty() {
+                warn!("RecordingSaver dropped with {} unsaved transcript segments", segments.len());
+                segments.clear();
+            }
+        }
+
+        info!("RecordingSaver resources cleaned up");
     }
 }

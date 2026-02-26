@@ -282,9 +282,12 @@ class TranscriptProcessor:
             logger.error(f"Error in Ollama chat: {e}")
             raise
         finally:
-            # Remove the client from active clients list
+            # Remove the client from active clients list and close it
             if client in self.active_clients:
                 self.active_clients.remove(client)
+            # Close the underlying httpx client to prevent resource leaks
+            if hasattr(client, '_client'):
+                await client._client.aclose()
 
     def cleanup(self):
         """Clean up resources used by the TranscriptProcessor."""
@@ -292,20 +295,27 @@ class TranscriptProcessor:
         try:
             # Close database connections if any
             if hasattr(self, 'db') and self.db is not None:
-                # self.db.close()
                 logger.info("Database connection cleanup (using context managers)")
-                
+
             # Cancel any active Ollama client sessions
             if hasattr(self, 'active_clients') and self.active_clients:
                 logger.info(f"Terminating {len(self.active_clients)} active Ollama client sessions")
-                for client in self.active_clients:
-                    try:
-                        # Close the client's underlying connection
-                        if hasattr(client, '_client') and hasattr(client._client, 'close'):
-                            asyncio.create_task(client._client.aclose())
-                    except Exception as client_error:
-                        logger.error(f"Error closing Ollama client: {client_error}", exc_info=True)
-                # Clear the list
+
+                async def _close_clients():
+                    tasks = []
+                    for client in self.active_clients:
+                        if hasattr(client, '_client'):
+                            tasks.append(client._client.aclose())
+                    if tasks:
+                        await asyncio.gather(*tasks, return_exceptions=True)
+
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(_close_clients())
+                except RuntimeError:
+                    # No running loop (sync shutdown) — run directly
+                    asyncio.run(_close_clients())
+
                 self.active_clients.clear()
                 logger.info("All Ollama client sessions terminated")
         except Exception as e:

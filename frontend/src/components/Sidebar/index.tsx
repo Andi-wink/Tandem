@@ -7,6 +7,7 @@ import { useSidebar } from './SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
 import { ConfirmationModal } from '../ConfirmationModel/confirmation-modal';
 import { ModelConfig } from '@/components/ModelSettingsModal';
+import { logger } from '@/lib/logger';
 import { SettingTabs } from '../SettingTabs';
 import { TranscriptModelProps } from '@/components/TranscriptSettings';
 import Analytics from '@/lib/analytics';
@@ -107,7 +108,7 @@ const Sidebar: React.FC = () => {
     const fetchModelConfig = async () => {
       // Only make API call if serverAddress is loaded
       if (!serverAddress) {
-        console.log('Waiting for server address to load before fetching model config');
+        logger.log('Waiting for server address to load before fetching model config');
         return;
       }
 
@@ -141,7 +142,7 @@ const Sidebar: React.FC = () => {
     const fetchTranscriptSettings = async () => {
       // Only make API call if serverAddress is loaded
       if (!serverAddress) {
-        console.log('Waiting for server address to load before fetching transcript settings');
+        logger.log('Waiting for server address to load before fetching transcript settings');
         return;
       }
 
@@ -162,7 +163,7 @@ const Sidebar: React.FC = () => {
     const setupListener = async () => {
       const { listen } = await import('@tauri-apps/api/event');
       const unlisten = await listen<ModelConfig>('model-config-updated', (event) => {
-        console.log('Sidebar received model-config-updated event:', event.payload);
+        logger.log('Sidebar received model-config-updated event:', event.payload);
         setModelConfig(event.payload);
       });
 
@@ -191,7 +192,7 @@ const Sidebar: React.FC = () => {
       });
 
       setModelConfig(config);
-      console.log('Model config saved successfully');
+      logger.log('Model config saved successfully');
       setSettingsSaveSuccess(true);
 
       // Emit event to sync other components
@@ -214,7 +215,7 @@ const Sidebar: React.FC = () => {
         model: configToSave.model,
         apiKey: configToSave.apiKey ?? null
       };
-      console.log('Saving transcript config with payload:', payload);
+      logger.log('Saving transcript config with payload:', payload);
 
       await invoke('api_save_transcript_config', {
         provider: payload.provider,
@@ -288,7 +289,7 @@ const Sidebar: React.FC = () => {
 
 
   const handleDelete = async (itemId: string) => {
-    console.log('Deleting item:', itemId);
+    logger.log('Deleting item:', itemId);
     const payload = {
       meetingId: itemId
     };
@@ -298,7 +299,7 @@ const Sidebar: React.FC = () => {
       await invoke('api_delete_meeting', {
         meetingId: itemId,
       });
-      console.log('Meeting deleted successfully');
+      logger.log('Meeting deleted successfully');
       const updatedMeetings = meetings.filter((m: CurrentMeeting) => m.id !== itemId);
       setMeetings(updatedMeetings);
 
@@ -650,7 +651,7 @@ const Sidebar: React.FC = () => {
 
                 <div className="relative mb-1">
                   <InputGroup >
-                    <InputGroupInput placeholder='Search meeting content...' value={searchQuery}
+                    <InputGroupInput placeholder='Search calls and notes...' value={searchQuery}
                       onChange={(e) => handleSearchChange(e.target.value)}
                     />
                     <InputGroupAddon>

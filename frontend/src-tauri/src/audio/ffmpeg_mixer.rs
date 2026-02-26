@@ -19,54 +19,19 @@ use super::device_detection::InputDeviceKind;
 /// Configuration flags for audio processing features
 pub const RNNOISE_APPLY_ENABLED: bool = false;  // Default: disabled (Whisper handles noise well)
 
-/// Timestamp for audio samples (reserved for future use)
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy)]
-struct Timestamp {
-    instant: Instant,
-    sample_count: u64,
-}
-
-#[allow(dead_code)]
-impl Timestamp {
-    fn new() -> Self {
-        Self {
-            instant: Instant::now(),
-            sample_count: 0,
-        }
-    }
-
-    fn advance(&mut self, samples: usize) {
-        self.sample_count += samples as u64;
-    }
-
-    fn elapsed(&self) -> Duration {
-        self.instant.elapsed()
-    }
-}
-
 /// Audio chunk with timestamp information
 #[derive(Debug, Clone)]
 struct TimestampedChunk {
     samples: Vec<f32>,
     timestamp: Instant,
-    #[allow(dead_code)]
-    sample_rate: u32,
 }
 
 impl TimestampedChunk {
-    fn new(samples: Vec<f32>, sample_rate: u32) -> Self {
+    fn new(samples: Vec<f32>, _sample_rate: u32) -> Self {
         Self {
             samples,
             timestamp: Instant::now(),
-            sample_rate,
         }
-    }
-
-    /// Calculate the duration of this chunk in milliseconds (reserved for future use)
-    #[allow(dead_code)]
-    fn duration_ms(&self) -> f64 {
-        (self.samples.len() as f64 / self.sample_rate as f64) * 1000.0
     }
 
     /// Calculate the age of this chunk (time since capture)

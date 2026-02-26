@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -36,10 +37,26 @@ console_handler.setFormatter(formatter)
 if not logger.handlers:
     logger.addHandler(console_handler)
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Application lifespan: startup and shutdown logic."""
+    # Startup
+    logger.info("API starting up")
+    yield
+    # Shutdown
+    logger.info("API shutting down, cleaning up resources")
+    try:
+        processor.cleanup()
+        logger.info("Successfully cleaned up resources")
+    except Exception as e:
+        logger.error(f"Error during cleanup: {str(e)}", exc_info=True)
+
+
 app = FastAPI(
-    title="Meeting Summarizer API",
-    description="API for processing and summarizing meeting transcripts",
-    version="1.0.0"
+    title="Tandem API",
+    description="API for real-time transcription, AI collaboration, and call intelligence",
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # B014: Restrict CORS to localhost and Tauri origins
@@ -839,16 +856,6 @@ async def anonymize_health():
 
 
 # ---------------------------------------------------------------------------
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on API shutdown"""
-    logger.info("API shutting down, cleaning up resources")
-    try:
-        processor.cleanup()
-        logger.info("Successfully cleaned up resources")
-    except Exception as e:
-        logger.error(f"Error during cleanup: {str(e)}", exc_info=True)
 
 if __name__ == "__main__":
     import multiprocessing

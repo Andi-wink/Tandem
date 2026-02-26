@@ -189,37 +189,41 @@ impl AudioStream {
 
             async move {
                 use futures_util::StreamExt;
-
-                let mut buffer = Vec::new();
-                let mut frame_count = 0;
-                let frames_per_chunk = 1024; // Process in chunks of 1024 samples
+                use futures_util::FutureExt;
 
                 info!("✅ Stream: Core Audio processing task started for {}", device_name);
 
-                let mut _sample_count = 0u64;
-                while let Some(sample) = stream.next().await {
-                    _sample_count += 1;
-                    // if _sample_count % 48000 == 0 {
-                    //     info!("📊 Stream: Received {} samples from Core Audio stream", _sample_count);
-                    // }
+                let device_name_panic = device_name.clone();
+                let result = std::panic::AssertUnwindSafe(async {
+                    let mut buffer = Vec::new();
+                    let mut frame_count = 0;
+                    let frames_per_chunk = 1024; // Process in chunks of 1024 samples
 
-                    buffer.push(sample);
-                    frame_count += 1;
+                    let mut _sample_count = 0u64;
+                    while let Some(sample) = stream.next().await {
+                        _sample_count += 1;
 
-                    // Process when we have enough samples
-                    if frame_count >= frames_per_chunk {
-                        capture.process_audio_data(&buffer);
-                        buffer.clear();
-                        frame_count = 0;
+                        buffer.push(sample);
+                        frame_count += 1;
+
+                        // Process when we have enough samples
+                        if frame_count >= frames_per_chunk {
+                            capture.process_audio_data(&buffer);
+                            buffer.clear();
+                            frame_count = 0;
+                        }
                     }
-                }
 
-                // Process any remaining samples
-                if !buffer.is_empty() {
-                    capture.process_audio_data(&buffer);
-                }
+                    // Process any remaining samples
+                    if !buffer.is_empty() {
+                        capture.process_audio_data(&buffer);
+                    }
+                }).catch_unwind().await;
 
-                info!("⚠️ Stream: Core Audio processing task ended for {}", device_name);
+                match result {
+                    Ok(()) => info!("⚠️ Stream: Core Audio processing task ended for {}", device_name_panic),
+                    Err(panic) => error!("❌ Stream: Core Audio processing task panicked for {}: {:?}", device_name_panic, panic),
+                }
             }
         });
 

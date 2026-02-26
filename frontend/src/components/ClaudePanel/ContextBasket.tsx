@@ -1,6 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { X, FileText, Camera, Clipboard, Quote, StickyNote, Shield, Trash2 } from 'lucide-react';
 import { ContextBasketItem } from '@/contexts/ClaudeContext';
+import { CHARS_PER_TOKEN } from '@/lib/constants';
 
 interface ContextBasketProps {
   items: ContextBasketItem[];
@@ -56,7 +57,7 @@ export function ContextBasket({ items, onRemove, onClear, anonymizationEnabled, 
   }
 
   const totalChars = items.reduce((sum, i) => sum + i.fullContent.length, 0);
-  const approxTokens = Math.round(totalChars / 4);
+  const approxTokens = Math.round(totalChars / CHARS_PER_TOKEN);
   const hasSelection = selectedIds.size > 0;
 
   return (
