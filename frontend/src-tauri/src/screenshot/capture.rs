@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use image::codecs::jpeg::JpegEncoder;
-use image::codecs::png::PngEncoder;
-use image::{DynamicImage, ImageEncoder, RgbaImage};
+use image::{DynamicImage, RgbaImage};
 use log::{error, info};
 use serde::Serialize;
 use std::io::Cursor;
@@ -26,18 +25,23 @@ const THUMBNAIL_MAX_WIDTH: u32 = 200;
 static PRE_CAPTURED_IMAGE: LazyLock<Arc<StdMutex<Option<RgbaImage>>>> =
     LazyLock::new(|| Arc::new(StdMutex::new(None)));
 
+/// Raw JPEG bytes of the pre-captured screen preview.
+/// Stored separately so the frontend can fetch them via ipc::Response (raw binary)
+/// instead of base64-encoding them into a JSON event (~200ms savings).
+static PRE_CAPTURED_JPEG: LazyLock<Arc<StdMutex<Option<Vec<u8>>>>> =
+    LazyLock::new(|| Arc::new(StdMutex::new(None)));
+
 static REGION_CAPTURE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PreCaptureResult {
-    pub preview_data_uri: String,
     pub monitor_width: u32,
     pub monitor_height: u32,
 }
 
-/// Pre-capture the screen: store the raw image in memory and encode a
-/// JPEG preview as a base64 data URI for the frontend.
-/// Returns the data URI and monitor dimensions.
+/// Pre-capture the screen: store the raw RGBA image and a JPEG preview in memory.
+/// The frontend fetches the JPEG bytes separately via `get_pre_capture_preview`
+/// which returns raw bytes (no base64 overhead).
 pub fn pre_capture_screen() -> Result<PreCaptureResult> {
     // Guard against double-press
     if REGION_CAPTURE_IN_PROGRESS
@@ -60,38 +64,54 @@ pub fn pre_capture_screen() -> Result<PreCaptureResult> {
     let monitor_width = raw_image.width();
     let monitor_height = raw_image.height();
 
-    // Encode JPEG preview to base64 in memory (bypasses asset protocol entirely)
-    let dynamic = DynamicImage::ImageRgba8(raw_image.clone());
-    let rgb = dynamic.to_rgb8();
-    let mut buf = Cursor::new(Vec::new());
-    let mut encoder = JpegEncoder::new_with_quality(&mut buf, 75);
+    // Encode a half-resolution JPEG preview for the overlay backdrop.
+    // Full-res RGBA stays in PRE_CAPTURED_IMAGE for the actual crop.
+    // Downscaling = ~4x fewer pixels to encode + ~4x smaller transfer.
+    // resize() borrows &raw_image — no clone of 33MB needed.
+    let preview_width = monitor_width / 2;
+    let preview_height = monitor_height / 2;
+    let preview_rgba = image::imageops::resize(
+        &raw_image,
+        preview_width,
+        preview_height,
+        image::imageops::FilterType::Nearest,
+    );
+    let preview_rgb = DynamicImage::ImageRgba8(preview_rgba).to_rgb8();
+
+    // Store raw image for later cropping (move, no clone)
+    {
+        let mut guard = PRE_CAPTURED_IMAGE
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        *guard = Some(raw_image);
+    }
+
+    let mut buf = Cursor::new(Vec::with_capacity(200_000));
+    let mut encoder = JpegEncoder::new_with_quality(&mut buf, 50);
     encoder
         .encode(
-            rgb.as_raw(),
-            rgb.width(),
-            rgb.height(),
+            preview_rgb.as_raw(),
+            preview_rgb.width(),
+            preview_rgb.height(),
             image::ExtendedColorType::Rgb8,
         )
         .context("Failed to encode preview JPEG")?;
 
-    let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
-    let preview_data_uri = format!("data:image/jpeg;base64,{}", b64);
+    let jpeg_bytes = buf.into_inner();
 
     info!(
-        "Pre-captured screen: {}x{}, preview data URI length: {}",
-        monitor_width,
-        monitor_height,
-        preview_data_uri.len()
+        "Pre-captured screen: {}x{}, preview: {}x{}, JPEG: {} bytes",
+        monitor_width, monitor_height,
+        preview_width, preview_height,
+        jpeg_bytes.len()
     );
 
-    // Store raw image for later cropping
-    let mut guard = PRE_CAPTURED_IMAGE
-        .lock()
-        .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-    *guard = Some(raw_image);
+    // Store JPEG preview bytes for frontend to fetch (hotkey path)
+    if let Ok(mut guard) = PRE_CAPTURED_JPEG.lock() {
+        *guard = Some(jpeg_bytes);
+    }
 
     Ok(PreCaptureResult {
-        preview_data_uri,
         monitor_width,
         monitor_height,
     })
@@ -149,7 +169,7 @@ pub fn crop_preview_from_pre_captured(
     let dynamic = DynamicImage::ImageRgba8(cropped);
     let rgb = dynamic.to_rgb8();
     let mut buf = Cursor::new(Vec::new());
-    let mut encoder = JpegEncoder::new_with_quality(&mut buf, 90);
+    let mut encoder = JpegEncoder::new_with_quality(&mut buf, 50);
     encoder
         .encode(
             rgb.as_raw(),
@@ -170,6 +190,12 @@ pub fn crop_preview_from_pre_captured(
     Ok((data_uri, w, h))
 }
 
+/// Take the stored JPEG preview bytes out of memory (consuming them).
+/// Returns None if no preview is available.
+pub fn take_pre_captured_jpeg() -> Option<Vec<u8>> {
+    PRE_CAPTURED_JPEG.lock().ok()?.take()
+}
+
 /// Free the stored pre-captured image and reset the in-progress flag.
 /// Called when the user cancels region selection.
 pub fn clear_pre_captured() {
@@ -180,6 +206,9 @@ pub fn clear_pre_captured() {
         *guard = None;
     } else {
         error!("Failed to lock PRE_CAPTURED_IMAGE for cleanup");
+    }
+    if let Ok(mut guard) = PRE_CAPTURED_JPEG.lock() {
+        *guard = None;
     }
     REGION_CAPTURE_IN_PROGRESS.store(false, Ordering::SeqCst);
 }
@@ -304,9 +333,8 @@ fn crop_image(
         anyhow::bail!("Region selection resulted in zero-size image");
     }
 
-    let dynamic = DynamicImage::ImageRgba8(img.clone());
-    let cropped = dynamic.crop_imm(x0, y0, crop_w, crop_h);
-    Ok(cropped.to_rgba8())
+    let sub = image::imageops::crop_imm(img, x0, y0, crop_w, crop_h);
+    Ok(sub.to_image())
 }
 
 /// Save screenshot to disk, generate thumbnail, and return metadata.
@@ -351,7 +379,7 @@ fn save_screenshot(
     })
 }
 
-/// Generate a base64-encoded PNG thumbnail with max width constraint.
+/// Generate a base64-encoded JPEG thumbnail with max width constraint.
 fn generate_thumbnail(image: &DynamicImage, max_width: u32) -> Result<String> {
     let thumb = if image.width() > max_width {
         let scale = max_width as f64 / image.width() as f64;
@@ -361,17 +389,20 @@ fn generate_thumbnail(image: &DynamicImage, max_width: u32) -> Result<String> {
         image.clone()
     };
 
+    let rgb = thumb.to_rgb8();
     let mut buf = Cursor::new(Vec::new());
-    let encoder = PngEncoder::new(&mut buf);
-    encoder.write_image(
-        thumb.as_bytes(),
-        thumb.width(),
-        thumb.height(),
-        thumb.color().into(),
-    ).context("Failed to encode thumbnail PNG")?;
+    let mut encoder = JpegEncoder::new_with_quality(&mut buf, 40);
+    encoder
+        .encode(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .context("Failed to encode thumbnail JPEG")?;
 
     let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
-    Ok(format!("data:image/png;base64,{}", b64))
+    Ok(format!("data:image/jpeg;base64,{}", b64))
 }
 
 /// Generate a thumbnail from a screenshot file on disk.

@@ -67,8 +67,31 @@ export async function cropPreCapturedPreview(
   return invoke<CropPreviewResult>('crop_pre_captured_preview', { x, y, width, height });
 }
 
-export async function startRegionCapture(): Promise<void> {
-  return invoke<void>('start_region_capture');
+export interface RegionCaptureResult {
+  blobUrl: string;
+  monitorWidth: number;
+  monitorHeight: number;
+}
+
+/** Pre-capture screen and return JPEG preview + dimensions in a single IPC call.
+ *  Response format: [width: u32 LE][height: u32 LE][JPEG bytes...] */
+export async function startRegionCapture(): Promise<RegionCaptureResult> {
+  const buffer = await invoke<ArrayBuffer>('start_region_capture');
+  const view = new DataView(buffer);
+  const monitorWidth = view.getUint32(0, true);
+  const monitorHeight = view.getUint32(4, true);
+  const jpegData = buffer.slice(8);
+  const blob = new Blob([jpegData], { type: 'image/jpeg' });
+  const blobUrl = URL.createObjectURL(blob);
+  return { blobUrl, monitorWidth, monitorHeight };
+}
+
+/** Fetch the pre-captured JPEG preview as raw bytes (no base64 overhead).
+ *  Used by the hotkey path where data arrives via event + separate fetch. */
+export async function getPreCapturePreview(): Promise<string> {
+  const buffer = await invoke<ArrayBuffer>('get_pre_capture_preview');
+  const blob = new Blob([buffer], { type: 'image/jpeg' });
+  return URL.createObjectURL(blob);
 }
 
 export async function cancelRegionCapture(): Promise<void> {

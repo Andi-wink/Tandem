@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { ScreenshotData } from '@/types';
-import { takeScreenshot, cropPreCapturedRegion, startRegionCapture, cancelRegionCapture, saveScreenshotsJson, saveAnnotatedScreenshot } from '@/services/screenshotService';
+import { takeScreenshot, cropPreCapturedRegion, startRegionCapture, cancelRegionCapture, saveScreenshotsJson, saveAnnotatedScreenshot, getPreCapturePreview } from '@/services/screenshotService';
 
 export interface RegionSelectInfo {
   previewDataUri: string;
@@ -50,6 +50,7 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
   const unlistenRegionRef = useRef<UnlistenFn | null>(null);
   const unlistenStoppedRef = useRef<UnlistenFn | null>(null);
   const screenshotsRef = useRef<ScreenshotData[]>([]);
+  const blobUrlRef = useRef<string | null>(null);
 
   // Keep ref in sync with state for use in event listeners
   useEffect(() => {
@@ -71,19 +72,40 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
 
       if (abortController.signal.aborted) { unlistenRef.current?.(); return; }
 
-      // Region select event now carries pre-capture metadata from the hotkey handler
+      // Region select event carries only dimensions — preview fetched as raw bytes (no base64)
       unlistenRegionRef.current = await listen<{
-        preview_data_uri: string;
         monitor_width: number;
         monitor_height: number;
-      }>('screenshot-region-select', (event) => {
-        if (!abortController.signal.aborted) {
+      }>('screenshot-region-select', async (event) => {
+        if (abortController.signal.aborted) return;
+        try {
+          // Fetch raw JPEG bytes via IPC, get back a blob URL
+          const blobUrl = await getPreCapturePreview();
+          if (abortController.signal.aborted) {
+            URL.revokeObjectURL(blobUrl);
+            return;
+          }
+          // Preload image so the overlay doesn't flash without a background
+          await new Promise<void>((resolve) => {
+            const img = new Image();
+            img.onload = () => resolve();
+            img.onerror = () => resolve();
+            img.src = blobUrl;
+          });
+          if (abortController.signal.aborted) {
+            URL.revokeObjectURL(blobUrl);
+            return;
+          }
+          // Track blob URL for cleanup in callbacks
+          blobUrlRef.current = blobUrl;
           setRegionSelectInfo({
-            previewDataUri: event.payload.preview_data_uri,
+            previewDataUri: blobUrl,
             monitorWidth: event.payload.monitor_width,
             monitorHeight: event.payload.monitor_height,
           });
           setIsRegionSelecting(true);
+        } catch (err) {
+          console.error('[ScreenshotContext] Failed to fetch pre-capture preview:', err);
         }
       });
 
@@ -129,8 +151,17 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
     }
   }, []);
 
+  // Revoke the current blob URL if one exists
+  const revokeBlobUrl = useCallback(() => {
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current);
+      blobUrlRef.current = null;
+    }
+  }, []);
+
   // Crop from the pre-captured image stored in Rust memory
   const captureRegion = useCallback(async (x: number, y: number, width: number, height: number) => {
+    revokeBlobUrl();
     setIsRegionSelecting(false);
     setRegionSelectInfo(null);
     setIsCapturing(true);
@@ -142,10 +173,11 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
     } finally {
       setIsCapturing(false);
     }
-  }, []);
+  }, [revokeBlobUrl]);
 
   // Save an annotated region screenshot (base64 PNG from the annotation canvas)
   const captureAnnotatedRegion = useCallback(async (annotatedBase64: string) => {
+    revokeBlobUrl();
     setIsRegionSelecting(false);
     setRegionSelectInfo(null);
     setIsCapturing(true);
@@ -157,14 +189,29 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
     } finally {
       setIsCapturing(false);
     }
-  }, []);
+  }, [revokeBlobUrl]);
 
   const startRegionSelect = useCallback(async (annotate: boolean = false) => {
     setAnnotateAfterSelect(annotate);
     try {
-      await startRegionCapture();
-      // The Rust command emits 'screenshot-region-select' event,
-      // which our listener handles to set regionSelectInfo and isRegionSelecting
+      // Single IPC call: captures screen and returns dimensions + JPEG bytes as raw binary
+      const result = await startRegionCapture();
+
+      // Preload image to avoid flash when overlay mounts
+      await new Promise<void>((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve();
+        img.onerror = () => resolve();
+        img.src = result.blobUrl;
+      });
+
+      blobUrlRef.current = result.blobUrl;
+      setRegionSelectInfo({
+        previewDataUri: result.blobUrl,
+        monitorWidth: result.monitorWidth,
+        monitorHeight: result.monitorHeight,
+      });
+      setIsRegionSelecting(true);
     } catch (err) {
       console.error('Failed to start region capture:', err);
     }
@@ -172,6 +219,7 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
 
   // Cancel region selection and free the pre-captured image from Rust memory
   const cancelRegionSelect = useCallback(async () => {
+    revokeBlobUrl();
     setIsRegionSelecting(false);
     setRegionSelectInfo(null);
     setAnnotateAfterSelect(false);
@@ -180,7 +228,7 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
     } catch (err) {
       console.error('Failed to cancel region capture:', err);
     }
-  }, []);
+  }, [revokeBlobUrl]);
 
   const openLightbox = useCallback((screenshot: ScreenshotData) => {
     setSelectedScreenshot(screenshot);

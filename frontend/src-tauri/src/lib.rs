@@ -448,7 +448,6 @@ pub fn run() {
                                         let _ = app_for_task.emit(
                                             "screenshot-region-select",
                                             serde_json::json!({
-                                                "preview_data_uri": result.preview_data_uri,
                                                 "monitor_width": result.monitor_width,
                                                 "monitor_height": result.monitor_height,
                                             }),
@@ -475,7 +474,8 @@ pub fn run() {
                                 screenshot::capture::clear_pre_captured();
                             }
 
-                            // Pre-capture the screen, then emit event with data URI
+                            // Pre-capture the screen, then emit dimensions only
+                            // (frontend fetches JPEG preview via get_pre_capture_preview)
                             let app_for_task = app.clone();
                             tauri::async_runtime::spawn(async move {
                                 use tauri::Emitter as _;
@@ -487,15 +487,13 @@ pub fn run() {
                                 {
                                     Ok(Ok(result)) => {
                                         log::info!(
-                                            "Pre-captured screen: {}x{}, data URI len={}",
+                                            "Pre-captured screen: {}x{}",
                                             result.monitor_width,
                                             result.monitor_height,
-                                            result.preview_data_uri.len()
                                         );
                                         let _ = app_for_task.emit(
                                             "screenshot-region-select",
                                             serde_json::json!({
-                                                "preview_data_uri": result.preview_data_uri,
                                                 "monitor_width": result.monitor_width,
                                                 "monitor_height": result.monitor_height,
                                             }),
@@ -818,6 +816,7 @@ pub fn run() {
             screenshot::commands::take_screenshot,
             screenshot::commands::take_region_screenshot,
             screenshot::commands::capture_screen_preview,
+            screenshot::commands::get_pre_capture_preview,
             screenshot::commands::crop_pre_captured_region,
             screenshot::commands::crop_pre_captured_preview,
             screenshot::commands::start_region_capture,

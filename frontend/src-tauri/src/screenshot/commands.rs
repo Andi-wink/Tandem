@@ -6,6 +6,16 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 use super::capture;
 use super::types::{CaptureMode, ScreenshotData};
 
+/// Return the pre-captured JPEG preview as raw bytes (no base64 overhead).
+/// The frontend receives an ArrayBuffer and creates a blob URL.
+#[tauri::command]
+pub async fn get_pre_capture_preview() -> Result<tauri::ipc::Response, String> {
+    let bytes = capture::take_pre_captured_jpeg()
+        .ok_or_else(|| "No pre-captured preview available".to_string())?;
+    info!("Returning pre-capture preview: {} raw bytes", bytes.len());
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ScreenPreview {
     pub image_data: String,
@@ -272,10 +282,11 @@ pub async fn crop_pre_captured_region<R: Runtime>(
     Ok(data)
 }
 
-/// Start region capture: pre-capture the screen and emit the selection overlay event.
-/// Called from the UI button (the hotkey handler does this inline).
+/// Start region capture: pre-capture the screen and return the JPEG preview + dimensions
+/// in a single IPC response (no event, no second round-trip).
+/// Format: [width: u32 LE][height: u32 LE][JPEG bytes...]
 #[tauri::command]
-pub async fn start_region_capture<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+pub async fn start_region_capture() -> Result<tauri::ipc::Response, String> {
     info!("Starting region capture from UI button");
 
     // Self-healing: clear stale state if previous capture didn't finish
@@ -289,24 +300,21 @@ pub async fn start_region_capture<R: Runtime>(app: AppHandle<R>) -> Result<(), S
         .map_err(|e| format!("Pre-capture task failed: {}", e))?
         .map_err(|e| format!("Pre-capture failed: {}", e))?;
 
+    let jpeg_bytes = capture::take_pre_captured_jpeg()
+        .ok_or_else(|| "No pre-captured JPEG available".to_string())?;
+
     info!(
-        "Pre-captured screen via button: {}x{}, data URI len={}",
-        result.monitor_width,
-        result.monitor_height,
-        result.preview_data_uri.len()
+        "Pre-captured screen via button: {}x{}, {} raw bytes",
+        result.monitor_width, result.monitor_height, jpeg_bytes.len(),
     );
 
-    app.emit(
-        "screenshot-region-select",
-        serde_json::json!({
-            "preview_data_uri": result.preview_data_uri,
-            "monitor_width": result.monitor_width,
-            "monitor_height": result.monitor_height,
-        }),
-    )
-    .map_err(|e| format!("Failed to emit region select event: {}", e))?;
+    // Pack dimensions + JPEG into a single binary response
+    let mut response = Vec::with_capacity(8 + jpeg_bytes.len());
+    response.extend_from_slice(&result.monitor_width.to_le_bytes());
+    response.extend_from_slice(&result.monitor_height.to_le_bytes());
+    response.extend_from_slice(&jpeg_bytes);
 
-    Ok(())
+    Ok(tauri::ipc::Response::new(response))
 }
 
 /// Crop a preview from the pre-captured screen image for annotation.
