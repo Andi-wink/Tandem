@@ -1,7 +1,7 @@
 import aiosqlite
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict
 import logging
 from contextlib import asynccontextmanager
@@ -16,6 +16,29 @@ except ImportError:
     from schema_validator import SchemaValidator
 
 logger = logging.getLogger(__name__)
+
+# Provider → column name mappings (single source of truth for SQL column resolution)
+_MODEL_API_KEY_COLUMNS: dict[str, str] = {
+    "openai": "openaiApiKey",
+    "claude": "anthropicApiKey",
+    "groq": "groqApiKey",
+    "ollama": "ollamaApiKey",
+}
+
+_TRANSCRIPT_API_KEY_COLUMNS: dict[str, str] = {
+    "localWhisper": "whisperApiKey",
+    "deepgram": "deepgramApiKey",
+    "elevenLabs": "elevenLabsApiKey",
+    "groq": "groqApiKey",
+    "openai": "openaiApiKey",
+}
+
+def _resolve_api_key_column(provider: str, mapping: dict[str, str]) -> str:
+    """Resolve provider name to its API key column. Raises ValueError if invalid."""
+    col = mapping.get(provider)
+    if col is None:
+        raise ValueError(f"Invalid provider: {provider}")
+    return col
 
 class DatabaseManager:
     def __init__(self, db_path: str = None):
@@ -169,7 +192,7 @@ class DatabaseManager:
 
     async def create_process(self, meeting_id: str) -> str:
         """Create a new process entry or update existing one and return its ID"""
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         
         try:
             async with self._get_connection() as conn:
@@ -212,7 +235,7 @@ class DatabaseManager:
                            chunk_count: Optional[int] = None, processing_time: Optional[float] = None, 
                            metadata: Optional[Dict] = None):
         """Update a process status and result"""
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         
         try:
             async with self._get_connection() as conn:
@@ -293,7 +316,7 @@ class DatabaseManager:
         if len(transcript_text) > 10_000_000:  # 10MB limit
             raise ValueError("Transcript text too large (>10MB)")
             
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         
         try:
             async with self._get_connection() as conn:
@@ -328,7 +351,7 @@ class DatabaseManager:
 
     async def update_meeting_name(self, meeting_id: str, meeting_name: str):
         """Update meeting name in both meetings and transcript_chunks tables"""
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         async with self._get_connection() as conn:
             # Update meetings table
             await conn.execute("""
@@ -363,24 +386,22 @@ class DatabaseManager:
     async def save_meeting(self, meeting_id: str, title: str, folder_path: str = None):
         """Save or update a meeting"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-
-                # Check if meeting exists
-                cursor.execute("SELECT id FROM meetings WHERE id = ? OR title = ?", (meeting_id, title))
-                existing_meeting = cursor.fetchone()
+            async with self._get_connection() as conn:
+                cursor = await conn.execute(
+                    "SELECT id FROM meetings WHERE id = ? OR title = ?",
+                    (meeting_id, title),
+                )
+                existing_meeting = await cursor.fetchone()
 
                 if not existing_meeting:
-                    # Create new meeting with local timestamp and folder path
-                    cursor.execute("""
+                    await conn.execute("""
                         INSERT INTO meetings (id, title, created_at, updated_at, folder_path)
                         VALUES (?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'), ?)
                     """, (meeting_id, title, folder_path))
                     logger.info(f"Saved meeting {meeting_id} with folder_path: {folder_path}")
                 else:
-                    # If we get here and meeting exists, throw error since we don't want duplicates
                     raise Exception(f"Meeting with ID {meeting_id} already exists")
-                conn.commit()
+                await conn.commit()
                 return True
         except Exception as e:
             logger.error(f"Error saving meeting: {str(e)}")
@@ -391,11 +412,8 @@ class DatabaseManager:
                                      audio_start_time: float = None, audio_end_time: float = None, duration: float = None):
         """Save a transcript for a meeting with optional recording-relative timestamps"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-
-                # Save transcript with NEW timestamp fields for playback sync
-                cursor.execute("""
+            async with self._get_connection() as conn:
+                await conn.execute("""
                     INSERT INTO transcripts (
                         meeting_id, transcript, timestamp, summary, action_items, key_points,
                         audio_start_time, audio_end_time, duration
@@ -403,7 +421,7 @@ class DatabaseManager:
                 """, (meeting_id, transcript, timestamp, summary, action_items, key_points,
                       audio_start_time, audio_end_time, duration))
 
-                conn.commit()
+                await conn.commit()
                 return True
         except Exception as e:
             logger.error(f"Error saving transcript: {str(e)}")
@@ -453,7 +471,7 @@ class DatabaseManager:
 
     async def update_meeting_title(self, meeting_id: str, new_title: str):
         """Update a meeting's title"""
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         async with self._get_connection() as conn:
             await conn.execute("""
                 UPDATE meetings
@@ -581,17 +599,7 @@ class DatabaseManager:
 
     async def save_api_key(self, api_key: str, provider: str):
         """Save the API key"""
-        provider_list = ["openai", "claude", "groq", "ollama"]
-        if provider not in provider_list:
-            raise ValueError(f"Invalid provider: {provider}")
-        if provider == "openai":
-            api_key_name = "openaiApiKey"
-        elif provider == "claude":
-            api_key_name = "anthropicApiKey"
-        elif provider == "groq":
-            api_key_name = "groqApiKey"
-        elif provider == "ollama":
-            api_key_name = "ollamaApiKey"
+        api_key_name = _resolve_api_key_column(provider, _MODEL_API_KEY_COLUMNS)
             
         try:
             async with self._get_connection() as conn:
@@ -626,17 +634,7 @@ class DatabaseManager:
 
     async def get_api_key(self, provider: str):
         """Get the API key"""
-        provider_list = ["openai", "claude", "groq", "ollama"]
-        if provider not in provider_list:
-            raise ValueError(f"Invalid provider: {provider}")
-        if provider == "openai":
-            api_key_name = "openaiApiKey"
-        elif provider == "claude":
-            api_key_name = "anthropicApiKey"
-        elif provider == "groq":
-            api_key_name = "groqApiKey"
-        elif provider == "ollama":
-            api_key_name = "ollamaApiKey"
+        api_key_name = _resolve_api_key_column(provider, _MODEL_API_KEY_COLUMNS)
         async with self._get_connection() as conn:
             cursor = await conn.execute(f"SELECT {api_key_name} FROM settings WHERE id = '1'")
             row = await cursor.fetchone()
@@ -700,19 +698,7 @@ class DatabaseManager:
 
     async def save_transcript_api_key(self, api_key: str, provider: str):
         """Save the transcript API key"""
-        provider_list = ["localWhisper","deepgram","elevenLabs","groq","openai"]
-        if provider not in provider_list:
-            raise ValueError(f"Invalid provider: {provider}")
-        if provider == "localWhisper":
-            api_key_name = "whisperApiKey"
-        elif provider == "deepgram":
-            api_key_name = "deepgramApiKey"
-        elif provider == "elevenLabs":
-            api_key_name = "elevenLabsApiKey"
-        elif provider == "groq":
-            api_key_name = "groqApiKey"
-        elif provider == "openai":
-            api_key_name = "openaiApiKey"
+        api_key_name = _resolve_api_key_column(provider, _TRANSCRIPT_API_KEY_COLUMNS)
             
         try:
             async with self._get_connection() as conn:
@@ -748,19 +734,7 @@ class DatabaseManager:
 
     async def get_transcript_api_key(self, provider: str):
         """Get the transcript API key"""
-        provider_list = ["localWhisper","deepgram","elevenLabs","groq","openai"]
-        if provider not in provider_list:
-            raise ValueError(f"Invalid provider: {provider}")
-        if provider == "localWhisper":
-            api_key_name = "whisperApiKey"
-        elif provider == "deepgram":
-            api_key_name = "deepgramApiKey"
-        elif provider == "elevenLabs":
-            api_key_name = "elevenLabsApiKey"
-        elif provider == "groq":
-            api_key_name = "groqApiKey"
-        elif provider == "openai":
-            api_key_name = "openaiApiKey"
+        api_key_name = _resolve_api_key_column(provider, _TRANSCRIPT_API_KEY_COLUMNS)
         async with self._get_connection() as conn:
             cursor = await conn.execute(f"SELECT {api_key_name} FROM transcript_settings WHERE id = '1'")
             row = await cursor.fetchone()
@@ -851,7 +825,7 @@ class DatabaseManager:
                         'id': meeting_id,
                         'title': title,
                         'matchContext': context,
-                        'timestamp': datetime.utcnow().isoformat()  # Use current time as fallback
+                        'timestamp': datetime.now(timezone.utc).isoformat()  # Use current time as fallback
                     })
                 
                 return results
@@ -862,24 +836,14 @@ class DatabaseManager:
         
     async def delete_api_key(self, provider: str):
         """Delete the API key"""
-        provider_list = ["openai", "claude", "groq", "ollama"]
-        if provider not in provider_list:
-            raise ValueError(f"Invalid provider: {provider}")
-        if provider == "openai":
-            api_key_name = "openaiApiKey"
-        elif provider == "claude":
-            api_key_name = "anthropicApiKey"
-        elif provider == "groq":
-            api_key_name = "groqApiKey"
-        elif provider == "ollama":
-            api_key_name = "ollamaApiKey"
+        api_key_name = _resolve_api_key_column(provider, _MODEL_API_KEY_COLUMNS)
         async with self._get_connection() as conn:
             await conn.execute(f"UPDATE settings SET {api_key_name} = NULL WHERE id = '1'")
             await conn.commit()
     
     async def update_meeting_summary(self, meeting_id: str, summary: dict):
         """Update a meeting's summary"""
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         try:
             async with self._get_connection() as conn:
                 # Check if the meeting exists

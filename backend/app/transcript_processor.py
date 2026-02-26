@@ -265,15 +265,15 @@ class TranscriptProcessor:
             full_response = ""
             async for part in response:
                 content = part['message']['content']
-                print(content, end='', flush=True)
+                logger.debug("Ollama chunk: %s", content)
                 full_response += content
             
             try:
                 summary = SummaryResponse.model_validate_json(full_response)
-                print("\n", summary.model_dump_json(indent=2), type(summary))
+                logger.debug("Parsed summary: %s", summary.model_dump_json(indent=2))
                 return summary
             except Exception as e:
-                print(f"\nError parsing response: {e}")
+                logger.error("Error parsing Ollama response: %s", e)
                 return full_response
         except asyncio.CancelledError:
             logger.info("Ollama request was cancelled during shutdown")
