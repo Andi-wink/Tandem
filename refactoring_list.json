@@ -1,24 +1,29 @@
 {
     "project": "Tandem",
-    "description": "List of planned refactors to improve code quality, type safety, and robustness.",
+    "description": "List of planned refactors to improve code quality, type safety, security, and robustness.",
     "base_branch": "main",
     "working_branch": "refactor/claude-service",
-    "last_updated": "2026-02-22",
+    "last_updated": "2026-02-26",
     "features": [
         {
             "id": "R001",
             "category": "refactor",
             "name": "Environment-based Backend Configuration",
-            "description": "Current backend URL is hardcoded to localhost:5167. This should be moved to an environment variable to allow building for staging or production without code changes.",
+            "description": "Current backend URL is hardcoded to localhost:5167 in claudeService.ts and api.rs. Should be moved to environment variables for staging/production builds.",
             "priority": "medium",
             "status": "planned",
             "branch": null,
             "commit": null,
             "steps": [
                 "Create or update .env files with VITE_BACKEND_URL or NEXT_PUBLIC_BACKEND_URL",
-                "Update BACKEND export in claudeService.ts to use the environment variable with a fallback to localhost"
+                "Update BACKEND export in claudeService.ts to use the environment variable with a fallback to localhost",
+                "Update APP_SERVER_URL in api/api.rs:21 to read from Tauri config or env"
             ],
-            "passes": false
+            "passes": false,
+            "affected_files": [
+                "frontend/src/services/claudeService.ts",
+                "frontend/src-tauri/src/api/api.rs"
+            ]
         },
         {
             "id": "R002",
@@ -35,13 +40,17 @@
                 "Combine into a union type for ClaudeFrontendEvent",
                 "Update components using the event to leverage the new type narrowing"
             ],
-            "passes": false
+            "passes": false,
+            "affected_files": [
+                "frontend/src/services/claudeService.ts",
+                "frontend/src/contexts/ClaudeContext.tsx"
+            ]
         },
         {
             "id": "R003",
             "category": "robustness",
             "name": "Robust SSE Stream Parsing",
-            "description": "Manual string splitting on '\\n' for SSE events in streamClaudeSession can break if chunks are split unexpectedly or if payloads contain escaped characters irregularly. Standardizing SSE parsing will prevent stream hangs.",
+            "description": "Manual string splitting on '\\n' for SSE events in streamClaudeSession can break if chunks are split unexpectedly. Standardizing SSE parsing will prevent stream hangs.",
             "priority": "high",
             "status": "planned",
             "branch": null,
@@ -49,15 +58,19 @@
             "steps": [
                 "Consider integrating a standard SSE parser library (e.g., @microsoft/fetch-event-source)",
                 "Alternatively, improve the manual buffer reading to correctly accumulate and parse '\\n\\n' separated events",
-                "Ensure reader.releaseLock() is guaranteed in a finally block to prevent resource leaks on errors"
+                "Ensure reader.releaseLock() is guaranteed in a finally block to prevent resource leaks on errors",
+                "Add fetch timeout via AbortSignal (claudeService.ts:47-52 has no timeout)"
             ],
-            "passes": false
+            "passes": false,
+            "affected_files": [
+                "frontend/src/services/claudeService.ts"
+            ]
         },
         {
             "id": "R004",
             "category": "error-handling",
             "name": "Explicit REST Error Handling",
-            "description": "REST helpers like clearClaudeSession and cancelClaudeSession swallow HTTP errors silently. getClaudeSession returns null on 500 errors, hiding crashes. They should throw explicit errors so the UI can display appropriate notifications.",
+            "description": "REST helpers like clearClaudeSession and cancelClaudeSession swallow HTTP errors silently. getClaudeSession returns null on 500 errors, hiding crashes.",
             "priority": "medium",
             "status": "planned",
             "branch": null,
@@ -67,13 +80,17 @@
                 "Update getClaudeSession to only return null on a 404 status, and throw for 500s or other errors",
                 "Ensure calling UI components wrap these calls in try/catch to show toast notifications on failure"
             ],
-            "passes": false
+            "passes": false,
+            "affected_files": [
+                "frontend/src/services/claudeService.ts",
+                "frontend/src/contexts/ClaudeContext.tsx"
+            ]
         },
         {
             "id": "R005",
             "category": "architecture",
             "name": "Promise-Wrapped Streaming",
-            "description": "streamClaudeSession uses an async IIFE, meaning the caller receives the AbortController but has no Promise to await to know when the stream finishes. Returning a Promise enables better UI state management (e.g., loading spinners).",
+            "description": "streamClaudeSession uses an async IIFE, meaning the caller receives the AbortController but has no Promise to await when the stream finishes.",
             "priority": "medium",
             "status": "planned",
             "branch": null,
@@ -83,7 +100,689 @@
                 "Return an object containing both the abort function (from the controller) and the Promise",
                 "Update callers in ClaudeContext to optionally await the stream completion for cleaner async flow"
             ],
-            "passes": false
+            "passes": false,
+            "affected_files": [
+                "frontend/src/services/claudeService.ts",
+                "frontend/src/contexts/ClaudeContext.tsx"
+            ]
+        },
+        {
+            "id": "R006",
+            "category": "security",
+            "name": "Fix SQL Injection in Settings Queries",
+            "description": "Both Rust (setting.rs) and Python (db.py) build SQL queries via string formatting with column names from provider input. While provider validation exists, the column names themselves are interpolated unsafely. Investigation confirmed validation was already safe; consolidated 5 duplicated Python validation blocks into shared dict-based lookups.",
+            "priority": "critical",
+            "status": "complete",
+            "branch": "main",
+            "commit": null,
+            "steps": [
+                "In setting.rs:96 and :134, replace format!() SQL with a strict column-name enum/map that returns only whitelisted strings",
+                "In db.py:607, :611, :641, :728, :732, :765, replace f-string SQL with a dict lookup mapping provider to column name",
+                "Add unit tests confirming that invalid provider names are rejected before SQL construction",
+                "Audit all other dynamic SQL in both db.py and setting.rs"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src-tauri/src/database/repositories/setting.rs",
+                "backend/app/db.py"
+            ]
+        },
+        {
+            "id": "R007",
+            "category": "security",
+            "name": "Sanitize User Input in Claude Agent",
+            "description": "claude_agent.py has path traversal risk (project_dir passed to os.path.join without validation) and prompt injection risk (meeting_title interpolated into system prompt unsanitized).",
+            "priority": "critical",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Validate project_dir is absolute and does not contain '..' (claude_agent.py:148)",
+                "Sanitize or escape meeting_title before interpolating into system prompt (claude_agent.py:316-322)",
+                "Add allowlist of permitted base directories for project_dir",
+                "Sanitize error messages to prevent API key leakage (claude_agent.py:484-486)"
+            ],
+            "passes": false,
+            "affected_files": [
+                "backend/app/claude_agent.py"
+            ]
+        },
+        {
+            "id": "R008",
+            "category": "architecture",
+            "name": "Split Backend main.py into Route Modules",
+            "description": "main.py is 857 lines containing Pydantic models, all endpoints, SummaryProcessor class, background tasks, AI integration, and PII routes. Should be decomposed into focused modules.",
+            "priority": "high",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Extract Pydantic models to models.py",
+                "Extract meeting CRUD endpoints to endpoints/meetings.py",
+                "Extract summary processing to endpoints/summary.py",
+                "Extract config/settings endpoints to endpoints/config.py",
+                "Extract Claude agent endpoints to endpoints/ai.py",
+                "Extract anonymization endpoints to endpoints/anonymize.py",
+                "Extract SummaryProcessor class to processor.py",
+                "Extract background task logic to background_tasks.py",
+                "Wire up FastAPI APIRouter in main.py importing all route modules"
+            ],
+            "passes": false,
+            "affected_files": [
+                "backend/app/main.py"
+            ]
+        },
+        {
+            "id": "R009",
+            "category": "architecture",
+            "name": "Split ClaudeContext into Focused Contexts",
+            "description": "ClaudeContext.tsx is 621 lines handling streaming, anonymization, basket management, conversation history, API key persistence, and entity mapping. Should be 3 focused contexts.",
+            "priority": "high",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Extract basket management into ContextBasketContext (add/remove/clear/toggle items)",
+                "Extract anonymization logic into AnonymizationContext (toggle, entity map, anonymize call)",
+                "Keep ClaudeSessionContext for streaming, conversation, and session lifecycle",
+                "Update layout.tsx provider tree and all consuming components",
+                "Extract duplicated RAF batching into a useRAFBatch() utility hook"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src/contexts/ClaudeContext.tsx",
+                "frontend/src/app/layout.tsx",
+                "frontend/src/components/ClaudePanel/ClaudePanel.tsx",
+                "frontend/src/components/ClaudePanel/ContextBasket.tsx"
+            ]
+        },
+        {
+            "id": "R010",
+            "category": "architecture",
+            "name": "Flatten Provider Pyramid of Doom",
+            "description": "layout.tsx has 13+ nested context providers. Makes testing impossible and creates deep component trees. Should use a provider composition pattern.",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Create a ComposeProviders utility component that accepts an array of [Provider, props] tuples, or group contexts by domain (e.g., AppProviders vs MeetingProviders)",
+                "Replace nested JSX providers in layout.tsx with flat ComposeProviders call",
+                "Add React Error Boundaries wrapping major sections (sidebar, main content, AI panel)"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src/app/layout.tsx"
+            ]
+        },
+        {
+            "id": "R011",
+            "category": "robustness",
+            "name": "Replace Rust .lock().unwrap() with Error Handling",
+            "description": "138 .lock().unwrap() calls across 9 files. Investigation showed pattern is safe (short scopes, no cross-await). Fixed recording_commands.rs (20 occurrences on hot path), replaced panic!() in pipeline.rs with Result, fixed tray.rs caller. Remaining files use safe scoped-guard pattern.",
+            "priority": "high",
+            "status": "partial",
+            "branch": "main",
+            "commit": null,
+            "steps": [
+                "Sweep whisper_engine/commands.rs: replace 15+ .lock().unwrap() with .lock().map_err(|e| format!(...))?",
+                "Sweep parakeet_engine/commands.rs: replace 13+ .lock().unwrap()",
+                "Remove explicit panic!() calls in pipeline.rs:735 and client.rs:326,339 — return Result instead",
+                "Replace .expect() calls in lib.rs:406-412, :611, :854 with proper error propagation",
+                "Audit audio/buffer_pool.rs:91,96,101 .expect() calls"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src-tauri/src/whisper_engine/commands.rs",
+                "frontend/src-tauri/src/parakeet_engine/commands.rs",
+                "frontend/src-tauri/src/audio/pipeline.rs",
+                "frontend/src-tauri/src/summary/summary_engine/client.rs",
+                "frontend/src-tauri/src/lib.rs",
+                "frontend/src-tauri/src/audio/buffer_pool.rs"
+            ]
+        },
+        {
+            "id": "R012",
+            "category": "memory-leak",
+            "name": "Add TTL/Cleanup to In-Memory Registries",
+            "description": "Anonymizer entity registries (_registries dict) and Claude session dict grow unbounded. After many meetings, memory usage increases indefinitely.",
+            "priority": "high",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Add TTL-based cleanup to anonymizer._registries (anonymizer.py:414) — evict after 2hrs of inactivity",
+                "Add periodic background cleanup task for claude_agent._sessions (currently only cleaned on request)",
+                "Add max-size cap to both registries with LRU eviction",
+                "Fix Faker seeding race condition (anonymizer.py:211-212) — use per-instance Faker, not global seed"
+            ],
+            "passes": false,
+            "affected_files": [
+                "backend/app/anonymizer.py",
+                "backend/app/claude_agent.py"
+            ]
+        },
+        {
+            "id": "R013",
+            "category": "robustness",
+            "name": "Fix Sync/Async Mixing in db.py",
+            "description": "db.py:364-388 uses sync sqlite3.connect() for save_meeting() while everything else uses async aiosqlite. This blocks the event loop under load.",
+            "priority": "high",
+            "status": "complete",
+            "branch": "main",
+            "commit": null,
+            "steps": [
+                "Convert save_meeting() (db.py:364-388) to use async aiosqlite",
+                "Convert save_meeting_transcript() (db.py:394-410) to use async aiosqlite",
+                "Add connection pooling or reuse pattern instead of creating new connection per call (db.py:162-168)",
+                "Audit all remaining sync sqlite3 usage and convert to aiosqlite"
+            ],
+            "passes": false,
+            "affected_files": [
+                "backend/app/db.py"
+            ]
+        },
+        {
+            "id": "R014",
+            "category": "security",
+            "name": "Add Rate Limiting and Input Validation",
+            "description": "No rate limiting on any endpoint. Search queries and JSON payloads have no size limits. Any client can spam /process-transcript to exhaust server resources.",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Add slowapi or similar rate limiter to FastAPI (main.py)",
+                "Add max query length to /search-transcripts endpoint (main.py:651)",
+                "Add max payload size middleware for JSON request bodies",
+                "Validate meeting_id format on all endpoints accepting it",
+                "Add backpressure or queue for /process-transcript background tasks"
+            ],
+            "passes": false,
+            "affected_files": [
+                "backend/app/main.py"
+            ]
+        },
+        {
+            "id": "R015",
+            "category": "robustness",
+            "name": "Add React Error Boundaries",
+            "description": "No error boundaries anywhere in the React tree. A crash in any component (e.g., transcript rendering, AI panel) takes down the entire app.",
+            "priority": "high",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Create ErrorBoundary component with fallback UI and retry button",
+                "Wrap Sidebar, main content area, and AI panel each in their own ErrorBoundary",
+                "Add error logging to ErrorBoundary (optional: send to backend for diagnostics)",
+                "Test by throwing in each major section to verify isolation"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src/app/layout.tsx",
+                "frontend/src/components/ErrorBoundary.tsx"
+            ]
+        },
+        {
+            "id": "R016",
+            "category": "refactor",
+            "name": "Eliminate Dual State Tracking in Frontend",
+            "description": "page.tsx mirrors context state in local state (line 31-41). ClaudeContext uses both stateRef and state (line 175-176). RecordingStateContext has missing useCallback dependencies (line 81). These cause stale closures and subtle bugs.",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Remove local isRecording state from page.tsx — use recordingState.isRecording directly",
+                "Consolidate stateRef/state pattern in ClaudeContext into a single useReducer",
+                "Fix missing dependencies in RecordingStateContext useCallback (line 81)",
+                "Audit all contexts for stale closure risks using eslint-plugin-react-hooks exhaustive-deps"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src/app/page.tsx",
+                "frontend/src/contexts/ClaudeContext.tsx",
+                "frontend/src/contexts/RecordingStateContext.tsx"
+            ]
+        },
+        {
+            "id": "R017",
+            "category": "refactor",
+            "name": "Split Monolithic Rust Files",
+            "description": "api/api.rs (1514 lines), recording_commands.rs (1246 lines), whisper_engine.rs (1158 lines), parakeet_engine.rs (1089 lines), and pipeline.rs (1077 lines) are all god files mixing multiple concerns.",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Split api/api.rs into api/meetings.rs, api/settings.rs, api/transcripts.rs, api/models.rs",
+                "Split recording_commands.rs into recording_lifecycle.rs (start/stop/pause) and recording_config.rs (devices/preferences)",
+                "Split whisper_engine.rs into model_manager.rs (download/load) and transcriber.rs (inference)",
+                "Apply same split to parakeet_engine.rs",
+                "Extract resampling logic from pipeline.rs into audio/resampler.rs",
+                "Remove lib_old_complex.rs (2437 lines of dead legacy code)"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src-tauri/src/api/api.rs",
+                "frontend/src-tauri/src/audio/recording_commands.rs",
+                "frontend/src-tauri/src/whisper_engine/whisper_engine.rs",
+                "frontend/src-tauri/src/parakeet_engine/parakeet_engine.rs",
+                "frontend/src-tauri/src/audio/pipeline.rs",
+                "frontend/src-tauri/src/lib_old_complex.rs"
+            ]
+        },
+        {
+            "id": "R018",
+            "category": "memory-leak",
+            "name": "Fix Resource Leaks in Audio and Drag-Drop",
+            "description": "Module-level mutable state in useDragAndDrop.ts (line 13-14), missing Drop impls for Rust audio streams, orphaned senders in recording_saver.rs, and global window.triggerHandoff assignment without cleanup.",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Replace module-level _internalDragActive and _dragListeners in useDragAndDrop.ts with React context or ref",
+                "Add Drop impl for StreamBackend (stream.rs:17-29) to properly stop/await audio tasks",
+                "Fix recording_saver.rs orphaned receiver when start_accumulation() called multiple times",
+                "Clean up window.triggerHandoff on unmount in useHandoffExport.ts",
+                "Replace deprecated 'let mounted = true' pattern in ScreenshotContext with AbortController"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src/hooks/useDragAndDrop.ts",
+                "frontend/src-tauri/src/audio/stream.rs",
+                "frontend/src-tauri/src/audio/recording_saver.rs",
+                "frontend/src/hooks/useHandoffExport.ts",
+                "frontend/src/contexts/ScreenshotContext.tsx"
+            ]
+        },
+        {
+            "id": "R019",
+            "category": "architecture",
+            "name": "Unify or Bridge the Two SQLite Databases",
+            "description": "Rust frontend (sqlx) and Python backend (aiosqlite) each maintain separate SQLite databases. No sync mechanism exists. Meetings can be orphaned if either side fails. Settings duplicated in both with hardcoded id='1'.",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Audit which data actually needs to be in both DBs vs. only one",
+                "Option A: Make backend read from the Rust SQLite (single source of truth for meetings/transcripts)",
+                "Option B: Add an event-driven sync layer (Rust emits events when meetings change, backend listens)",
+                "Option C: Consolidate into a single shared SQLite with separate connection pools",
+                "Remove hardcoded id='1' in settings — use named keys or single-row pattern properly"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src-tauri/src/database/",
+                "backend/app/db.py"
+            ]
+        },
+        {
+            "id": "R020",
+            "category": "error-handling",
+            "name": "Consistent Backend Error Handling",
+            "description": "Backend endpoints expose raw exception strings to clients (main.py:187,211,224,373), have inconsistent response structures, log PII-containing data on parse errors, and swallow exceptions in background tasks.",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Create a standard error response model with error codes (not raw str(e))",
+                "Add exception handler middleware to FastAPI that sanitizes error messages",
+                "Fix background task error swallowing in process_transcript_background (main.py:319-334)",
+                "Redact potentially PII-containing data from log messages (main.py:302,304)",
+                "Ensure shutdown_event cleans up all resources (Claude sessions, DB connections, Presidio)"
+            ],
+            "passes": false,
+            "affected_files": [
+                "backend/app/main.py",
+                "backend/app/claude_agent.py",
+                "backend/app/transcript_processor.py"
+            ]
+        },
+        {
+            "id": "R021",
+            "category": "performance",
+            "name": "Fix Frontend Performance Anti-Patterns",
+            "description": "New reqwest::Client created per API call (api.rs:248), no memoization on 27 destructured context values in ClaudePanel, duplicate useMemo chains in VirtualizedTranscriptView, and RecordingStateContext polls at fixed 500ms with no backoff.",
+            "priority": "low",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Create a static/cached reqwest::Client in api.rs instead of new per call",
+                "Add React.memo to ClaudePanel child components to prevent unnecessary re-renders",
+                "Combine duplicate useMemo chains in VirtualizedTranscriptView (lines 65-77)",
+                "Add exponential backoff to RecordingStateContext polling (currently fixed 500ms)",
+                "Extract formatRecordingTime into shared utils (duplicated in 3+ files)",
+                "Remove dead code: cleanStopWords in VirtualizedTranscriptView, dead playback vars in RecordingControls"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src-tauri/src/api/api.rs",
+                "frontend/src/components/ClaudePanel/ClaudePanel.tsx",
+                "frontend/src/components/VirtualizedTranscriptView.tsx",
+                "frontend/src/contexts/RecordingStateContext.tsx",
+                "frontend/src/components/RecordingControls.tsx"
+            ]
+        },
+        {
+            "id": "R022",
+            "category": "robustness",
+            "name": "Fix Rust Thread Safety and Atomic Inconsistencies",
+            "description": "recording_commands.rs mixes AtomicBool with Mutex<Option<T>> without synchronized access. IS_RECORDING can be checked without holding the RECORDING_MANAGER lock, creating race conditions.",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Consolidate IS_RECORDING + RECORDING_MANAGER into a single Mutex<RecordingState> struct",
+                "Replace 11 separate Mutex fields in recording_state.rs with a single RwLock<RecordingStateInner>",
+                "Add proper error callback handling — current Mutex<Box<dyn Fn>> can panic during Drop",
+                "Audit unsafe impl Send for StreamBackend (stream.rs:29,38) — document why it's safe or fix"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src-tauri/src/audio/recording_commands.rs",
+                "frontend/src-tauri/src/audio/recording_state.rs",
+                "frontend/src-tauri/src/audio/stream.rs"
+            ]
+        },
+        {
+            "id": "R023",
+            "category": "performance",
+            "name": "Remove Unused Rich Text Editors",
+            "description": "package.json currently imports `@remirror/*` and `@tiptap/*` libraries, but a full codebase search reveals they are completely unused (Tandem is strictly using `@blocknote` in Editor.tsx / BlockNoteSummaryView.tsx).",
+            "priority": "low",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Remove `@remirror/*` and `@tiptap/*` dependencies from frontend package.json",
+                "Run `pnpm install` or `npm install` to update lockfile",
+                "Verify build succeeds without these heavy dependencies"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/package.json"
+            ]
+        },
+        {
+            "id": "R024",
+            "category": "robustness",
+            "name": "Implement CI/CD Pipeline (GitHub Actions)",
+            "description": "There is an empty `.github/workflows` folder, meaning PRs rely wholly on manual testing. CI checks are critical for ensuring regressions are not merged.",
+            "priority": "high",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Add `.github/workflows/ci.yml` for automated testing",
+                "Configure Node steps: `pnpm lint`, `pnpm build`, `vitest`",
+                "Configure Rust steps: `cargo check`, `cargo clippy`, `cargo fmt --check`",
+                "Configure Python steps: `pytest`, `ruff check .`"
+            ],
+            "passes": false,
+            "affected_files": [
+                ".github/workflows/ci.yml"
+            ]
+        },
+        {
+            "id": "R025",
+            "category": "architecture",
+            "name": "Replace Flat requirements.txt with pyproject.toml",
+            "description": "backend/requirements.txt is a flat list mixing app and dev dependencies without lockfile pinning. Moving to uv or poetry will stabilize builds and environments.",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Initialize `pyproject.toml` using `uv` or `poetry` in the backend directory",
+                "Migrate production dependencies (FastAPI, aiosqlite, pydantic) to main deps block",
+                "Migrate development dependencies (pytest) to dev block",
+                "Generate a lockfile and update documentation/scripts"
+            ],
+            "passes": false,
+            "affected_files": [
+                "backend/pyproject.toml",
+                "backend/requirements.txt"
+            ]
+        },
+        {
+            "id": "R026",
+            "category": "refactor",
+            "name": "Consolidate Backend Docker/Shell Scripts",
+            "description": "The backend folder contains multiple Dockerfile variants and 10+ ad-hoc shell scripts. These should be unified into a Makefile or robust docker-compose structure to improve Developer Experience.",
+            "priority": "low",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Delete redundant shell scripts in favor of a single Makefile or Justfile",
+                "Consolidate `Dockerfile.server-*` into a single multi-stage Dockerfile or standardized docker-compose.yml overrides"
+            ],
+            "passes": false,
+            "affected_files": [
+                "backend/Dockerfile.server-cpu",
+                "backend/Dockerfile.server-gpu",
+                "backend/Dockerfile.server-macos",
+                "backend/build-docker.sh",
+                "backend/start_python_backend.cmd",
+                "backend/Makefile"
+            ]
+        },
+        {
+            "id": "R027",
+            "category": "code-quality",
+            "name": "Replace Debug print() with Logger in TranscriptProcessor",
+            "description": "transcript_processor.py has 3 bare print() statements in chat_ollama_model() that bypass the logging framework, pollute stdout, and leak internal state in production.",
+            "priority": "high",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Replace print(content, end='', flush=True) at line 268 with logger.debug()",
+                "Replace print(summary.model_dump_json()) at line 273 with logger.debug()",
+                "Replace print(f'Error parsing response: {e}') at line 276 with logger.error()",
+                "Verify no other bare print() calls exist in backend/app/"
+            ],
+            "passes": false,
+            "affected_files": [
+                "backend/app/transcript_processor.py"
+            ]
+        },
+        {
+            "id": "R028",
+            "category": "deprecation",
+            "name": "Replace Deprecated datetime.utcnow() Calls",
+            "description": "db.py uses datetime.utcnow() in 7 places. This is deprecated in Python 3.12+ and scheduled for removal. Should use datetime.now(timezone.utc) instead.",
+            "priority": "medium",
+            "status": "complete",
+            "branch": "main",
+            "commit": null,
+            "steps": [
+                "Add 'from datetime import timezone' to db.py imports",
+                "Replace all datetime.utcnow() with datetime.now(timezone.utc) (lines 172, 215, 296, 331, 456, 854, 882)",
+                "Search for utcnow() in other backend files and fix"
+            ],
+            "passes": false,
+            "affected_files": [
+                "backend/app/db.py"
+            ]
+        },
+        {
+            "id": "R029",
+            "category": "deprecation",
+            "name": "Replace Deprecated @app.on_event with Lifespan Context Manager",
+            "description": "main.py uses deprecated @app.on_event('shutdown') decorator (line 843). FastAPI 0.93+ recommends the lifespan async context manager pattern instead.",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Create an async lifespan context manager with startup/shutdown logic",
+                "Move shutdown_event() cleanup into lifespan's teardown",
+                "Pass lifespan= to FastAPI() constructor",
+                "Remove @app.on_event decorator"
+            ],
+            "passes": false,
+            "affected_files": [
+                "backend/app/main.py"
+            ]
+        },
+        {
+            "id": "R030",
+            "category": "resource-leak",
+            "name": "Fix Unclosed Ollama AsyncClient Sessions",
+            "description": "transcript_processor.py creates AsyncClient instances (line 259) tracked in self.active_clients, but the finally block only removes from the list without calling .aclose(). The cleanup() method uses fire-and-forget asyncio.create_task() that may not complete before shutdown.",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Add await client._client.aclose() in the finally block of chat_ollama_model()",
+                "In cleanup(), await asyncio.gather() instead of fire-and-forget create_task()",
+                "Add timeout to cleanup gather to prevent hanging on shutdown"
+            ],
+            "passes": false,
+            "affected_files": [
+                "backend/app/transcript_processor.py"
+            ]
+        },
+        {
+            "id": "R031",
+            "category": "code-quality",
+            "name": "Remove Dead Playback Variables from RecordingControls",
+            "description": "RecordingControls.tsx has 4 dead variables (currentTime, duration, isPlaying, progress) at lines 62-65 from an abandoned playback feature. These confuse readers and suggest incomplete functionality.",
+            "priority": "low",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Remove unused const currentTime, duration, isPlaying, progress from RecordingControls.tsx",
+                "Remove any related JSX that references these variables",
+                "Check for similar dead code in sibling components"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src/components/RecordingControls.tsx"
+            ]
+        },
+        {
+            "id": "R032",
+            "category": "code-quality",
+            "name": "Guard or Remove Console.log Statements in Frontend",
+            "description": "30+ console.log/warn/error calls across production frontend code (Sidebar, TranscriptView, RecordingControls, layout.tsx, ClaudePanel). These leak internal state, slow rendering, and pollute DevTools.",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Create a lightweight logger utility (src/lib/logger.ts) that respects NODE_ENV",
+                "Replace console.log calls in Sidebar/index.tsx (lines 110, 144)",
+                "Replace debug logging in TranscriptView.tsx (lines 111-118)",
+                "Replace console.log in RecordingControls.tsx (lines 76-90)",
+                "Replace console.log in layout.tsx (lines 58-65, 91)",
+                "Keep console.error for genuine error conditions"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src/components/Sidebar/index.tsx",
+                "frontend/src/components/TranscriptView.tsx",
+                "frontend/src/components/RecordingControls.tsx",
+                "frontend/src/app/layout.tsx",
+                "frontend/src/lib/logger.ts"
+            ]
+        },
+        {
+            "id": "R033",
+            "category": "resource-leak",
+            "name": "Add Drop Impl for RecordingSaver",
+            "description": "RecordingSaver holds Arc-wrapped resources (incremental_saver, transcript_segments, chunk_receiver) and spawned tokio tasks but has no Drop implementation. When dropped, background tasks continue running and channels remain open.",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Implement Drop for RecordingSaver that closes the chunk receiver",
+                "Signal any running accumulation task to stop via a cancellation token",
+                "Log cleanup actions for debugging",
+                "Test by starting/stopping recordings rapidly"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src-tauri/src/audio/recording_saver.rs"
+            ]
+        },
+        {
+            "id": "R034",
+            "category": "robustness",
+            "name": "Add Panic Recovery to Spawned Audio Tasks",
+            "description": "Core Audio processing tasks spawned via tokio::spawn in stream.rs have no panic recovery. If a task panics, audio capture silently stops without notifying the recording system or the user.",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Wrap spawned audio task closures in catch_unwind or use JoinHandle monitoring",
+                "On task panic/failure, emit a Tauri event to notify the frontend",
+                "Add a watchdog that detects stalled audio tasks (no data for N seconds)",
+                "Log panic details for post-mortem debugging"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src-tauri/src/audio/stream.rs",
+                "frontend/src-tauri/src/audio/pipeline.rs"
+            ]
+        },
+        {
+            "id": "R035",
+            "category": "code-quality",
+            "name": "Remove Dead Code and #[allow(dead_code)] in Rust",
+            "description": "ffmpeg_mixer.rs has a Timestamp struct and TimestampedChunk methods marked #[allow(dead_code)] (lines 22-46, 66-70). lib_old_complex.rs is 2437 lines of dead legacy code. These add compilation time and confuse grep/navigation.",
+            "priority": "low",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Remove or feature-gate dead Timestamp/TimestampedChunk code in ffmpeg_mixer.rs",
+                "Delete lib_old_complex.rs (2437 lines of dead legacy code)",
+                "Search for other #[allow(dead_code)] annotations and evaluate each",
+                "Run cargo check to verify nothing breaks"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src-tauri/src/audio/ffmpeg_mixer.rs",
+                "frontend/src-tauri/src/lib_old_complex.rs"
+            ]
+        },
+        {
+            "id": "R036",
+            "category": "code-quality",
+            "name": "Extract Hardcoded Constants from Frontend Components",
+            "description": "Magic numbers scattered across components: token estimate divisor (4), max textarea height (120px), context basket max-height (200px), min recording duration (2000ms), chunk sizes for Ollama models. Should be centralized.",
+            "priority": "low",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Create frontend/src/lib/constants.ts with UI/timing/algorithm constants",
+                "Extract CHAR_TO_TOKEN_RATIO from ContextBasket.tsx",
+                "Extract TEXTAREA_MAX_HEIGHT from ClaudePanel.tsx",
+                "Extract MIN_RECORDING_DURATION_MS from RecordingControls.tsx",
+                "Extract OLLAMA_CHUNK_SIZE constants from transcript_processor.py to a config section"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src/lib/constants.ts",
+                "frontend/src/components/ClaudePanel/ContextBasket.tsx",
+                "frontend/src/components/ClaudePanel/ClaudePanel.tsx",
+                "frontend/src/components/RecordingControls.tsx",
+                "backend/app/transcript_processor.py"
+            ]
         }
     ]
 }
