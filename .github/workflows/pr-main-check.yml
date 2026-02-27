@@ -1,9 +1,9 @@
-name: "Validation Check"
+name: "PR Check"
 
-# This workflow runs basic validation checks without building
-# Use this to verify version and configuration before a release
-
+# Runs type checks and tests on every PR targeting main
 on:
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -11,8 +11,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ── Version & config validation ───────────────────────────────────────────
   validation-check:
-    name: Validation Check
+    name: Validation
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -25,41 +26,67 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Version: $VERSION"
 
-      - name: Check current branch
-        run: |
-          CURRENT_BRANCH="${{ github.ref_name }}"
-          echo "Current branch: $CURRENT_BRANCH"
-
-          if [[ "$CURRENT_BRANCH" == "main" ]]; then
-            echo "On main branch - ready for release"
-          elif [[ "$CURRENT_BRANCH" == "devtest" ]]; then
-            echo "On devtest branch - ready for testing"
-          else
-            echo "On feature branch: $CURRENT_BRANCH"
-          fi
-
       - name: Validate version format
         run: |
           VERSION="${{ steps.get-version.outputs.version }}"
-
-          # Check if version matches semantic versioning pattern
           if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Version format is valid: $VERSION"
           else
-            echo "Warning: Version '$VERSION' may not be in standard semver format"
-            echo "Expected format: X.Y.Z (e.g., 1.0.0)"
+            echo "::error::Version '$VERSION' is not in semver format (X.Y.Z)"
+            exit 1
           fi
 
-      - name: Generate validation summary
-        run: |
-          echo "## Validation Check Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** ${{ steps.get-version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "1. Run **Build and Test - DevTest** for unsigned builds" >> $GITHUB_STEP_SUMMARY
-          echo "2. Run **Build and Test** for signed builds on all platforms" >> $GITHUB_STEP_SUMMARY
-          echo "3. Run **Release** to create a production release" >> $GITHUB_STEP_SUMMARY
+  # ── Frontend: TypeScript type check + tests ───────────────────────────────
+  frontend-checks:
+    name: Frontend (tsc + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript type check
+        working-directory: frontend
+        run: pnpm tsc --noEmit
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: pnpm test -- --run --reporter=verbose
+
+  # ── Backend: Python tests ─────────────────────────────────────────────────
+  backend-checks:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Run backend tests
+        working-directory: backend
+        run: python -m pytest -v
