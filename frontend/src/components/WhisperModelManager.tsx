@@ -403,9 +403,9 @@ export function ModelManager({
 
   if (error) {
     return (
-      <div className={`bg-red-50 border border-red-200 rounded-lg p-4 ${className}`}>
-        <p className="text-sm text-red-800">Failed to load models</p>
-        <p className="text-xs text-red-600 mt-1">{error}</p>
+      <div className={`bg-red-50 border border-red-200 dark:bg-red-950 dark:border-red-800 rounded-lg p-4 ${className}`}>
+        <p className="text-sm text-red-800 dark:text-red-200">Failed to load models</p>
+        <p className="text-xs text-red-600 dark:text-red-400 mt-1">{error}</p>
       </div>
     );
   }
@@ -534,7 +534,7 @@ function ModelCard({
       className={`
         relative rounded-lg border-2 transition-all cursor-pointer
         ${isSelected && isAvailable
-          ? 'border-blue-500 bg-blue-50'
+          ? 'border-blue-500 bg-blue-50 dark:bg-blue-950'
           : isAvailable
             ? 'border-border hover:border-border bg-background'
             : 'border-border bg-muted'
@@ -572,9 +572,9 @@ function ModelCard({
               )}
               {isQuantizedModel(model.name) && (
                 <span className={`px-2 py-0.5 rounded-full text-xs ${getModelPerformanceBadge(model.name).color === 'green'
-                  ? 'bg-green-100 text-green-700'
+                  ? 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300'
                   : getModelPerformanceBadge(model.name).color === 'orange'
-                    ? 'bg-orange-100 text-orange-700'
+                    ? 'bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300'
                     : 'bg-muted text-foreground'
                   }`}>
                   {getModelPerformanceBadge(model.name).label}

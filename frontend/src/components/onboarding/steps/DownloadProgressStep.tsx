@@ -377,7 +377,7 @@ export function DownloadProgressStep() {
             <Loader2 className="w-5 h-5 text-foreground animate-spin" />
           )}
           {state.status === 'completed' && (
-            <div className="w-6 h-6 rounded-full bg-green-100 flex items-center justify-center">
+            <div className="w-6 h-6 rounded-full bg-green-100 dark:bg-green-900 flex items-center justify-center">
               <Check className="w-4 h-4 text-green-600" />
             </div>
           )}
@@ -415,7 +415,7 @@ export function DownloadProgressStep() {
       )}
 
       {state.status === 'error' && state.error && (
-        <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-md">
+        <div className="mt-2 p-3 bg-red-50 border border-red-200 dark:bg-red-950 dark:border-red-800 rounded-md">
           <p className="text-sm text-red-600 font-medium">Download Error</p>
           <p className="text-xs text-red-500 mt-1">{state.error}</p>
           {(title === 'Transcription Engine' || title === 'Summary Engine') && (

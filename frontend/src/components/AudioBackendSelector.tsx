@@ -122,7 +122,7 @@ export function AudioBackendSelector({
       </div>
 
       {error && (
-        <div className="p-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-md">
+        <div className="p-2 text-xs text-red-700 bg-red-50 border border-red-200 dark:text-red-300 dark:bg-red-950 dark:border-red-800 rounded-md">
           {error}
         </div>
       )}
@@ -138,7 +138,7 @@ export function AudioBackendSelector({
               key={backend.id}
               className={`flex items-start p-3 border rounded-lg transition-all ${
                 currentBackend === backend.id
-                  ? 'border-blue-500 bg-blue-50'
+                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-950'
                   : 'border-border hover:border-muted-foreground bg-background'
               } ${isDisabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
             >
@@ -157,7 +157,7 @@ export function AudioBackendSelector({
                     {backend.name}
                   </span>
                   {currentBackend === backend.id && (
-                    <span className="text-xs font-medium text-blue-600 bg-blue-100 px-2 py-0.5 rounded">
+                    <span className="text-xs font-medium text-blue-600 bg-blue-100 dark:text-blue-400 dark:bg-blue-900 px-2 py-0.5 rounded">
                       Active
                     </span>
                   )}

@@ -219,9 +219,9 @@ export default function AnalyticsConsentSwitch() {
           </div>
         )}
 
-        <div className="flex items-start gap-2 p-2 bg-blue-50 rounded border border-blue-200">
-          <Info className="w-4 h-4 text-blue-600 mt-0.5 flex-shrink-0" />
-          <div className="text-xs text-blue-700">
+        <div className="flex items-start gap-2 p-2 bg-blue-50 rounded border border-blue-200 dark:bg-blue-950 dark:border-blue-800">
+          <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
+          <div className="text-xs text-blue-700 dark:text-blue-300">
             <p className="mb-1">
               Your meetings, transcripts, and recordings remain completely private and local.
             </p>

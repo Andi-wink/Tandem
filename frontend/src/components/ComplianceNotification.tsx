@@ -93,8 +93,8 @@ export const ComplianceNotification: React.FC<ComplianceNotificationProps> = ({
           <p className="text-xs text-muted-foreground mb-1">
             Inform participants about recording.
           </p>
-          <div className="bg-amber-50 border border-amber-200 rounded p-1">
-            <p className="text-xs text-amber-800 font-medium">
+          <div className="bg-amber-50 border border-amber-200 dark:bg-amber-950 dark:border-amber-800 rounded p-1">
+            <p className="text-xs text-amber-800 dark:text-amber-200 font-medium">
               US compliance required
             </p>
           </div>

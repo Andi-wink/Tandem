@@ -254,7 +254,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
       </div>
 
       {error && (
-        <div className="p-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-md">
+        <div className="p-3 text-sm text-red-700 bg-red-50 border border-red-200 dark:text-red-300 dark:bg-red-950 dark:border-red-800 rounded-md">
           {error}
         </div>
       )}

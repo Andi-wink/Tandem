@@ -90,28 +90,28 @@ export function HomebrewDatabaseDetector({ onImportSuccess, onDecline }: Homebre
   };
 
   return (
-    <div className="mb-4 p-4 bg-blue-50 border-2 border-blue-300 rounded-lg">
+    <div className="mb-4 p-4 bg-blue-50 border-2 border-blue-300 dark:bg-blue-950 dark:border-blue-700 rounded-lg">
       <div className="flex items-start gap-3">
-        <Database className="h-6 w-6 text-blue-600 mt-0.5 flex-shrink-0" />
+        <Database className="h-6 w-6 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
         <div className="flex-1">
           <div className="flex items-center gap-2 mb-1">
-            <AlertCircle className="h-4 w-4 text-blue-600" />
-            <h3 className="text-sm font-semibold text-blue-900">
+            <AlertCircle className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+            <h3 className="text-sm font-semibold text-blue-900 dark:text-blue-100">
               Previous Installation Detected!
             </h3>
           </div>
-          <p className="text-sm text-blue-800 mb-2">
+          <p className="text-sm text-blue-800 dark:text-blue-200 mb-2">
             We found an existing database from your previous Tandem/Meetily installation (Python backend version).
           </p>
           <div className="bg-background/50 rounded p-2 mb-3">
-            <p className="text-xs text-blue-700 font-mono break-all">
+            <p className="text-xs text-blue-700 dark:text-blue-300 font-mono break-all">
               {detectedPath}
             </p>
-            <p className="text-xs text-blue-600 mt-1">
+            <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
               Size: {formatFileSize(dbSize)}
             </p>
           </div>
-          <p className="text-sm text-blue-800 mb-3">
+          <p className="text-sm text-blue-800 dark:text-blue-200 mb-3">
             Would you like to import your previous meetings, transcripts, and summaries?
           </p>
           
@@ -138,7 +138,7 @@ export function HomebrewDatabaseDetector({ onImportSuccess, onDecline }: Homebre
             <button
               onClick={handleNo}
               disabled={isImporting}
-              className="flex-1 px-4 py-2 border-2 border-blue-400 text-blue-700 rounded-lg hover:bg-blue-100 disabled:bg-muted disabled:cursor-not-allowed transition-colors"
+              className="flex-1 px-4 py-2 border-2 border-blue-400 text-blue-700 rounded-lg hover:bg-blue-100 dark:text-blue-300 dark:border-blue-600 dark:hover:bg-blue-900 disabled:bg-muted disabled:cursor-not-allowed transition-colors"
             >
               No, Browse Manually
             </button>

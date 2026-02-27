@@ -76,11 +76,11 @@ export function ChunkProgressDisplay({
   const getChunkStatusColor = (status: ChunkStatus['status']) => {
     switch (status) {
       case 'completed':
-        return 'text-green-600 bg-green-50 border-green-200';
+        return 'text-green-600 bg-green-50 border-green-200 dark:text-green-400 dark:bg-green-950 dark:border-green-800';
       case 'processing':
-        return 'text-blue-600 bg-blue-50 border-blue-200';
+        return 'text-blue-600 bg-blue-50 border-blue-200 dark:text-blue-400 dark:bg-blue-950 dark:border-blue-800';
       case 'failed':
-        return 'text-red-600 bg-red-50 border-red-200';
+        return 'text-red-600 bg-red-50 border-red-200 dark:text-red-400 dark:bg-red-950 dark:border-red-800';
       case 'pending':
       default:
         return 'text-muted-foreground bg-muted border-border';
@@ -96,7 +96,7 @@ export function ChunkProgressDisplay({
             Processing Progress
           </h3>
           {isPaused && (
-            <span className="bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full text-xs font-medium">
+            <span className="bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200 px-2 py-1 rounded-full text-xs font-medium">
               Paused
             </span>
           )}
@@ -181,10 +181,10 @@ export function ChunkProgressDisplay({
 
       {/* Time Estimate */}
       {progress.estimated_remaining_ms && progress.estimated_remaining_ms > 0 && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
+        <div className="bg-blue-50 border border-blue-200 dark:bg-blue-950 dark:border-blue-800 rounded-lg p-3 mb-4">
           <div className="flex items-center space-x-2">
-            <span className="text-blue-600">⏱️</span>
-            <span className="text-sm text-blue-800">
+            <span className="text-blue-600 dark:text-blue-400">⏱️</span>
+            <span className="text-sm text-blue-800 dark:text-blue-200">
               Estimated time remaining: {formatTimeRemaining(progress.estimated_remaining_ms)}
             </span>
           </div>
@@ -244,10 +244,10 @@ export function ChunkProgressDisplay({
 
       {/* Processing Complete */}
       {progress.completed_chunks === progress.total_chunks && progress.total_chunks > 0 && (
-        <div className="mt-4 bg-green-50 border border-green-200 rounded-lg p-3">
+        <div className="mt-4 bg-green-50 border border-green-200 dark:bg-green-950 dark:border-green-800 rounded-lg p-3">
           <div className="flex items-center space-x-2">
-            <span className="text-green-600">🎉</span>
-            <span className="text-sm font-medium text-green-800">
+            <span className="text-green-600 dark:text-green-400">🎉</span>
+            <span className="text-sm font-medium text-green-800 dark:text-green-200">
               Processing completed! All {progress.total_chunks} chunks have been transcribed.
             </span>
           </div>

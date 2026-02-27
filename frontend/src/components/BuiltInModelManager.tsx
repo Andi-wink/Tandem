@@ -315,20 +315,20 @@ export function BuiltInModelManager({ selectedModel, onModelSelect }: BuiltInMod
                           Ready
                         </span>
                         {selectedModel === model.name && (
-                          <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded">
+                          <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300 rounded">
                             Selected
                           </span>
                         )}
                       </>
                     )}
                     {isCorrupted && (
-                      <span className="px-2 py-0.5 text-xs font-medium bg-red-100 text-red-700 rounded flex items-center gap-1">
+                      <span className="px-2 py-0.5 text-xs font-medium bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300 rounded flex items-center gap-1">
                         <BadgeAlert className="w-3 h-3" />
                         Corrupted
                       </span>
                     )}
                     {isError && (
-                      <span className="px-2 py-0.5 text-xs font-medium bg-red-100 text-red-700 rounded">
+                      <span className="px-2 py-0.5 text-xs font-medium bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300 rounded">
                         Error
                       </span>
                     )}

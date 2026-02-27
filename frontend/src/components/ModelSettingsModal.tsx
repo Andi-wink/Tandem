@@ -1179,8 +1179,8 @@ export function ModelSettingsModal({
                   </Button>
                 </div>
                 {ollamaEndpointChanged && !error && (
-                  <Alert className="mt-3 border-yellow-500 bg-yellow-50">
-                    <AlertDescription className="text-yellow-800">
+                  <Alert className="mt-3 border-yellow-500 bg-yellow-50 dark:bg-yellow-950">
+                    <AlertDescription className="text-yellow-800 dark:text-yellow-200">
                       Endpoint changed. Please click "Fetch Models" to load models from the new endpoint before saving.
                     </AlertDescription>
                   </Alert>
@@ -1223,8 +1223,8 @@ export function ModelSettingsModal({
                 {ollamaNotInstalled ? (
                   /* Show Ollama download link when not installed */
                   <div className="space-y-4">
-                    <Alert className="border-orange-500 bg-orange-50">
-                      <AlertDescription className="text-orange-800">
+                    <Alert className="border-orange-500 bg-orange-50 dark:bg-orange-950">
+                      <AlertDescription className="text-orange-800 dark:text-orange-200">
                         Ollama is not installed or not running. Please download and install Ollama to use local models.
                       </AlertDescription>
                     </Alert>

@@ -32,10 +32,10 @@ export default function AnalyticsDataModal({ isOpen, onClose, onConfirmDisable }
         {/* Content */}
         <div className="p-6 space-y-6">
           {/* Privacy Notice */}
-          <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+          <div className="bg-green-50 border border-green-200 dark:bg-green-950 dark:border-green-800 rounded-lg p-4">
             <div className="flex items-start gap-3">
-              <Info className="w-5 h-5 text-green-600 mt-0.5 flex-shrink-0" />
-              <div className="text-sm text-green-800">
+              <Info className="w-5 h-5 text-green-600 dark:text-green-400 mt-0.5 flex-shrink-0" />
+              <div className="text-sm text-green-800 dark:text-green-200">
                 <p className="font-semibold mb-1">Your Privacy is Protected</p>
                 <p>We collect <strong>anonymous usage data only</strong>. No meeting content, names, or personal information is ever collected.</p>
               </div>
@@ -104,9 +104,9 @@ export default function AnalyticsDataModal({ isOpen, onClose, onConfirmDisable }
           </div>
 
           {/* What We DON'T Collect */}
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-            <h4 className="font-semibold text-red-900 mb-2">What We DON'T Collect:</h4>
-            <ul className="text-sm text-red-800 space-y-1 ml-4">
+          <div className="bg-red-50 border border-red-200 dark:bg-red-950 dark:border-red-800 rounded-lg p-4">
+            <h4 className="font-semibold text-red-900 dark:text-red-100 mb-2">What We DON'T Collect:</h4>
+            <ul className="text-sm text-red-800 dark:text-red-200 space-y-1 ml-4">
               <li>• ❌ Meeting names or titles</li>
               <li>• ❌ Meeting transcripts or content</li>
               <li>• ❌ Audio recordings</li>

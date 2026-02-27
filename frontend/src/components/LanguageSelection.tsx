@@ -198,7 +198,7 @@ export function LanguageSelection({
 
         {/* Parakeet language limitation warning */}
         {isParakeet && (
-          <div className="p-2 bg-amber-50 border border-amber-200 rounded text-amber-800">
+          <div className="p-2 bg-amber-50 border border-amber-200 rounded text-amber-800 dark:bg-amber-950 dark:border-amber-800 dark:text-amber-200">
             <p className="font-medium">ℹ️ Parakeet Language Support</p>
             <p className="mt-1 text-xs">Parakeet currently only supports automatic language detection. Manual language selection is not available. Use Whisper if you need to specify a particular language.</p>
           </div>
@@ -210,13 +210,13 @@ export function LanguageSelection({
             <strong>Current:</strong> {selectedLanguageName}
           </p>
           {selectedLanguage === 'auto' && (
-            <div className="p-2 bg-yellow-50 border border-yellow-200 rounded text-yellow-800">
+            <div className="p-2 bg-yellow-50 border border-yellow-200 rounded text-yellow-800 dark:bg-yellow-950 dark:border-yellow-800 dark:text-yellow-200">
               <p className="font-medium">⚠️ Auto Detect may produce incorrect results</p>
               <p className="mt-1">For best accuracy, select your specific language (e.g., English, Spanish, etc.)</p>
             </div>
           )}
           {selectedLanguage === 'auto-translate' && (
-            <div className="p-2 bg-blue-50 border border-blue-200 rounded text-blue-800">
+            <div className="p-2 bg-blue-50 border border-blue-200 rounded text-blue-800 dark:bg-blue-950 dark:border-blue-800 dark:text-blue-200">
               <p className="font-medium">🌐 Translation Mode Active</p>
               <p className="mt-1">All audio will be automatically translated to English. Best for multilingual meetings where you need English output.</p>
             </div>

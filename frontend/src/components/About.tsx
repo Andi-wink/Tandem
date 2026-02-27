@@ -63,7 +63,7 @@ export function About() {
                 {/* <h1 className="text-xl font-bold text-foreground">Tandem</h1> */}
                 <span className="text-sm text-muted-foreground"> v{currentVersion}</span>
                 <p className="text-medium text-muted-foreground mt-1">
-                    Real-time notes and summaries that never leave your machine.
+                    Your AI co-pilot for every call — private, local, yours.
                 </p>
                 <div className="mt-3">
                     <Button
@@ -117,8 +117,8 @@ export function About() {
             </div>
 
             {/* Coming Soon - Compact */}
-            <div className="bg-blue-50 rounded p-3">
-                <p className="text-s text-blue-800">
+            <div className="bg-blue-50 dark:bg-blue-950 rounded p-3">
+                <p className="text-s text-blue-800 dark:text-blue-200">
                     <span className="font-bold">Coming soon:</span> A library of on-device AI agents-automating follow-ups, action tracking, and more.
                 </p>
             </div>
