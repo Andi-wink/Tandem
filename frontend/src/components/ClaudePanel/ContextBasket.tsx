@@ -17,6 +17,7 @@ const typeIcons: Record<string, React.ElementType> = {
   clipboard: Clipboard,
   highlight: Quote,
   note: StickyNote,
+  document: FileText,
 };
 
 export function ContextBasket({ items, onRemove, onClear, anonymizationEnabled, onToggleItemAnonymization }: ContextBasketProps) {

@@ -9,6 +9,7 @@ import { AskUserQuestionBlock, parseQuestionInput } from './AskUserQuestionBlock
 interface ConversationViewProps {
   messages: ClaudeMessage[];
   isStreaming: boolean;
+  onAnswer?: (answer: string) => void;
 }
 
 function ToolCallBlock({ call }: { call: ClaudeToolCall }) {
@@ -48,7 +49,7 @@ function ToolCallBlock({ call }: { call: ClaudeToolCall }) {
   );
 }
 
-export function ConversationView({ messages, isStreaming }: ConversationViewProps) {
+export function ConversationView({ messages, isStreaming, onAnswer }: ConversationViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
 
@@ -112,7 +113,7 @@ export function ConversationView({ messages, isStreaming }: ConversationViewProp
                   return <TodoWriteBlock key={key} call={call} />;
                 }
                 if (call.name === 'AskUserQuestion' && parseQuestionInput(call.input)) {
-                  return <AskUserQuestionBlock key={key} call={call} />;
+                  return <AskUserQuestionBlock key={key} call={call} onAnswer={onAnswer} />;
                 }
                 return <ToolCallBlock key={key} call={call} />;
               })}

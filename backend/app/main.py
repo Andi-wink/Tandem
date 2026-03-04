@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -14,6 +14,7 @@ from transcript_processor import TranscriptProcessor
 import time
 import claude_agent
 import anonymizer
+import document_parser
 
 # Load environment variables
 load_dotenv()
@@ -853,6 +854,32 @@ async def anonymize_health():
         "available": anonymizer.is_available(),
         "model": "en_core_web_sm" if anonymizer.is_available() else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Document parsing (F044)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/documents/parse")
+async def parse_document(file: UploadFile):
+    """Parse a document and return extracted text for the AI context basket."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    ext = "." + file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+    if ext not in document_parser.supported_extensions():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {ext}. Supported: {', '.join(document_parser.supported_extensions())}",
+        )
+
+    try:
+        data = await file.read()
+        result = await document_parser.parse_document(data, file.filename)
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error("Error parsing document %s: %s", file.filename, e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ use std::sync::{
     Arc, Mutex,
 };
 use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use super::{
@@ -19,7 +20,8 @@ use super::{
     default_output_device,  // Get default system audio
     RecordingManager,
     DeviceEvent,
-    DeviceMonitorType
+    DeviceMonitorType,
+    kws,                    // F047: Wake word detection
 };
 
 // Import transcription modules
@@ -62,6 +64,51 @@ pub struct TranscriptionStatus {
     pub chunks_in_queue: usize,
     pub is_processing: bool,
     pub last_activity_ms: u64,
+}
+
+// ============================================================================
+// F047: WAKE WORD DETECTION (KWS) SETUP
+// ============================================================================
+
+/// Spawn the OpenWakeWord wake word detector if models are available.
+/// Gracefully skips if models not found (non-fatal — recording works without KWS).
+fn spawn_kws_detector<R: Runtime>(app: &AppHandle<R>, manager: &RecordingManager) {
+    let model_dir = kws::default_model_dir();
+    let classifier = kws::default_classifier_filename();
+
+    // Check if model directory and required files exist
+    let mel_path = model_dir.join("melspectrogram.onnx");
+    let emb_path = model_dir.join("embedding_model.onnx");
+    let cls_path = model_dir.join(classifier);
+
+    if !mel_path.exists() || !emb_path.exists() || !cls_path.exists() {
+        info!(
+            "KWS models not found in {} — wake word detection disabled for this session",
+            model_dir.display()
+        );
+        return;
+    }
+
+    // Create the KWS channel
+    let (kws_tx, kws_rx) = mpsc::unbounded_channel();
+
+    // Set the sender on RecordingState so mic audio gets tapped
+    manager.get_state().set_kws_sender(kws_tx);
+
+    // Build the detector
+    let app_clone = app.clone();
+    match kws::WakeWordDetector::new(app_clone, kws_rx, &model_dir, classifier, None) {
+        Ok(detector) => {
+            // Spawn as a background tokio task — runs until kws_sender is dropped
+            tokio::spawn(detector.run());
+            info!("KWS wake word detector spawned (classifier: {})", classifier);
+        }
+        Err(e) => {
+            warn!("Failed to initialize KWS detector: {} — wake word detection disabled", e);
+            // Clean up the sender since detector won't consume it
+            manager.get_state().clear_kws_sender();
+        }
+    }
 }
 
 // ============================================================================
@@ -239,6 +286,9 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         .await
         .map_err(|e| format!("Failed to start recording: {}", e))?;
 
+    // F047: Spawn wake word detector (gracefully skips if models not found)
+    spawn_kws_detector(&app, &manager);
+
     // Store the manager globally to keep it alive
     {
         let mut global_manager = RECORDING_MANAGER.lock().map_err(|e| format!("Failed to lock recording manager: {e}"))?;
@@ -409,6 +459,9 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         .start_recording(mic_device, system_device, auto_save)
         .await
         .map_err(|e| format!("Failed to start recording: {}", e))?;
+
+    // F047: Spawn wake word detector (gracefully skips if models not found)
+    spawn_kws_detector(&app, &manager);
 
     // Store the manager globally to keep it alive
     {
