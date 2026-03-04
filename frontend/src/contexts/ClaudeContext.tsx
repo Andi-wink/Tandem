@@ -316,15 +316,19 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const openPanel = useCallback(async (meetingId: string, meetingTitle: string, defaultProjectDir: string) => {
+    const isSameMeeting = meetingIdRef.current === meetingId;
+
     setState(prev => ({
       ...prev,
       isPanelOpen: true,
       meetingId,
       meetingTitle,
       projectDir: defaultProjectDir,
+      // Clear conversation and session when switching to a different meeting
+      ...(isSameMeeting ? {} : { conversation: [], sessionId: null, isStreaming: false }),
     }));
 
-    // Check if there's an existing session on the backend
+    // Check if there's an existing session on the backend for this meeting
     try {
       const existing = await getClaudeSession(meetingId);
       if (existing?.session_id) {

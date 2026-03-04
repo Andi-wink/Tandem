@@ -2,7 +2,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Plus, Pencil, Trash2, RotateCcw, Zap, ChevronDown, ChevronRight } from 'lucide-react';
+import { Plus, Pencil, Trash2, RotateCcw, Zap, ChevronDown, ChevronRight, Mic } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   SlashCommand,
@@ -119,6 +119,109 @@ function CommandEditor({
         >
           {initial ? 'Save Changes' : 'Create Command'}
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── F047: Voice Command Settings ───────────────────────────────────────────
+
+const VOICE_ENABLED_KEY = 'tandem:voiceCommands:enabled';
+const VOICE_THRESHOLD_KEY = 'tandem:voiceCommands:threshold';
+
+function VoiceCommandSettings() {
+  const [enabled, setEnabled] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem(VOICE_ENABLED_KEY) !== 'false';
+    }
+    return true;
+  });
+  const [threshold, setThreshold] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return parseFloat(localStorage.getItem(VOICE_THRESHOLD_KEY) || '0.5');
+    }
+    return 0.5;
+  });
+
+  const toggleEnabled = () => {
+    const next = !enabled;
+    setEnabled(next);
+    localStorage.setItem(VOICE_ENABLED_KEY, String(next));
+  };
+
+  const updateThreshold = (val: number) => {
+    setThreshold(val);
+    localStorage.setItem(VOICE_THRESHOLD_KEY, String(val));
+  };
+
+  return (
+    <div className="bg-background rounded-lg border border-border p-6 shadow-sm">
+      <div className="flex items-center gap-2 mb-4">
+        <Mic className="w-5 h-5 text-purple-500" />
+        <h3 className="text-lg font-semibold text-foreground">Voice Commands</h3>
+        <span className="text-[10px] bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 px-1.5 py-0.5 rounded">Beta</span>
+      </div>
+
+      <div className="space-y-4">
+        {/* Enable/Disable Toggle */}
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-foreground">Enable wake word detection</p>
+            <p className="text-xs text-muted-foreground">Say the wake word during a recording to trigger a voice command</p>
+          </div>
+          <button
+            onClick={toggleEnabled}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+              enabled ? 'bg-purple-500' : 'bg-gray-300 dark:bg-gray-600'
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                enabled ? 'translate-x-6' : 'translate-x-1'
+              }`}
+            />
+          </button>
+        </div>
+
+        {/* Sensitivity Slider */}
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <p className="text-sm font-medium text-foreground">Sensitivity</p>
+            <span className="text-xs text-muted-foreground">{(threshold * 100).toFixed(0)}%</span>
+          </div>
+          <input
+            type="range"
+            min={0.3}
+            max={0.9}
+            step={0.05}
+            value={threshold}
+            onChange={(e) => updateThreshold(parseFloat(e.target.value))}
+            disabled={!enabled}
+            className="w-full accent-purple-500 disabled:opacity-50"
+          />
+          <div className="flex justify-between text-[10px] text-muted-foreground">
+            <span>More sensitive</span>
+            <span>Fewer false triggers</span>
+          </div>
+        </div>
+
+        {/* Supported commands */}
+        <div>
+          <p className="text-sm font-medium text-foreground mb-1">Supported voice commands</p>
+          <div className="text-xs text-muted-foreground space-y-0.5">
+            <p>&quot;Hey Tandem, <strong>summarize</strong>&quot; — Summarize the meeting</p>
+            <p>&quot;Hey Tandem, <strong>action items</strong>&quot; — List action items</p>
+            <p>&quot;Hey Tandem, <strong>key points</strong>&quot; — Highlight key points</p>
+            <p>&quot;Hey Tandem, <em>any question</em>&quot; — Ask AI anything</p>
+          </div>
+        </div>
+
+        {/* Model status */}
+        <div className="text-xs text-muted-foreground bg-muted/50 rounded p-2">
+          Wake word model: <code className="bg-muted px-1 rounded">hey_tandem.onnx</code>
+          <br />
+          Requires OpenWakeWord ONNX models in the models directory.
+        </div>
       </div>
     </div>
   );
@@ -292,6 +395,9 @@ export function CommandSettings() {
           </p>
         </div>
       </div>
+
+      {/* F047: Voice Commands */}
+      <VoiceCommandSettings />
     </div>
   );
 }

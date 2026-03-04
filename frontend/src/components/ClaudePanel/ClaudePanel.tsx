@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X, Send, Trash2, AlertCircle, Square, ChevronUp, Check, Shield } from 'lucide-react';
+import { X, Send, Trash2, AlertCircle, Square, ChevronUp, Check, Shield, Paperclip, Mic } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
@@ -13,8 +13,12 @@ import { SlashCommandAutocomplete } from './SlashCommandAutocomplete';
 import { useDropZone, useDragActive } from '@/hooks/useDragAndDrop';
 import { useSelection } from '@/contexts/SelectionContext';
 import { useSlashCommand } from '@/hooks/useSlashCommand';
+import { useVoiceCommand, VoiceCommandResult } from '@/hooks/useVoiceCommand';
 import { TEXTAREA_MAX_HEIGHT_PX } from '@/lib/constants';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { useTranscripts } from '@/contexts/TranscriptContext';
+import { parseDocument, isSupportedDocument } from '@/services/claudeService';
+import type { ContextBasketItem } from '@/contexts/ContextBasketContext';
 
 export function ClaudePanel() {
   const {
@@ -56,6 +60,44 @@ export function ClaudePanel() {
   const { clearSelection } = useSelection();
   const { isOver: isDropOver, dropHandlers: overlayDropHandlers } = useDropZone(addToBasket, clearSelection);
   const recordingState = useRecordingState();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isParsingFile, setIsParsingFile] = useState(false);
+
+  // F044: Handle file selection (from button or OS drop)
+  const handleFileUpload = async (file: File) => {
+    if (!isSupportedDocument(file.name)) {
+      toast.error(`Unsupported file type. Supported: PDF, DOCX, TXT, MD, CSV`);
+      return;
+    }
+    setIsParsingFile(true);
+    try {
+      const result = await parseDocument(file);
+      const pageInfo = result.pages ? ` (${result.pages} pages)` : '';
+      const item: ContextBasketItem = {
+        id: `doc-${Date.now()}-${file.name}`,
+        type: 'document',
+        label: result.filename,
+        preview: `${result.format}${pageInfo} — ${result.preview.slice(0, 60)}`,
+        fullContent: `[Document: ${result.filename}]\nFormat: ${result.format}${pageInfo}\n\n${result.text}`,
+      };
+      addToBasket(item);
+      toast.success(`Added "${result.filename}" to context`);
+    } catch (err) {
+      toast.error(`Failed to parse "${file.name}": ${(err as Error).message}`);
+    } finally {
+      setIsParsingFile(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  // F044: Handle OS file drops on the panel
+  const handleFileDrop = (e: React.DragEvent) => {
+    const files = e.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+    for (let i = 0; i < files.length; i++) {
+      handleFileUpload(files[i]);
+    }
+  };
 
   // F018: Slash command state
   const {
@@ -73,6 +115,77 @@ export function ClaudePanel() {
     buildCommandMessage,
     dismissAutocomplete,
   } = useSlashCommand();
+
+  // F047: Voice command handler
+  const handleVoiceCommand = React.useCallback(async (result: VoiceCommandResult) => {
+    if (result.command === 'screenshot') {
+      toast.info(`Voice command: ${result.command}`);
+      return;
+    }
+
+    const commandMessages: Record<string, string> = {
+      summarize: 'Please summarize the meeting so far.',
+      actions: 'What are the action items and next steps from this meeting?',
+      key_points: 'What are the key points discussed so far?',
+    };
+    // For free-form 'ask' commands, prefix with wake-word context so Claude ignores any prefix
+    const rawArgs = result.args || result.transcript;
+    const askMessage = rawArgs
+      ? `(Voice command — ignore any wake word like "Alexa" or "Tandem" at the start): ${rawArgs}`
+      : '';
+    const message = commandMessages[result.command] || askMessage;
+    if (!message || isStreaming) return;
+
+    try {
+      // If the panel has no meeting context yet, set it up for live recording
+      if (!projectDir && !meetingId) {
+        let folder = '';
+        try { folder = await invoke<string | null>('get_meeting_folder_path') || ''; } catch { /* ok */ }
+        await openPanel('live-recording', meetingTitle || 'Live Recording', folder);
+      }
+      // Open the panel so the user can see the response
+      if (!isPanelOpen) {
+        let folder = '';
+        try { folder = await invoke<string | null>('get_meeting_folder_path') || ''; } catch { /* ok */ }
+        await openPanel(meetingId || 'live-recording', meetingTitle || 'Live Recording', folder);
+      }
+      await sendMessage(message);
+    } catch (err) {
+      console.error('Voice command failed:', err);
+      toast.error('Voice command failed: ' + (err instanceof Error ? err.message : String(err)));
+    }
+  }, [isStreaming, sendMessage, openPanel, isPanelOpen, meetingId, meetingTitle, projectDir]);
+
+  const { isListening, isHotkeyListening, cancelListening, feedTranscript } = useVoiceCommand({
+    enabled: recordingState.isRecording,
+    onCommand: handleVoiceCommand,
+  });
+
+  // F047: Feed new transcript segments into voice command capture while listening
+  const { transcripts } = useTranscripts();
+  const lastFedTranscriptIdRef = useRef<string | null>(null);
+  const prevIsListeningRef = useRef(false);
+
+  // Snapshot the current latest transcript as "already seen" when listening starts,
+  // so we never retroactively feed transcripts that arrived before the user triggered listening.
+  useEffect(() => {
+    if (isListening && !prevIsListeningRef.current && transcripts.length > 0) {
+      const latest = transcripts[transcripts.length - 1];
+      lastFedTranscriptIdRef.current = `${latest.timestamp}-${latest.text}`;
+    }
+    prevIsListeningRef.current = isListening;
+  }, [isListening, transcripts]);
+
+  // Feed only transcripts that arrive AFTER listening started.
+  useEffect(() => {
+    if (!isListening || transcripts.length === 0) return;
+    const latest = transcripts[transcripts.length - 1];
+    const latestId = `${latest.timestamp}-${latest.text}`;
+    if (latestId !== lastFedTranscriptIdRef.current) {
+      lastFedTranscriptIdRef.current = latestId;
+      feedTranscript(latest.text);
+    }
+  }, [isListening, transcripts, feedTranscript]);
 
   // Auto-focus input when panel opens
   useEffect(() => {
@@ -95,7 +208,13 @@ export function ClaudePanel() {
 
   const handleSend = async () => {
     const text = inputText.trim();
-    if (!text || isStreaming) return;
+    if (!text) return;
+
+    // If streaming, cancel first then send after a brief settle
+    if (isStreaming) {
+      cancelStream();
+      await new Promise(r => setTimeout(r, 150));
+    }
 
     // F020: If this is an action command, dispatch locally instead of sending to AI
     if (activeCommand?.type === 'action' && activeCommand.action === 'handoff') {
@@ -232,6 +351,13 @@ export function ClaudePanel() {
       }
     }
 
+    // F047: Escape cancels voice command listening
+    if (isListening && e.key === 'Escape') {
+      e.preventDefault();
+      cancelListening();
+      return;
+    }
+
     // F018: Escape cancels active command
     if (activeCommand && e.key === 'Escape') {
       e.preventDefault();
@@ -270,6 +396,8 @@ export function ClaudePanel() {
 
       <div
         className={`fixed right-0 top-0 bottom-0 w-[420px] bg-background border-l border-border shadow-lg z-40 flex flex-col transition-transform duration-200 ${isPanelOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}
+        onDragOver={(e) => { if (e.dataTransfer?.types.includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } }}
+        onDrop={(e) => { if (e.dataTransfer?.files?.length) { e.preventDefault(); handleFileDrop(e); } }}
       >
         {/* Full-panel drop overlay — shown while an internal drag is active.
             Always visible with a subtle tint so user knows where to drop. */}
@@ -356,10 +484,32 @@ export function ClaudePanel() {
         <ConversationView
           messages={conversation}
           isStreaming={isStreaming}
+          onAnswer={(answer) => { if (!isStreaming) sendMessage(answer).catch(console.error); }}
         />
 
         {/* Input */}
         <div className="border-t border-border p-3 flex-shrink-0">
+          {/* F047: Voice command listening indicator */}
+          {isListening && (
+            <div className="flex items-center justify-between mb-2 px-2 py-1.5 rounded-md bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800/30 text-xs animate-pulse">
+              <div className="flex items-center gap-2">
+                <Mic className="w-3.5 h-3.5 text-purple-500" />
+                <span className="font-medium text-purple-700 dark:text-purple-300">
+                  {isHotkeyListening
+                    ? 'Recording\u2026 release Ctrl+Space to send'
+                    : 'Listening for command\u2026'}
+                </span>
+              </div>
+              <button
+                onClick={cancelListening}
+                className="text-muted-foreground hover:text-red-500 ml-2"
+                title="Cancel (Esc)"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
           {/* F018: Active command capture indicator */}
           {activeCommand && (
             <div className="flex items-center justify-between mb-2 px-2 py-1.5 rounded-md bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/30 text-xs">
@@ -430,6 +580,22 @@ export function ClaudePanel() {
               <Shield className="w-3 h-3" />
               <span>{anonymizationEnabled ? 'PII' : 'PII'}</span>
             </button>
+            {/* F044: Document attachment button */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.docx,.txt,.md,.markdown,.csv"
+              className="hidden"
+              onChange={(e) => { if (e.target.files?.[0]) handleFileUpload(e.target.files[0]); }}
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isParsingFile}
+              className="flex items-center gap-0.5 text-[10px] pb-2 flex-shrink-0 text-muted-foreground/50 hover:text-muted-foreground transition-colors disabled:animate-pulse"
+              title={isParsingFile ? 'Parsing document...' : 'Attach document (PDF, DOCX, TXT, MD, CSV)'}
+            >
+              <Paperclip className="w-3 h-3" />
+            </button>
             <div className="relative flex-1">
               {/* F018: Slash command autocomplete dropdown */}
               {showAutocomplete && (
@@ -449,12 +615,11 @@ export function ClaudePanel() {
                 onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
                 placeholder={activeCommand ? `Type additional context for /${activeCommand.name}...` : 'Ask anything... (type / for commands)'}
-                disabled={isStreaming}
                 rows={1}
-                className="w-full resize-none border border-border rounded-lg px-3 py-2 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:bg-muted"
+                className="w-full resize-none border border-border rounded-lg px-3 py-2 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
-            {isStreaming ? (
+            {isStreaming && (
               <Button
                 size="sm"
                 variant="destructive"
@@ -464,16 +629,16 @@ export function ClaudePanel() {
               >
                 <Square className="w-3.5 h-3.5 fill-current" />
               </Button>
-            ) : (
-              <Button
-                size="sm"
-                onClick={handleSend}
-                disabled={!inputText.trim()}
-                className="flex-shrink-0"
-              >
-                <Send className="w-4 h-4" />
-              </Button>
             )}
+            <Button
+              size="sm"
+              onClick={handleSend}
+              disabled={!inputText.trim()}
+              className="flex-shrink-0"
+              title={isStreaming ? 'Stop and send' : 'Send'}
+            >
+              <Send className="w-4 h-4" />
+            </Button>
           </div>
           {isStreaming && (
             <div className="text-xs text-muted-foreground mt-1 animate-pulse">AI is thinking...</div>

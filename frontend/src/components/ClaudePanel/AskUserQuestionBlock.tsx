@@ -44,12 +44,18 @@ function parseAnswer(output: string | undefined): string | null {
   return output.length > 200 ? output.slice(0, 200) + '...' : output;
 }
 
-export function AskUserQuestionBlock({ call }: { call: ClaudeToolCall }) {
+interface AskUserQuestionBlockProps {
+  call: ClaudeToolCall;
+  onAnswer?: (answer: string) => void;
+}
+
+export function AskUserQuestionBlock({ call, onAnswer }: AskUserQuestionBlockProps) {
   const data = parseQuestionInput(call.input);
 
   if (!data) return null; // caller should fall back to generic ToolCallBlock
 
   const answer = parseAnswer(call.output);
+  const answered = !!call.output;
 
   return (
     <div className="my-1 border border-border rounded text-xs">
@@ -67,13 +73,17 @@ export function AskUserQuestionBlock({ call }: { call: ClaudeToolCall }) {
             <p className="text-foreground">{q.question}</p>
             <div className="flex flex-wrap gap-1">
               {q.options.map((opt, oi) => (
-                <span
+                <button
                   key={oi}
-                  className="inline-flex px-2 py-0.5 rounded-full border border-border bg-muted text-muted-foreground"
+                  disabled={answered || !onAnswer}
+                  onClick={() => onAnswer?.(opt.label)}
                   title={opt.description}
+                  className="inline-flex px-2 py-0.5 rounded-full border border-border bg-muted text-muted-foreground
+                    enabled:hover:bg-accent enabled:hover:border-blue-400 enabled:hover:text-foreground
+                    enabled:cursor-pointer disabled:cursor-default transition-colors"
                 >
                   {opt.label}
-                </span>
+                </button>
               ))}
             </div>
           </div>

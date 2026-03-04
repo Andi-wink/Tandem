@@ -145,3 +145,38 @@ export async function cancelClaudeSession(meetingId: string): Promise<void> {
     throw new Error(`cancelClaudeSession failed: ${res.status} ${res.statusText}`);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Document parsing (F044)
+// ---------------------------------------------------------------------------
+
+export interface DocumentParseResult {
+  filename: string;
+  format: string;
+  pages: number | null;
+  text: string;
+  preview: string;
+  truncated: boolean;
+}
+
+const SUPPORTED_DOC_EXTENSIONS = ['.pdf', '.docx', '.txt', '.md', '.markdown', '.csv'];
+
+export function isSupportedDocument(filename: string): boolean {
+  const ext = '.' + filename.split('.').pop()?.toLowerCase();
+  return SUPPORTED_DOC_EXTENSIONS.includes(ext);
+}
+
+export async function parseDocument(file: File): Promise<DocumentParseResult> {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const res = await fetch(`${BACKEND}/api/documents/parse`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`Document parse failed: ${res.status} — ${detail}`);
+  }
+  return res.json();
+}

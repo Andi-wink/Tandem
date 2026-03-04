@@ -4,7 +4,7 @@ import React, { createContext, useContext, useState, useCallback } from 'react';
 
 // ─── Types (R009: extracted from ClaudeContext) ─────────────────────────────
 
-export type ContextBasketItemType = 'transcript_chunk' | 'screenshot' | 'clipboard' | 'highlight' | 'note';
+export type ContextBasketItemType = 'transcript_chunk' | 'screenshot' | 'clipboard' | 'highlight' | 'note' | 'document';
 
 export interface ContextBasketItem {
   id: string;

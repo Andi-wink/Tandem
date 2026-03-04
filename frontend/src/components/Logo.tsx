@@ -19,7 +19,7 @@ const Logo = React.forwardRef<HTMLButtonElement, LogoProps>(({ isCollapsed }, re
         </DialogTrigger>
       ) : (
         <DialogTrigger asChild>
-          <span className="text-lg text-center border rounded-full bg-blue-50 dark:bg-blue-950 border-white dark:border-gray-700 font-semibold text-foreground mb-2 block items-center cursor-pointer hover:opacity-80 transition-opacity">
+          <span className="text-lg text-center border rounded-full bg-blue-50 dark:bg-blue-950/40 border-border font-semibold text-foreground mb-2 block items-center cursor-pointer hover:opacity-80 transition-opacity">
             <span>Tandem</span>
           </span>
         </DialogTrigger>

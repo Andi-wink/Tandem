@@ -106,6 +106,8 @@ pub struct RecordingState {
 
     // Audio pipeline
     audio_sender: Mutex<Option<mpsc::UnboundedSender<AudioChunk>>>,
+    // F047: Optional KWS sender — receives copies of mic-only chunks for wake word detection
+    kws_sender: Mutex<Option<mpsc::UnboundedSender<AudioChunk>>>,
 
     // Memory optimization
     buffer_pool: AudioBufferPool,
@@ -136,6 +138,7 @@ impl RecordingState {
             system_device: Mutex::new(None),
             disconnected_device: Mutex::new(None),
             audio_sender: Mutex::new(None),
+            kws_sender: Mutex::new(None),
             buffer_pool: AudioBufferPool::new(16, 48000), // Pool of 16 buffers with 48kHz samples capacity
             error_count: AtomicU32::new(0),
             recoverable_error_count: AtomicU32::new(0),
@@ -166,6 +169,8 @@ impl RecordingState {
         // CRITICAL: Clear audio sender to close the pipeline channel
         // This ensures the pipeline loop exits properly after processing all chunks
         *self.audio_sender.lock().unwrap() = None;
+        // F047: Clear KWS sender to stop wake word detection
+        *self.kws_sender.lock().unwrap() = None;
         // CRITICAL: Clear device references to release microphone/speaker
         // Without this, Arc<AudioDevice> references persist and keep the mic active
         *self.microphone_device.lock().unwrap() = None;
@@ -262,10 +267,27 @@ impl RecordingState {
         *self.audio_sender.lock().unwrap() = Some(sender);
     }
 
+    /// F047: Set the KWS sender for wake word detection (mic-only audio tap)
+    pub fn set_kws_sender(&self, sender: mpsc::UnboundedSender<AudioChunk>) {
+        *self.kws_sender.lock().unwrap() = Some(sender);
+    }
+
+    /// F047: Clear the KWS sender
+    pub fn clear_kws_sender(&self) {
+        *self.kws_sender.lock().unwrap() = None;
+    }
+
     pub fn send_audio_chunk(&self, chunk: AudioChunk) -> Result<()> {
         // Don't send audio chunks when paused
         if self.is_paused() {
             return Ok(()); // Silently discard chunks while paused
+        }
+
+        // F047: Tap mic-only audio for wake word detection
+        if chunk.device_type == DeviceType::Microphone {
+            if let Some(kws_tx) = self.kws_sender.lock().unwrap().as_ref() {
+                let _ = kws_tx.send(chunk.clone()); // best-effort, don't block pipeline
+            }
         }
 
         if let Some(sender) = self.audio_sender.lock().unwrap().as_ref() {
@@ -424,6 +446,7 @@ impl Default for RecordingState {
             system_device: Mutex::new(None),
             disconnected_device: Mutex::new(None),
             audio_sender: Mutex::new(None),
+            kws_sender: Mutex::new(None),
             buffer_pool: AudioBufferPool::new(16, 48000), // Pool of 16 buffers with 48kHz samples capacity
             error_count: AtomicU32::new(0),
             recoverable_error_count: AtomicU32::new(0),
