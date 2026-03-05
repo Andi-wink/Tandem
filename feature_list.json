@@ -1744,6 +1744,77 @@
       ],
       "dependencies": ["F007"],
       "passes": false
+    },
+    {
+      "id": "F052",
+      "category": "ui",
+      "name": "UI Redesign — Brand Color System + Visual Polish",
+      "description": "Transform the app from a flat greyscale UI into a polished, modern design with a brand identity. Implements the 7-phase design system from design_features.json (D001–D007): brand color tokens, sidebar redesign, button audit, micro-interactions, typography refinement, gradients/shadows, and icon cleanup.",
+      "priority": "high",
+      "status": "in-progress",
+      "branch": "feature/ui-redesign",
+      "worktree": "Tandem-f052",
+      "commit": null,
+      "steps": [
+        "Phase 1 (D001) — Brand Color System: replace greyscale CSS variables in globals.css with chosen palette, add surface tiers, brand tokens, update tailwind.config.ts",
+        "Phase 2 (D002) — Sidebar Redesign: gradient logo, section labels, two-line meeting items, active indicators, ghost search, footer icon row",
+        "Phase 3 (D003) — Button Audit: replace raw <button> elements with <Button> component, fix hover bug on green variant, add brand variant",
+        "Phase 4 (D004) — Micro-interactions: framer-motion transitions on sidebar items, recording controls, AI panel toggle, transcript segments",
+        "Phase 5 (D005) — Typography + Spacing: activate custom font scale, increase base line-height, add breathing room between sections",
+        "Phase 6 (D006) — Gradients + Shadows: surface shadow tokens, floating pill shadow, recording glow, AI panel depth",
+        "Phase 7 (D007) — Icon Refinement: audit stroke-width (1.5 vs 2), replace any raster icons, consistent sizing"
+      ],
+      "design_reference": "design-mockups/06-full-ui-violet-gradient-linear.html",
+      "design_features_file": "design_features.json",
+      "modified_files": [
+        "frontend/src/app/globals.css",
+        "frontend/tailwind.config.ts",
+        "frontend/src/components/Sidebar/index.tsx",
+        "frontend/src/components/Logo.tsx",
+        "frontend/src/components/RecordingControls.tsx",
+        "frontend/src/components/ClaudePanel/ClaudePanel.tsx",
+        "frontend/src/components/ui/button.tsx",
+        "frontend/src/app/_components/TranscriptPanel.tsx",
+        "frontend/src/app/page.tsx"
+      ],
+      "dependencies": [],
+      "passes": false
+    },
+    {
+      "id": "F051",
+      "category": "infrastructure",
+      "name": "Multi-Provider AI Backend (LangGraph Hybrid)",
+      "description": "Add LangGraph as an alternative AI backend alongside the existing Claude Agent SDK. Keeps Claude for best-in-class tool calling, adds support for open-source models (Qwen3-235B, DeepSeek-V3, Llama 3.1) hosted on Nebius, Ollama, or OpenRouter. Hybrid approach: user picks provider + model in Settings, backend routes to either Claude Agent SDK or LangGraph agent. Frontend unchanged — both backends emit the same SSE event format (text_delta, tool_call, tool_result, done).",
+      "priority": "low",
+      "status": "planned",
+      "branch": null,
+      "worktree": null,
+      "commit": null,
+      "steps": [
+        "Install langgraph, langchain-openai, langchain-community, langchain-mcp-adapters",
+        "Build custom tools: edit_file, glob_files, grep_content, todo_write (~250-350 lines) — Read/Write/Bash exist in langchain-community",
+        "Create backend/app/langgraph_agent.py: ReAct agent via create_react_agent with SQLite checkpointer for session persistence",
+        "Implement model factory: route to ChatOpenAI (Nebius/Ollama/OpenRouter) or ChatAnthropic based on provider selection",
+        "Map LangGraph streaming (messages + updates modes) to existing SSE event format (text_delta, tool_call, tool_result, done, error)",
+        "Add provider/model config to Settings page (Nebius API key, endpoint URL, model selection)",
+        "Update backend/app/main.py to route /api/claude/* endpoints to either claude_agent or langgraph_agent based on selected provider",
+        "Add security sandboxing for Bash tool (command whitelist or Docker container)",
+        "Test tool calling quality across Qwen3-235B, DeepSeek-V3, Llama 3.1 on Nebius",
+        "Integration test: full conversation flow with open-source model including tool use"
+      ],
+      "files": [
+        "backend/app/langgraph_agent.py",
+        "backend/app/tools/edit_file.py",
+        "backend/app/tools/glob_files.py",
+        "backend/app/tools/grep_content.py",
+        "backend/app/tools/todo_write.py",
+        "backend/app/main.py",
+        "backend/requirements.txt",
+        "frontend/src/contexts/ClaudeContext.tsx",
+        "frontend/src/app/settings/page.tsx"
+      ],
+      "dependencies": ["F007"],
+      "passes": false
     }
   ]
 }

@@ -1,16 +1,9 @@
-// F047: Hook for wake word detection and voice command handling.
+// F047: Push-to-talk voice command handling (Ctrl+Space).
 //
-// Listens for 'wake-word-detected' Tauri events from the Rust KWS engine,
-// enters "listening" mode, captures the next transcript segments as a voice
-// command, parses it into a slash command or AI query, and executes it.
+// Wake-word detection has been disabled — it caused commands to fire on any
+// speech during recording. Voice commands are push-to-talk only (Ctrl+Space).
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
-
-export interface WakeWordEvent {
-  confidence: number;
-  timestamp: number;
-}
 
 export interface VoiceCommandResult {
   /** The raw transcript text captured after wake word */
@@ -51,7 +44,6 @@ export function useVoiceCommand(options: UseVoiceCommandOptions = {}) {
 
   const [isListening, setIsListening] = useState(false);
   const [isHotkeyListening, setIsHotkeyListening] = useState(false);
-  const [lastWakeWord, setLastWakeWord] = useState<WakeWordEvent | null>(null);
   const [capturedText, setCapturedText] = useState('');
 
   // Refs to avoid stale closures in timer callbacks
@@ -92,61 +84,25 @@ export function useVoiceCommand(options: UseVoiceCommandOptions = {}) {
     onCommandRef.current?.(result);
   }, [cancelListening, clearTimers]);
 
-  // Listen for wake-word-detected events from Rust
-  useEffect(() => {
-    if (!enabled) return;
-
-    let unlisten: UnlistenFn | null = null;
-    const abortController = new AbortController();
-
-    const setup = async () => {
-      if (abortController.signal.aborted) return;
-
-      unlisten = await listen<WakeWordEvent>('wake-word-detected', (event) => {
-        if (abortController.signal.aborted) return;
-
-        console.log('[VoiceCommand] Wake word detected:', event.payload);
-        setLastWakeWord(event.payload);
-        isListeningRef.current = true;
-        capturedTextRef.current = '';
-        setIsListening(true);
-        setCapturedText('');
-
-        // Safety fallback: cancel after listenTimeout if nothing was captured
-        clearTimers();
-        timeoutRef.current = setTimeout(() => {
-          if (!isListeningRef.current) return;
-          const text = capturedTextRef.current.trim();
-          if (text) {
-            console.log('[VoiceCommand] Fallback timeout — executing with:', text);
-            executeCommand(text);
-          } else {
-            console.log('[VoiceCommand] Listen timeout — no command captured, cancelling');
-            cancelListening();
-          }
-        }, listenTimeout);
-      });
-    };
-
-    setup();
-
-    return () => {
-      abortController.abort();
-      unlisten?.();
-      clearTimers();
-    };
-  }, [enabled, listenTimeout, executeCommand, cancelListening, clearTimers]);
-
-  // Push-to-talk hotkey: Alt+Space to start, release Space to execute
+  // Push-to-talk hotkey: Ctrl+Space to start, release Space to execute
   useEffect(() => {
     if (!enabled) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore hotkey when focus is inside a text input (typing Ctrl+Space in a field)
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) return;
+      // Ignore hotkey when an interactive element has focus — Space has native meaning
+      // on buttons/selects/links, and typing in inputs should never trigger voice mode.
+      const target = e.target as HTMLElement;
+      const tag = target?.tagName;
+      if (
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        tag === 'BUTTON' ||
+        tag === 'A' ||
+        target?.isContentEditable
+      ) return;
 
-      if (e.ctrlKey && !e.altKey && !e.shiftKey && e.code === 'Space' && !e.repeat && !isListeningRef.current) {
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.code === 'Space' && !e.repeat && !isListeningRef.current) {
         e.preventDefault();
         console.log('[VoiceCommand] Hotkey pressed — starting push-to-talk');
         isHotkeyListeningRef.current = true;
@@ -203,10 +159,8 @@ export function useVoiceCommand(options: UseVoiceCommandOptions = {}) {
   return {
     /** Whether the system is currently listening for a voice command */
     isListening,
-    /** Whether listening was triggered by the push-to-talk hotkey (Alt+Space) */
+    /** Whether listening was triggered by the push-to-talk hotkey (Ctrl+Space) */
     isHotkeyListening,
-    /** The last wake word detection event */
-    lastWakeWord,
     /** Text captured so far while listening */
     capturedText,
     /** Manually cancel listening mode */
@@ -220,17 +174,8 @@ export function useVoiceCommand(options: UseVoiceCommandOptions = {}) {
       capturedTextRef.current = updated;
       setCapturedText(updated);
 
-      // In hotkey mode the user controls when to stop (key release) — skip the activity timer
-      if (!isHotkeyListeningRef.current) {
-        // Wake-word mode: execute 2s after last transcript segment (silence detection)
-        if (activityTimerRef.current) clearTimeout(activityTimerRef.current);
-        activityTimerRef.current = setTimeout(() => {
-          if (!isListeningRef.current) return;
-          const captured = capturedTextRef.current.trim();
-          console.log('[VoiceCommand] Activity silence — executing with:', captured);
-          executeCommand(captured);
-        }, 2000);
-      }
+      // In hotkey mode the user controls when to stop (key release).
+      // The grace-period timer in handleKeyUp handles execution after release.
     }, [executeCommand]),
     /** Manually trigger command execution with the currently captured text */
     executeCommand,
