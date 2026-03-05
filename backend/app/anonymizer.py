@@ -13,6 +13,7 @@ Two-tier detection:
 
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -78,6 +79,10 @@ REDACT_ENTITIES = [
 REDACT_THRESHOLD = 0.3
 
 ALL_ENTITIES = SURROGATE_ENTITIES + REDACT_ENTITIES
+
+# Default analysis language (Presidio/spaCy language code).
+# Change this to match the installed spaCy model (e.g. "de" for German, "es" for Spanish).
+ANALYSIS_LANGUAGE = os.environ.get("TANDEM_PII_LANGUAGE", "en")
 
 # UUID pattern for false-positive filtering
 _UUID_PATTERN = re.compile(
@@ -347,9 +352,14 @@ def _filter_uuid_false_positives(
 
 
 def _anonymize_json_values(obj: Any, registry: EntityRegistry) -> Any:
-    """Recursively anonymize string values in JSON, preserving structure."""
+    """Recursively anonymize string values in JSON, preserving structure.
+
+    Note: JSON values are individual strings (not the original text), so we
+    can't pre-compute analysis for these. Each string value is analyzed once.
+    """
     if isinstance(obj, str):
-        return _anonymize_text_segment(obj, registry)
+        anonymized, _results = _anonymize_text_segment(obj, registry)
+        return anonymized
     elif isinstance(obj, dict):
         return {k: _anonymize_json_values(v, registry) for k, v in obj.items()}
     elif isinstance(obj, list):
@@ -358,17 +368,35 @@ def _anonymize_json_values(obj: Any, registry: EntityRegistry) -> Any:
         return obj  # numbers, booleans, null — pass through
 
 
-def _anonymize_text_segment(text: str, registry: EntityRegistry) -> str:
-    """Anonymize a single text string using Presidio."""
-    if not _presidio_available or not text.strip():
-        return text
+def _anonymize_text_segment(
+    text: str,
+    registry: EntityRegistry,
+    precomputed_results: list[RecognizerResult] | None = None,
+) -> tuple[str, list[RecognizerResult]]:
+    """Anonymize a single text string using Presidio.
 
-    results = _analyzer.analyze(
-        text=text,
-        entities=ALL_ENTITIES,
-        language="en",
-    )
-    results = _filter_uuid_false_positives(text, results)
+    Args:
+        text: The text to anonymize.
+        registry: Entity registry for consistent surrogates.
+        precomputed_results: Pre-analyzed Presidio results (already UUID-filtered).
+            If provided, skips the analysis call.
+
+    Returns:
+        Tuple of (anonymized_text, filtered_results) so callers can reuse
+        the analysis for reporting without re-analyzing.
+    """
+    if not _presidio_available or not text.strip():
+        return text, []
+
+    if precomputed_results is not None:
+        results = precomputed_results
+    else:
+        results = _analyzer.analyze(
+            text=text,
+            entities=ALL_ENTITIES,
+            language=ANALYSIS_LANGUAGE,
+        )
+        results = _filter_uuid_false_positives(text, results)
 
     # Apply thresholds
     filtered = []
@@ -379,7 +407,7 @@ def _anonymize_text_segment(text: str, registry: EntityRegistry) -> str:
             filtered.append(r)
 
     if not filtered:
-        return text
+        return text, filtered
 
     # Sort by start position descending so we can replace from end to start
     filtered.sort(key=lambda r: r.start, reverse=True)
@@ -393,7 +421,7 @@ def _anonymize_text_segment(text: str, registry: EntityRegistry) -> str:
             replacement = registry.get_surrogate(original, r.entity_type)
         result = result[:r.start] + replacement + result[r.end:]
 
-    return result
+    return result, filtered
 
 
 def _try_parse_json_block(text: str) -> tuple[Any, bool]:
@@ -465,6 +493,18 @@ def get_entity_map(meeting_id: str) -> dict[str, str]:
     return {}
 
 
+def get_reverse_map(meeting_id: str) -> dict[str, str]:
+    """Get the surrogate-to-real mapping for de-anonymization.
+
+    Returns a dict mapping surrogate values back to their original real values.
+    Useful for de-anonymizing AI responses before displaying to the user.
+    """
+    if meeting_id in _registries:
+        _registry_last_access[meeting_id] = time.monotonic()
+        return dict(_registries[meeting_id]._reverse)
+    return {}
+
+
 async def anonymize_text(
     text: str,
     meeting_id: str,
@@ -488,33 +528,46 @@ async def anonymize_text(
 
     registry = get_registry(meeting_id, entity_map)
 
-    # First pass: detect all PERSON entities for name clustering
-    person_results = _analyzer.analyze(
-        text=text,
-        entities=["PERSON"],
-        language="en",
+    # Single analysis pass for the full text — reused for clustering,
+    # anonymization, and entity reporting (avoids 3x redundant calls).
+    all_results = _analyzer.analyze(
+        text=text, entities=ALL_ENTITIES, language=ANALYSIS_LANGUAGE
     )
-    person_results = _filter_uuid_false_positives(text, person_results)
+    all_results = _filter_uuid_false_positives(text, all_results)
+
+    # Extract PERSON names from the single pass for clustering
     person_names = [
         text[r.start:r.end]
-        for r in person_results
-        if r.score >= SURROGATE_THRESHOLD
+        for r in all_results
+        if r.entity_type == "PERSON" and r.score >= SURROGATE_THRESHOLD
     ]
     if person_names:
         registry.cluster_names(person_names)
 
-    # Handle JSON blocks specially
+    # Handle JSON blocks specially (JSON values are re-parsed individually,
+    # but we still reuse all_results for entity reporting on the raw text)
     if detect_json:
         parsed, is_json = _try_parse_json_block(text)
         if is_json:
             anonymized_obj = _anonymize_json_values(parsed, registry)
             anonymized_text = json.dumps(anonymized_obj, indent=2, ensure_ascii=False)
-            entities_found = _collect_entities_found(text, registry)
+            # Use _anonymize_text_segment just for threshold filtering to
+            # get the filtered results for reporting, without re-analyzing
+            _anon_unused, filtered_results = _anonymize_text_segment(
+                text, registry, precomputed_results=all_results
+            )
+            entities_found = _collect_entities_found(
+                text, registry, precomputed_results=filtered_results
+            )
             return anonymized_text, registry.entity_map, entities_found
 
-    # Standard text anonymization
-    anonymized_text = _anonymize_text_segment(text, registry)
-    entities_found = _collect_entities_found(text, registry)
+    # Standard text anonymization — pass precomputed results
+    anonymized_text, filtered_results = _anonymize_text_segment(
+        text, registry, precomputed_results=all_results
+    )
+    entities_found = _collect_entities_found(
+        text, registry, precomputed_results=filtered_results
+    )
 
     return anonymized_text, registry.entity_map, entities_found
 
@@ -534,42 +587,85 @@ async def anonymize_texts(
 
     registry = get_registry(meeting_id, entity_map)
 
-    # First pass: collect all PERSON entities across all texts for clustering
-    all_person_names = []
+    # Single analysis pass per text — reused for clustering, anonymization,
+    # and entity reporting (avoids 3x redundant calls per text).
+    per_text_results: list[list[RecognizerResult]] = []
+    all_person_names: list[str] = []
     for text in texts:
-        results = _analyzer.analyze(text=text, entities=["PERSON"], language="en")
+        results = _analyzer.analyze(
+            text=text, entities=ALL_ENTITIES, language=ANALYSIS_LANGUAGE
+        )
         results = _filter_uuid_false_positives(text, results)
+        per_text_results.append(results)
         all_person_names.extend(
-            text[r.start:r.end] for r in results if r.score >= SURROGATE_THRESHOLD
+            text[r.start:r.end]
+            for r in results
+            if r.entity_type == "PERSON" and r.score >= SURROGATE_THRESHOLD
         )
     if all_person_names:
         registry.cluster_names(all_person_names)
 
-    # Second pass: anonymize each text
+    # Anonymize each text using precomputed results
     sanitized = []
     all_entities: list[dict] = []
-    for text in texts:
+    for text, text_results in zip(texts, per_text_results):
         if detect_json:
             parsed, is_json = _try_parse_json_block(text)
             if is_json:
                 anon_obj = _anonymize_json_values(parsed, registry)
                 sanitized.append(json.dumps(anon_obj, indent=2, ensure_ascii=False))
-                all_entities.extend(_collect_entities_found(text, registry))
+                # Get filtered results for reporting without re-analyzing
+                _anon_unused, filtered = _anonymize_text_segment(
+                    text, registry, precomputed_results=text_results
+                )
+                all_entities.extend(
+                    _collect_entities_found(text, registry, precomputed_results=filtered)
+                )
                 continue
 
-        anonymized = _anonymize_text_segment(text, registry)
+        anonymized, filtered = _anonymize_text_segment(
+            text, registry, precomputed_results=text_results
+        )
         sanitized.append(anonymized)
-        all_entities.extend(_collect_entities_found(text, registry))
+        all_entities.extend(
+            _collect_entities_found(text, registry, precomputed_results=filtered)
+        )
 
     return sanitized, registry.entity_map, all_entities
 
 
-def _collect_entities_found(text: str, registry: EntityRegistry) -> list[dict]:
-    """Collect a summary of entities found in text."""
+def _collect_entities_found(
+    text: str,
+    registry: EntityRegistry,
+    precomputed_results: list[RecognizerResult] | None = None,
+) -> list[dict]:
+    """Collect a summary of entities found in text.
+
+    Args:
+        text: The original (non-anonymized) text to report on.
+        registry: Entity registry (unused currently, kept for API consistency).
+        precomputed_results: Pre-analyzed Presidio results (already UUID-filtered
+            and threshold-applied). If provided, skips the analysis call.
+    """
     if not _presidio_available:
         return []
 
-    results = _analyzer.analyze(text=text, entities=ALL_ENTITIES, language="en")
+    if precomputed_results is not None:
+        # Results are already filtered by threshold — just build the report
+        entities = []
+        for r in precomputed_results:
+            original = text[r.start:r.end]
+            entities.append({
+                "entity_type": r.entity_type,
+                "original": original,
+                "score": round(r.score, 2),
+                "start": r.start,
+                "end": r.end,
+            })
+        return entities
+
+    # Fallback: full analysis (for callers without precomputed results)
+    results = _analyzer.analyze(text=text, entities=ALL_ENTITIES, language=ANALYSIS_LANGUAGE)
     results = _filter_uuid_false_positives(text, results)
 
     entities = []

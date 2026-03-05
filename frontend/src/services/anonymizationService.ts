@@ -3,7 +3,7 @@
  * Presidio endpoints for on-device PII detection and surrogate replacement.
  */
 
-const BACKEND = 'http://localhost:5167';
+import { BACKEND } from '@/services/claudeService';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -87,6 +87,20 @@ export async function clearEntityMap(meetingId: string): Promise<void> {
     `${BACKEND}/api/anonymize/entity-map/${encodeURIComponent(meetingId)}`,
     { method: 'DELETE' },
   );
+}
+
+/**
+ * Get the reverse entity map (surrogate → real) for de-anonymizing AI responses.
+ */
+export async function getReverseMap(
+  meetingId: string,
+): Promise<Record<string, string>> {
+  const res = await fetch(
+    `${BACKEND}/api/anonymize/reverse-map/${encodeURIComponent(meetingId)}`,
+  );
+  if (!res.ok) return {};
+  const data = await res.json();
+  return data.reverse_map || {};
 }
 
 /**

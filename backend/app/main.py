@@ -848,12 +848,22 @@ async def clear_entity_map(meeting_id: str):
     return {"message": "Entity map cleared"}
 
 
+@app.get("/api/anonymize/reverse-map/{meeting_id}")
+async def get_reverse_map(meeting_id: str):
+    """Get the reverse entity map (surrogate → real) for a meeting.
+
+    Useful for de-anonymizing AI responses that contain surrogates.
+    """
+    return {"reverse_map": anonymizer.get_reverse_map(meeting_id)}
+
+
 @app.get("/api/anonymize/health")
 async def anonymize_health():
     """Check if the anonymization service is available."""
     return {
         "available": anonymizer.is_available(),
         "model": "en_core_web_sm" if anonymizer.is_available() else None,
+        "language": anonymizer.ANALYSIS_LANGUAGE,
     }
 
 

@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import { ClaudeMessage, ClaudeToolCall } from '@/contexts/ClaudeContext';
 import { TodoWriteBlock, parseTodoInput } from './TodoWriteBlock';
 import { AskUserQuestionBlock, parseQuestionInput } from './AskUserQuestionBlock';
+import { DiagramBlock, isDiagramToolCall } from './DiagramBlock';
 
 interface ConversationViewProps {
   messages: ClaudeMessage[];
@@ -114,6 +115,9 @@ export function ConversationView({ messages, isStreaming, onAnswer }: Conversati
                 }
                 if (call.name === 'AskUserQuestion' && parseQuestionInput(call.input)) {
                   return <AskUserQuestionBlock key={key} call={call} onAnswer={onAnswer} />;
+                }
+                if (isDiagramToolCall(call)) {
+                  return <DiagramBlock key={key} call={call} />;
                 }
                 return <ToolCallBlock key={key} call={call} />;
               })}

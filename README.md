@@ -2,7 +2,7 @@
     <h1>
         <img src="docs/Tandem-6.png" style="border-radius: 10px;" />
         <br>
-        Privacy-First AI Meeting Assistant
+        Work in Tandem with AI on Every Call
     </h1>
     <a href="https://trendshift.io/repositories/13272" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13272" alt="Zackriya-Solutions%2Fmeeting-minutes | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
     <br>
@@ -30,7 +30,7 @@
 </p>
     <p align="center">
 
-A privacy-first AI meeting assistant that captures, transcribes, and summarizes meetings entirely on your infrastructure. Built by expert AI engineers passionate about data sovereignty and open source solutions. Perfect for enterprises that need advanced meeting intelligence without compromising on privacy, compliance, or control.
+A privacy-first AI co-pilot that works alongside you on every call — capturing, transcribing, and collaborating in real time, entirely on your infrastructure. Built by expert AI engineers passionate about data sovereignty and open source solutions. Perfect for anyone who wants an intelligent partner on calls without compromising on privacy, compliance, or control.
 
 </p>
 

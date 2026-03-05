@@ -226,12 +226,15 @@ export function useRecordingStop(
       console.log('Waiting for transcript state updates to complete...');
       await new Promise(resolve => setTimeout(resolve, 500));
 
-      // F020: Auto-trigger handoff generation (non-blocking — runs in parallel with DB save)
+      // F020: Auto-trigger handoff generation (runs in parallel with DB save).
+      // The returned promise resolves when the user confirms or cancels the dialog,
+      // so we can await it before navigating away (prevents dialog from being destroyed).
+      let handoffPromise: Promise<void> | undefined;
       try {
         const handoffFolderPath = sessionStorage.getItem('last_recording_folder_path');
         const handoffMeetingName = sessionStorage.getItem('last_recording_meeting_name');
         if (handoffFolderPath && window.triggerHandoff) {
-          window.triggerHandoff(
+          handoffPromise = window.triggerHandoff(
             handoffFolderPath,
             handoffMeetingName || meetingTitle || 'New Meeting',
           );
@@ -321,15 +324,24 @@ export function useRecordingStop(
             duration: 10000,
           });
 
-          // Auto-navigate after a short delay with source parameter
-          setTimeout(() => {
+          // Auto-navigate after handoff dialog is dismissed (or immediately if no handoff)
+          const navigateToMeeting = () => {
             router.push(`/meeting-details?id=${meetingId}&source=recording`);
             clearTranscripts()
             Analytics.trackPageView('meeting_details');
 
             // Reset to IDLE after navigation
             setStatus(RecordingStatus.IDLE);
-          }, 2000);
+          };
+
+          if (handoffPromise) {
+            // Wait for user to confirm/cancel the handoff dialog, then navigate
+            handoffPromise.then(() => {
+              setTimeout(navigateToMeeting, 500);
+            });
+          } else {
+            setTimeout(navigateToMeeting, 2000);
+          }
           // Track meeting completion analytics
           try {
             // Calculate meeting duration from transcript timestamps

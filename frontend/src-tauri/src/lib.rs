@@ -63,9 +63,9 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::RwLock;
 
-// Global language preference storage (default to "auto-translate" for automatic translation to English)
+// Global language preference storage (default to "auto" for automatic language detection)
 static LANGUAGE_PREFERENCE: std::sync::LazyLock<StdMutex<String>> =
-    std::sync::LazyLock::new(|| StdMutex::new("auto-translate".to_string()));
+    std::sync::LazyLock::new(|| StdMutex::new("auto".to_string()));
 
 #[derive(Debug, Deserialize)]
 struct RecordingArgs {
@@ -445,6 +445,14 @@ pub fn run() {
                                             result.monitor_width,
                                             result.monitor_height,
                                         );
+
+                                        // Bring window to foreground so the overlay can mount
+                                        if let Some(win) = app_for_task.get_webview_window("main") {
+                                            let _ = win.unminimize();
+                                            let _ = win.show();
+                                            let _ = win.set_focus();
+                                        }
+
                                         let _ = app_for_task.emit(
                                             "screenshot-region-select",
                                             serde_json::json!({
@@ -491,6 +499,14 @@ pub fn run() {
                                             result.monitor_width,
                                             result.monitor_height,
                                         );
+
+                                        // Bring window to foreground so the overlay can mount
+                                        if let Some(win) = app_for_task.get_webview_window("main") {
+                                            let _ = win.unminimize();
+                                            let _ = win.show();
+                                            let _ = win.set_focus();
+                                        }
+
                                         let _ = app_for_task.emit(
                                             "screenshot-region-select",
                                             serde_json::json!({
@@ -751,6 +767,7 @@ pub fn run() {
             api::test_backend_connection,
             api::debug_backend_connection,
             api::open_external_url,
+            api::show_in_folder,
             // Custom OpenAI commands
             api::api_save_custom_openai_config,
             api::api_get_custom_openai_config,

@@ -22,8 +22,11 @@ export function UpdateCheckProvider({ children }: { children: React.ReactNode })
     setShowDialog(true);
   }, []);
 
+  // TODO(F-UPDATE): Re-enable checkOnMount once Tandem has its own update endpoint
+  // Currently disabled because the updater still points to the upstream Meetily repo.
+  // When ready: set checkOnMount: true and update the endpoint in tauri.conf.json.
   const { updateInfo, isChecking, checkForUpdates } = useUpdateCheck({
-    checkOnMount: true,
+    checkOnMount: false,
     showNotification: true,
     onUpdateAvailable: (info) => {
       // Show notification, dialog will be shown when user clicks notification

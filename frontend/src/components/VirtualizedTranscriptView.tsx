@@ -128,7 +128,7 @@ const DraggableClipboardItem = memo(function DraggableClipboardItem({
         >
             <Clipboard className="w-3.5 h-3.5 text-amber-500 mt-0.5 shrink-0" />
             <div className="min-w-0">
-                <span className="text-amber-600 font-medium mr-2">{clip.timestamp}</span>
+                <span className="text-amber-600 dark:text-amber-400 font-medium mr-2">{clip.timestamp}</span>
                 <span className="text-foreground line-clamp-2">{clip.text}</span>
             </div>
         </div>

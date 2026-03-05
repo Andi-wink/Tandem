@@ -221,6 +221,16 @@
     color: hsl(var(--foreground)) !important;
   }
 
+  /* BlockNote side menu and toolbar dark mode */
+  .dark .bn-side-menu,
+  .dark .bn-formatting-toolbar,
+  .dark .bn-slash-menu,
+  .dark .bn-drag-handle-menu {
+    background-color: hsl(var(--popover)) !important;
+    color: hsl(var(--popover-foreground)) !important;
+    border-color: hsl(var(--border)) !important;
+  }
+
   /* Disable internal scrolling - let parent handle all scrolling */
   .ProseMirror {
     overflow: visible !important;

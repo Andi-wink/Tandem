@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X, Send, Trash2, AlertCircle, Square, ChevronUp, Check, Shield, Paperclip, Mic } from 'lucide-react';
+import { X, Send, Trash2, AlertCircle, Square, ChevronUp, Check, Shield, Paperclip, Mic, FolderOpen } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
@@ -46,6 +46,7 @@ export function ClaudePanel() {
     toggleAnonymization,
     toggleItemAnonymization,
     clearEntityMap,
+    piiAvailable,
   } = useClaude();
 
   const [inputText, setInputText] = useState('');
@@ -116,38 +117,34 @@ export function ClaudePanel() {
     dismissAutocomplete,
   } = useSlashCommand();
 
-  // F047: Voice command handler
+  // F047: Voice command handler — sends captured speech to the AI panel.
+  // Uses the same pendingFirstMessage pattern as manual sends to avoid
+  // the race condition where openPanel's setState hasn't propagated to
+  // stateRef.current before sendMessage reads it.
   const handleVoiceCommand = React.useCallback(async (result: VoiceCommandResult) => {
-    if (result.command === 'screenshot') {
-      toast.info(`Voice command: ${result.command}`);
+    const message = result.args || result.transcript;
+    if (!message?.trim()) {
+      toast.warning('Voice command not recognized — no text was captured');
+      return;
+    }
+    if (isStreaming) {
+      toast.warning('AI is busy — please wait for the current response to finish');
       return;
     }
 
-    const commandMessages: Record<string, string> = {
-      summarize: 'Please summarize the meeting so far.',
-      actions: 'What are the action items and next steps from this meeting?',
-      key_points: 'What are the key points discussed so far?',
-    };
-    // For free-form 'ask' commands, prefix with wake-word context so Claude ignores any prefix
-    const rawArgs = result.args || result.transcript;
-    const askMessage = rawArgs
-      ? `(Voice command — ignore any wake word like "Alexa" or "Tandem" at the start): ${rawArgs}`
-      : '';
-    const message = commandMessages[result.command] || askMessage;
-    if (!message || isStreaming) return;
+    console.log('[VoiceCommand] handleVoiceCommand — message:', message.slice(0, 80));
 
     try {
-      // If the panel has no meeting context yet, set it up for live recording
-      if (!projectDir && !meetingId) {
-        let folder = '';
-        try { folder = await invoke<string | null>('get_meeting_folder_path') || ''; } catch { /* ok */ }
-        await openPanel('live-recording', meetingTitle || 'Live Recording', folder);
-      }
-      // Open the panel so the user can see the response
-      if (!isPanelOpen) {
-        let folder = '';
-        try { folder = await invoke<string | null>('get_meeting_folder_path') || ''; } catch { /* ok */ }
+      // Ensure the panel is open with meeting context
+      if (!projectDir || !meetingId || !isPanelOpen) {
+        let folder = projectDir || '';
+        if (!folder) {
+          try { folder = await invoke<string | null>('get_meeting_folder_path') || ''; } catch { /* ok */ }
+        }
         await openPanel(meetingId || 'live-recording', meetingTitle || 'Live Recording', folder);
+        // Use pendingFirstMessage so the send waits for state to propagate
+        setPendingFirstMessage(message);
+        return;
       }
       await sendMessage(message);
     } catch (err) {
@@ -156,7 +153,7 @@ export function ClaudePanel() {
     }
   }, [isStreaming, sendMessage, openPanel, isPanelOpen, meetingId, meetingTitle, projectDir]);
 
-  const { isListening, isHotkeyListening, cancelListening, feedTranscript } = useVoiceCommand({
+  const { isListening, isHotkeyListening, cancelListening, feedTranscript, capturedText: voiceCapturedText } = useVoiceCommand({
     enabled: recordingState.isRecording,
     onCommand: handleVoiceCommand,
   });
@@ -427,7 +424,14 @@ export function ClaudePanel() {
           <div className="flex-1 min-w-0">
             <div className="font-semibold text-sm truncate">{meetingTitle || 'AI Assistant'}</div>
             {projectDir && (
-              <div className="text-xs text-muted-foreground truncate">{projectDir}</div>
+              <button
+                onClick={() => invoke('show_in_folder', { path: projectDir }).catch(() => toast.error('Failed to open folder'))}
+                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-blue-500 dark:hover:text-blue-400 truncate transition-colors group"
+                title="Open in file explorer"
+              >
+                <FolderOpen className="w-3 h-3 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+                <span className="truncate">{projectDir}</span>
+              </button>
             )}
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
@@ -455,6 +459,16 @@ export function ClaudePanel() {
             <AlertCircle className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
             <div className="text-xs text-amber-700 dark:text-amber-300">
               Anthropic API key not set. It will be requested when you send your first message.
+            </div>
+          </div>
+        )}
+
+        {/* F005: PII service unavailable warning */}
+        {anonymizationEnabled && piiAvailable === false && (
+          <div className="px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800/30 flex items-start gap-2 flex-shrink-0">
+            <Shield className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
+            <div className="text-xs text-amber-700 dark:text-amber-300">
+              PII anonymization is enabled but the backend service is unavailable. Context will be sent without anonymization.
             </div>
           </div>
         )}
@@ -492,17 +506,19 @@ export function ClaudePanel() {
           {/* F047: Voice command listening indicator */}
           {isListening && (
             <div className="flex items-center justify-between mb-2 px-2 py-1.5 rounded-md bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800/30 text-xs animate-pulse">
-              <div className="flex items-center gap-2">
-                <Mic className="w-3.5 h-3.5 text-purple-500" />
-                <span className="font-medium text-purple-700 dark:text-purple-300">
+              <div className="flex items-center gap-2 min-w-0">
+                <Mic className="w-3.5 h-3.5 text-purple-500 flex-shrink-0" />
+                <span className="font-medium text-purple-700 dark:text-purple-300 truncate">
                   {isHotkeyListening
                     ? 'Recording\u2026 release Ctrl+Space to send'
-                    : 'Listening for command\u2026'}
+                    : voiceCapturedText
+                      ? `Captured: "${voiceCapturedText.slice(0, 60)}${voiceCapturedText.length > 60 ? '\u2026' : ''}"`
+                      : 'Waiting for transcription\u2026'}
                 </span>
               </div>
               <button
                 onClick={cancelListening}
-                className="text-muted-foreground hover:text-red-500 ml-2"
+                className="text-muted-foreground hover:text-red-500 ml-2 flex-shrink-0"
                 title="Cancel (Esc)"
               >
                 <X className="w-3.5 h-3.5" />
@@ -571,14 +587,22 @@ export function ClaudePanel() {
             <button
               onClick={toggleAnonymization}
               className={`flex items-center gap-0.5 text-[10px] pb-2 flex-shrink-0 transition-colors ${
-                anonymizationEnabled
+                anonymizationEnabled && piiAvailable !== false
                   ? 'text-emerald-500 hover:text-emerald-600'
-                  : 'text-muted-foreground/50 hover:text-muted-foreground'
+                  : anonymizationEnabled && piiAvailable === false
+                    ? 'text-amber-500 hover:text-amber-600'
+                    : 'text-muted-foreground/50 hover:text-muted-foreground'
               }`}
-              title={anonymizationEnabled ? 'PII anonymization ON — click to disable' : 'PII anonymization OFF — click to enable'}
+              title={
+                anonymizationEnabled && piiAvailable === false
+                  ? 'PII anonymization ON but service unavailable'
+                  : anonymizationEnabled
+                    ? 'PII anonymization ON — click to disable'
+                    : 'PII anonymization OFF — click to enable'
+              }
             >
               <Shield className="w-3 h-3" />
-              <span>{anonymizationEnabled ? 'PII' : 'PII'}</span>
+              <span>PII</span>
             </button>
             {/* F044: Document attachment button */}
             <input

@@ -9,7 +9,8 @@ import {
   cancelClaudeSession,
   ClaudeFrontendEvent,
 } from '@/services/claudeService';
-import { anonymizeTexts } from '@/services/anonymizationService';
+import { anonymizeTexts, checkAnonymizationHealth } from '@/services/anonymizationService';
+import { toast } from 'sonner';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useContextBasket } from '@/contexts/ContextBasketContext';
 
@@ -52,6 +53,7 @@ interface ClaudeState {
   anonymizationEnabled: boolean;
   entityMap: Record<string, string>;
   lastAnonymizedCount: number;  // entities replaced in last send
+  piiAvailable: boolean | null; // null = not checked yet, true/false = checked
 }
 
 const MODEL_OPTIONS = [
@@ -81,6 +83,7 @@ interface ClaudeContextValue extends ClaudeState {
   toggleAnonymization: () => void;
   toggleItemAnonymization: (itemId: string) => void;
   clearEntityMap: () => void;
+  piiAvailable: boolean | null;
 }
 
 const ClaudeContext = createContext<ClaudeContextValue | null>(null);
@@ -109,13 +112,12 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     meetingTitle: null,
     conversation: [],
     apiKey: null,
-    selectedModel: typeof window !== 'undefined'
-      ? (localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_MODEL)
-      : DEFAULT_MODEL,
+    selectedModel: DEFAULT_MODEL,
     // F005: PII Anonymization — default ON (cloud provider assumed)
     anonymizationEnabled: true,
     entityMap: {},
     lastAnonymizedCount: 0,
+    piiAvailable: null,
   }));
 
   // Load persisted API key from native Tauri store on mount
@@ -148,6 +150,37 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       }
     })();
     return () => { cancelled = true; };
+  }, []);
+
+  // Hydrate persisted model selection after mount (avoids SSR hydration mismatch)
+  useEffect(() => {
+    const persisted = localStorage.getItem(MODEL_STORAGE_KEY);
+    if (persisted && persisted !== DEFAULT_MODEL) {
+      setState(prev => ({ ...prev, selectedModel: persisted }));
+    }
+  }, []);
+
+  // F005: Check PII anonymization health on mount, retry until available
+  useEffect(() => {
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout>;
+    let attempt = 0;
+
+    const check = () => {
+      checkAnonymizationHealth().then(health => {
+        if (cancelled) return;
+        setState(prev => ({ ...prev, piiAvailable: health.available }));
+        // If unavailable, retry with exponential backoff (2s, 4s, 8s… capped at 30s)
+        if (!health.available) {
+          const delay = Math.min(2000 * Math.pow(2, attempt), 30000);
+          attempt++;
+          timeoutId = setTimeout(check, delay);
+        }
+      });
+    };
+    check();
+
+    return () => { cancelled = true; clearTimeout(timeoutId); };
   }, []);
 
   // B017: Cleanup RAF and abort SSE on unmount
@@ -445,6 +478,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         }));
       } catch (err) {
         console.error('Anonymization failed, sending raw:', err);
+        toast.warning('PII anonymization unavailable — sending context without anonymization');
         // Fallback: use raw content if anonymization service is unavailable
         anonymizedContents = itemsToAnonymize.map(i => i.fullContent);
       }

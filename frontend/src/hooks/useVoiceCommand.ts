@@ -35,25 +35,10 @@ export interface UseVoiceCommandOptions {
  * Returns a recognized slash command or falls back to a free-form AI query.
  */
 export function parseVoiceCommand(transcript: string): VoiceCommandResult {
-  const lower = transcript.toLowerCase().trim();
-
-  if (lower.includes('summarize') || lower.includes('summary')) {
-    return { transcript, command: 'summarize', args: '' };
-  }
-  if (lower.includes('action') || lower.includes('next steps') || lower.includes('to do') || lower.includes('todo')) {
-    return { transcript, command: 'actions', args: '' };
-  }
-  if (lower.includes('screenshot') || lower.includes('screen capture')) {
-    return { transcript, command: 'screenshot', args: '' };
-  }
-  if (lower.includes('key points') || lower.includes('highlights')) {
-    return { transcript, command: 'key_points', args: '' };
-  }
-  if (lower.includes('stop') || lower.includes('cancel') || lower.includes('never mind')) {
-    return { transcript, command: 'cancel', args: '' };
-  }
-
-  // Fallback: treat entire transcript as a free-form AI query
+  // Always send as a free-form AI query. The AI is much better at understanding
+  // intent ("summarize", "action items", etc.) than fragile keyword matching,
+  // which previously caused false positives — e.g. "stop" or "cancel" appearing
+  // anywhere in normal speech would silently discard the entire command.
   return { transcript, command: 'ask', args: transcript };
 }
 
@@ -98,7 +83,7 @@ export function useVoiceCommand(options: UseVoiceCommandOptions = {}) {
   const executeCommand = useCallback((text: string) => {
     if (!text.trim()) { cancelListening(); return; }
     const result = parseVoiceCommand(text);
-    if (result.command === 'cancel') { cancelListening(); return; }
+    console.log('[VoiceCommand] Executing command:', result.command, '— text:', text.slice(0, 80));
     isListeningRef.current = false;
     capturedTextRef.current = '';
     setIsListening(false);
@@ -157,6 +142,10 @@ export function useVoiceCommand(options: UseVoiceCommandOptions = {}) {
     if (!enabled) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore hotkey when focus is inside a text input (typing Ctrl+Space in a field)
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) return;
+
       if (e.ctrlKey && !e.altKey && !e.shiftKey && e.code === 'Space' && !e.repeat && !isListeningRef.current) {
         e.preventDefault();
         console.log('[VoiceCommand] Hotkey pressed — starting push-to-talk');
@@ -185,16 +174,20 @@ export function useVoiceCommand(options: UseVoiceCommandOptions = {}) {
         isHotkeyListeningRef.current = false;
         setIsHotkeyListening(false);
         // feedTranscript now runs in activity-timer mode (isHotkeyListeningRef is false).
-        // Start a 1.5s grace period: if no new transcripts arrive, execute with what we have.
-        // If transcripts DO arrive, feedTranscript will replace this timer with its own 2s timer.
+        // Use a longer grace period when no text has been captured yet, because Whisper
+        // transcription has significant latency (3-10s). If some text was already captured,
+        // a shorter wait suffices. Once transcripts start arriving, feedTranscript's own
+        // 2s activity timer takes over.
         if (activityTimerRef.current) clearTimeout(activityTimerRef.current);
+        const hasCapturedText = capturedTextRef.current.trim().length > 0;
+        const graceMs = hasCapturedText ? 1500 : 8000;
         activityTimerRef.current = setTimeout(() => {
           if (!isListeningRef.current) return;
           const captured = capturedTextRef.current.trim();
           console.log('[VoiceCommand] Hotkey grace period done — executing with:', captured);
           if (captured) executeCommand(captured);
           else cancelListening();
-        }, 1500);
+        }, graceMs);
       }
     };
 

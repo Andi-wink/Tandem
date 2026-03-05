@@ -61,6 +61,7 @@ export function streamClaudeSession(
 
       const decoder = new TextDecoder();
       let buffer = '';
+      let receivedDone = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -80,6 +81,7 @@ export function streamClaudeSession(
             const jsonStr = trimmed.slice(6);
             try {
               const event: ClaudeFrontendEvent = JSON.parse(jsonStr);
+              if (event.event_type === 'done') receivedDone = true;
               onEvent(event);
             } catch (parseErr) {
               console.warn('[claudeService] Malformed SSE data:', jsonStr.slice(0, 100), parseErr);
@@ -95,11 +97,28 @@ export function streamClaudeSession(
           if (!trimmed || !trimmed.startsWith('data: ')) continue;
           try {
             const event: ClaudeFrontendEvent = JSON.parse(trimmed.slice(6));
+            if (event.event_type === 'done') receivedDone = true;
             onEvent(event);
           } catch (parseErr) {
             console.warn('[claudeService] Malformed SSE tail:', trimmed.slice(0, 100), parseErr);
           }
         }
+      }
+
+      // Safety net: if the stream closed without a 'done' event (e.g. the
+      // Claude Agent SDK subprocess exited without producing a ResultMessage),
+      // synthesize one so the frontend doesn't get stuck with isStreaming=true.
+      if (!receivedDone) {
+        onEvent({
+          event_type: 'done',
+          text: null,
+          tool_name: null,
+          tool_input: null,
+          tool_output: null,
+          session_id: null,
+          cost_usd: null,
+          meeting_id: (body as Record<string, unknown>).meeting_id as string,
+        });
       }
     } catch (err) {
       if ((err as Error).name === 'AbortError') return; // expected on cancel

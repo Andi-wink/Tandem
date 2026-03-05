@@ -1295,6 +1295,32 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
     }
 }
 
+/// Opens the system file explorer with the given file selected/highlighted
+#[tauri::command]
+pub async fn show_in_folder(path: String) -> Result<(), String> {
+    use std::process::Command;
+
+    let result = if cfg!(target_os = "windows") {
+        Command::new("explorer")
+            .args(&["/select,", &path])
+            .spawn()
+    } else if cfg!(target_os = "macos") {
+        Command::new("open").args(&["-R", &path]).spawn()
+    } else {
+        // Linux: open parent folder
+        let parent = std::path::Path::new(&path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(path);
+        Command::new("xdg-open").arg(&parent).spawn()
+    };
+
+    match result {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("Failed to show in folder: {}", e)),
+    }
+}
+
 // ===== CUSTOM OPENAI API COMMANDS =====
 
 /// Saves the custom OpenAI configuration

@@ -24,12 +24,12 @@ import { buildTimeline, generateHandoffMarkdown, HandoffData, TimelineItem } fro
 
 declare global {
   interface Window {
-    triggerHandoff?: (folderPath: string, meetingName: string) => void;
+    triggerHandoff?: (folderPath: string, meetingName: string) => Promise<void>;
   }
 }
 
 export interface UseHandoffExportReturn {
-  triggerHandoff: (folderPath: string, meetingName: string) => void;
+  triggerHandoff: (folderPath: string, meetingName: string) => Promise<void>;
   isGenerating: boolean;
   showHandoffDialog: boolean;
   anonymizeChecked: boolean;
@@ -54,6 +54,10 @@ export function useHandoffExport(): UseHandoffExportReturn {
   const folderPathRef = useRef<string>('');
   const meetingNameRef = useRef<string>('');
 
+  // Resolve function for the Promise returned by triggerHandoff —
+  // called when the dialog is confirmed or cancelled so callers can await it.
+  const dialogResolveRef = useRef<(() => void) | null>(null);
+
   // Snapshot refs — capture data at trigger time to survive clearTranscripts() race
   const snapshotRef = useRef<{
     transcripts: typeof transcriptsRef.current;
@@ -67,7 +71,7 @@ export function useHandoffExport(): UseHandoffExportReturn {
 
   // ─── Trigger ─────────────────────────────────────────────────────────────
 
-  const triggerHandoff = useCallback(async (folderPath: string, meetingName: string) => {
+  const triggerHandoff = useCallback((folderPath: string, meetingName: string): Promise<void> => {
     folderPathRef.current = folderPath;
     meetingNameRef.current = meetingName;
 
@@ -86,14 +90,23 @@ export function useHandoffExport(): UseHandoffExportReturn {
     setPiiAvailable(null);
     setShowHandoffDialog(true);
 
-    try {
-      const health = await checkAnonymizationHealth();
-      setPiiAvailable(health.available);
-      setAnonymizeChecked(health.available && anonymizationEnabled);
-    } catch {
-      setPiiAvailable(false);
-      setAnonymizeChecked(false);
-    }
+    // Kick off async PII check (non-blocking)
+    (async () => {
+      try {
+        const health = await checkAnonymizationHealth();
+        setPiiAvailable(health.available);
+        setAnonymizeChecked(health.available && anonymizationEnabled);
+      } catch {
+        setPiiAvailable(false);
+        setAnonymizeChecked(false);
+      }
+    })();
+
+    // Return a Promise that resolves when the dialog is closed (confirm or cancel).
+    // This lets useRecordingStop await it before navigating away.
+    return new Promise<void>((resolve) => {
+      dialogResolveRef.current = resolve;
+    });
   }, [anonymizationEnabled, transcriptsRef, screenshots, clipboardItems, conversation, recordingDuration, meetingId, entityMap]);
 
   // ─── Register window function ────────────────────────────────────────────
@@ -110,6 +123,8 @@ export function useHandoffExport(): UseHandoffExportReturn {
   const cancelHandoff = useCallback(() => {
     setShowHandoffDialog(false);
     setPiiAvailable(null);
+    dialogResolveRef.current?.();
+    dialogResolveRef.current = null;
   }, []);
 
   const confirmHandoff = useCallback(async () => {
@@ -183,6 +198,11 @@ export function useHandoffExport(): UseHandoffExportReturn {
 
       toast.success('Handoff file saved', {
         description: filePath,
+        action: {
+          label: 'Show File',
+          onClick: () => { invoke('show_in_folder', { path: filePath }); },
+        },
+        duration: 10000,
       });
     } catch (err) {
       console.error('Failed to generate handoff:', err);
@@ -193,6 +213,8 @@ export function useHandoffExport(): UseHandoffExportReturn {
       setIsGenerating(false);
       setShowHandoffDialog(false);
       snapshotRef.current = null;
+      dialogResolveRef.current?.();
+      dialogResolveRef.current = null;
     }
   }, [anonymizeChecked, piiAvailable]);
 

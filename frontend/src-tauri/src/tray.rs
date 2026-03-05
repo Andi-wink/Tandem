@@ -1,9 +1,14 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{
     Emitter,
+    image::Image,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::TrayIconBuilder,
     AppHandle, Manager, Runtime,
 };
+
+/// Whether the tray icon animation loop is currently running.
+static TRAY_ANIMATION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone)]
 pub enum RecordingState {
@@ -14,6 +19,119 @@ pub enum RecordingState {
     Paused,
     Resuming,
     Stopping,
+}
+
+/// Creates a recording-indicator icon by overlaying a red circle on the default icon.
+/// The red dot is drawn in the bottom-right quadrant with a thin white border ring.
+fn create_recording_icon(base: &Image<'_>) -> Image<'static> {
+    let width = base.width() as usize;
+    let height = base.height() as usize;
+    let rgba = base.rgba();
+    let mut pixels = rgba.to_vec();
+
+    // Red dot parameters: 25% of icon size, centered at 75%/75%
+    let radius = (width.min(height) as f64 * 0.25) as i32;
+    let border = (radius as f64 * 0.15).max(1.0) as i32;
+    let cx = (width as f64 * 0.72) as i32;
+    let cy = (height as f64 * 0.72) as i32;
+    let r_outer = radius + border;
+
+    for y in 0..height {
+        for x in 0..width {
+            let dx = x as i32 - cx;
+            let dy = y as i32 - cy;
+            let dist_sq = dx * dx + dy * dy;
+
+            let offset = (y * width + x) * 4;
+            if dist_sq <= (radius * radius) {
+                // Inner red circle
+                pixels[offset] = 0xEF;     // R
+                pixels[offset + 1] = 0x44;  // G
+                pixels[offset + 2] = 0x44;  // B
+                pixels[offset + 3] = 0xFF;  // A
+            } else if dist_sq <= (r_outer * r_outer) {
+                // White border ring
+                pixels[offset] = 0xFF;
+                pixels[offset + 1] = 0xFF;
+                pixels[offset + 2] = 0xFF;
+                pixels[offset + 3] = 0xFF;
+            }
+        }
+    }
+
+    Image::new_owned(pixels, base.width(), base.height())
+}
+
+/// Starts the flashing tray icon animation (alternates normal ↔ red-dot icon).
+/// No-op if animation is already running.
+fn start_tray_recording_animation<R: Runtime>(app: &AppHandle<R>) {
+    if TRAY_ANIMATION_ACTIVE.swap(true, Ordering::SeqCst) {
+        return; // Already animating
+    }
+
+    let default_icon = match app.default_window_icon() {
+        Some(icon) => icon.clone().to_owned(),
+        None => {
+            log::warn!("Tray animation: No default window icon available");
+            TRAY_ANIMATION_ACTIVE.store(false, Ordering::SeqCst);
+            return;
+        }
+    };
+
+    let recording_icon = create_recording_icon(&default_icon);
+    let app_clone = app.clone();
+
+    // Update tooltip to indicate recording
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        let _ = tray.set_tooltip(Some("Tandem — Recording"));
+    }
+
+    tauri::async_runtime::spawn(async move {
+        let mut show_recording = true;
+
+        loop {
+            if !TRAY_ANIMATION_ACTIVE.load(Ordering::SeqCst) {
+                break;
+            }
+
+            if let Some(tray) = app_clone.tray_by_id("main-tray") {
+                let icon = if show_recording {
+                    &recording_icon
+                } else {
+                    &default_icon
+                };
+                let _ = tray.set_icon(Some(icon.clone()));
+            }
+
+            show_recording = !show_recording;
+            tokio::time::sleep(tokio::time::Duration::from_millis(700)).await;
+        }
+
+        // Reset to default icon when animation stops
+        if let Some(tray) = app_clone.tray_by_id("main-tray") {
+            let _ = tray.set_icon(Some(default_icon.clone()));
+            let _ = tray.set_tooltip(Some("Tandem"));
+        }
+
+        log::info!("Tray animation: Stopped");
+    });
+
+    log::info!("Tray animation: Started");
+}
+
+/// Stops the flashing tray icon animation and resets to the normal icon.
+fn stop_tray_recording_animation<R: Runtime>(app: &AppHandle<R>) {
+    if !TRAY_ANIMATION_ACTIVE.swap(false, Ordering::SeqCst) {
+        return; // Already stopped
+    }
+
+    // Immediately reset icon (the animation loop will also reset on its next tick)
+    if let Some(default_icon) = app.default_window_icon() {
+        if let Some(tray) = app.tray_by_id("main-tray") {
+            let _ = tray.set_icon(Some(default_icon.clone()));
+            let _ = tray.set_tooltip(Some("Tandem"));
+        }
+    }
 }
 
 pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
@@ -295,6 +413,25 @@ pub async fn update_tray_menu_async<R: Runtime>(app: &AppHandle<R>) {
     // Get the current recording state
     let recording_state = get_current_recording_state().await;
     log::info!("Tray: Current recording state: {:?}", recording_state);
+
+    // Update tray icon animation based on recording state
+    match &recording_state {
+        RecordingState::Recording => start_tray_recording_animation(app),
+        RecordingState::Stopped => stop_tray_recording_animation(app),
+        // Paused: stop flashing but keep the recording icon static
+        RecordingState::Paused => {
+            stop_tray_recording_animation(app);
+            // Show static recording icon (no flash) while paused
+            if let Some(default_icon) = app.default_window_icon() {
+                let recording_icon = create_recording_icon(default_icon);
+                if let Some(tray) = app.tray_by_id("main-tray") {
+                    let _ = tray.set_icon(Some(recording_icon));
+                    let _ = tray.set_tooltip(Some("Tandem — Paused"));
+                }
+            }
+        }
+        _ => {} // Transitional states — animation keeps current behavior
+    }
 
     // Determine if recording should be allowed
     // Only block recording during incomplete onboarding when no transcription model is ready

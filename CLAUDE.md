@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Tandem** is a privacy-first AI meeting assistant that captures, transcribes, and summarizes meetings entirely on local infrastructure. The project consists of two main components:
+**Tandem** is a privacy-first AI co-pilot that works alongside you on every call — capturing, transcribing, and collaborating in real time, entirely on local infrastructure. The project consists of two main components:
 
 1. **Frontend**: Tauri-based desktop application (Rust + Next.js + TypeScript)
 2. **Backend**: FastAPI server for meeting storage, LLM summarization, AI assistant (Claude Agent SDK), and PII anonymization (Python)

@@ -1,6 +1,6 @@
 {
   "project": "Tandem",
-  "description": "Discovery Call Assistant - fork of Meetily (Zackriya-Solutions/meeting-minutes) transformed for sales discovery calls with screenshots, clipboard integration, PII sanitization, and AI-powered insights",
+  "description": "AI co-pilot for every call — work in tandem with AI to capture, collaborate, and act. Fork of Meetily (Zackriya-Solutions/meeting-minutes) with screenshots, clipboard integration, PII sanitization, and real-time AI collaboration",
   "base_branch": "main",
   "working_branch": "main",
   "last_updated": "2026-02-25",
@@ -103,10 +103,19 @@
         "Fix: clear clipboard + screenshot state on every new recording start (useRecordingStart.ts)",
         "Fix: add toast feedback (success/info/error) to captureClipboard so button failures are visible to user"
       ],
-      "dependencies": ["F002"],
-      "new_types": ["ClipboardData", "ClipboardContentType"],
-      "new_events": ["clipboard-captured"],
-      "new_hotkeys": ["Alt+Shift+V"],
+      "dependencies": [
+        "F002"
+      ],
+      "new_types": [
+        "ClipboardData",
+        "ClipboardContentType"
+      ],
+      "new_events": [
+        "clipboard-captured"
+      ],
+      "new_hotkeys": [
+        "Alt+Shift+V"
+      ],
       "new_files": [
         "frontend/src-tauri/src/clipboard/mod.rs",
         "frontend/src-tauri/src/clipboard/types.rs",
@@ -162,7 +171,9 @@
         "Phase 8 — Per-meeting sanitization toggle",
         "Phase 9 — Screenshot basket items converted to text descriptions"
       ],
-      "dependencies": ["F007"],
+      "dependencies": [
+        "F007"
+      ],
       "new_files": [
         "backend/app/anonymizer.py",
         "frontend/src/services/anonymizationService.ts",
@@ -226,7 +237,11 @@
         "Phase 9 — Text highlight to basket (DEFERRED)",
         "Phase 10 — Layout integration (DONE)"
       ],
-      "dependencies": ["F002", "F003", "F004"],
+      "dependencies": [
+        "F002",
+        "F003",
+        "F004"
+      ],
       "passes": true
     },
     {
@@ -386,7 +401,9 @@
       "priority": "critical",
       "status": "done",
       "branch": "feature/claude-panel",
-      "dependencies": ["F007-WU6"],
+      "dependencies": [
+        "F007-WU6"
+      ],
       "steps": [
         "Rewrite claudeService.ts: remove all invoke<> calls and Tauri event listeners",
         "Add streamClaudeSession(params) using fetch() + ReadableStream to read SSE lines from backend",
@@ -415,7 +432,9 @@
       "priority": "high",
       "status": "done",
       "branch": "feature/claude-panel",
-      "dependencies": ["F007-WU7"],
+      "dependencies": [
+        "F007-WU7"
+      ],
       "steps": [
         "Add API key text input to ProjectDirModal (password type, shown on first session setup)",
         "Store key in localStorage (key: tandem_anthropic_api_key) — passed to backend with every request, never stored server-side",
@@ -441,7 +460,9 @@
       "priority": "medium",
       "status": "done",
       "branch": "feature/claude-panel",
-      "dependencies": ["F007-WU7"],
+      "dependencies": [
+        "F007-WU7"
+      ],
       "steps": [
         "Delete frontend/src-tauri/src/claude/ directory (types.rs, session.rs, commands.rs, mod.rs)",
         "Remove 'pub mod claude;' from frontend/src-tauri/src/lib.rs",
@@ -469,7 +490,9 @@
       "priority": "medium",
       "status": "done",
       "branch": "feature/claude-panel",
-      "dependencies": ["F007-WU7"],
+      "dependencies": [
+        "F007-WU7"
+      ],
       "steps": [
         "Search all frontend files for 'Claude Code' text strings",
         "Rename to 'AI Assistant' (or 'Tandem AI') in: panel title, toggle button tooltip, modal title, CLI-not-found warning, placeholder text",
@@ -495,7 +518,9 @@
       "priority": "high",
       "status": "done",
       "branch": "feature/claude-panel",
-      "dependencies": ["F007-WU7"],
+      "dependencies": [
+        "F007-WU7"
+      ],
       "steps": [
         "Import useTranscriptChunks from @/hooks/useTimeline in both TranscriptPanel components",
         "Call useTranscriptChunks(segments) to get chunk array",
@@ -710,7 +735,9 @@
       "priority": "high",
       "status": "done",
       "branch": "feature/claude-panel",
-      "dependencies": ["F007-WU11"],
+      "dependencies": [
+        "F007-WU11"
+      ],
       "steps": [
         "Create useDragAndDrop.ts with useDraggableBasketItem and useDropZone hooks",
         "Add drop zone to ContextBasket.tsx with visual feedback (blue dashed border on drag-over)",
@@ -773,7 +800,9 @@
         "Phase 5 — ClaudePanel integration: handleInputChange detects '/', handleKeyDown routes arrow/Tab/Enter/Escape, handleSend builds expanded message, capture indicator with pulsing dot + segment count",
         "Phase 6 — Settings tab: CommandSettings component with create/edit/delete custom commands, built-in reference list, how-it-works guide, added as 'Commands' tab in settings page"
       ],
-      "dependencies": ["F007"],
+      "dependencies": [
+        "F007"
+      ],
       "new_files": [
         "frontend/src/lib/slashCommands.ts",
         "frontend/src/hooks/useSlashCommand.ts",
@@ -806,7 +835,10 @@
         "Update Tauri commands (api_save_api_key, api_get_api_key) to use new secrets module",
         "Test on Windows (Credential Manager), macOS (Keychain), Linux (Secret Service)"
       ],
-      "affected_tables": ["settings (groqApiKey, openaiApiKey, anthropicApiKey, ollamaApiKey, openRouterApiKey, customOpenAIConfig)", "transcript_settings (whisperApiKey, deepgramApiKey, elevenLabsApiKey, groqApiKey, openaiApiKey)"],
+      "affected_tables": [
+        "settings (groqApiKey, openaiApiKey, anthropicApiKey, ollamaApiKey, openRouterApiKey, customOpenAIConfig)",
+        "transcript_settings (whisperApiKey, deepgramApiKey, elevenLabsApiKey, groqApiKey, openaiApiKey)"
+      ],
       "passes": false
     },
     {
@@ -825,7 +857,9 @@
         "Phase 4 — Save to meeting folder: write HANDOFF.md to {meeting_folder}/ via Tauri invoke (reuse save pattern from screenshots.json)",
         "Phase 5 — Toast confirmation with 'Open in Explorer' button pointing to the file"
       ],
-      "dependencies": ["F018"],
+      "dependencies": [
+        "F018"
+      ],
       "output_format": "markdown",
       "output_example": "## Meeting: Discovery Call with Acme\\n## Date: 2026-02-24 | Duration: 47 min\\n\\n## Transcript\\n- [00:00] Hi everyone...\\n- [00:05] Thanks for joining...\\n\\n## Screenshots\\n- [02:30] screenshots/screenshot_20260224_120530_abc12345.png (1920x1080, fullscreen)\\n\\n## Clipboard Clips\\n- [02:45] Budget is $50k-75k for Q3\\n\\n## AI Conversation\\n**User**: /research Acme Corp competitors\\n**Assistant**: Based on the transcript...\\n\\n## Action Items\\n- [ ] Implement F019 (API key encryption)\\n- [ ] Fix dark mode on settings note box",
       "passes": false
@@ -848,10 +882,17 @@
         "Phase 6 — Settings: CalendarSettings component — connect/disconnect Google/Microsoft accounts, toggle auto-record per calendar, configure lead time (0/30/60s)",
         "Phase 7 — Token storage: use tauri-plugin-store (encrypted) initially, migrate to OS keychain when F019 lands"
       ],
-      "dependencies": ["F019"],
+      "dependencies": [
+        "F019"
+      ],
       "implementation": {
-        "rust_crates": ["oauth2 4.4", "tauri-plugin-oauth 2.0.0"],
-        "npm_packages": ["@fabianlars/tauri-plugin-oauth ^2.0.0"],
+        "rust_crates": [
+          "oauth2 4.4",
+          "tauri-plugin-oauth 2.0.0"
+        ],
+        "npm_packages": [
+          "@fabianlars/tauri-plugin-oauth ^2.0.0"
+        ],
         "google_auth": "Authorization Code + PKCE, loopback redirect, no client_secret needed for desktop app type",
         "microsoft_auth": "Authorization Code + PKCE via @azure/msal-node PublicClientApplication, Graph API v1.0",
         "rate_limits": "Google: 1M/day (sync tokens = ~300-500 calls/day). Microsoft: 4 req/s/mailbox",
@@ -890,7 +931,9 @@
         "Phase 6 — Voice fingerprinting: extract 192-dim embeddings via pyannote/embedding model, store in speaker_profiles table (BLOB). On new meetings, match unknown speakers against known profiles via cosine similarity (threshold ~0.75). Running average updates embedding over multiple meetings",
         "Phase 7 — Export: include speaker labels in all export formats (F010). Add speaker filter to transcript search"
       ],
-      "dependencies": ["F010"],
+      "dependencies": [
+        "F010"
+      ],
       "implementation": {
         "library": "pyannote.audio 4.0 with speaker-diarization-community-1 (CC-BY-4.0, free, no gating)",
         "alternatives_rejected": {
@@ -916,7 +959,10 @@
           "frontend/src/components/TranscriptChunks.tsx",
           "frontend/src/components/VirtualizedTranscriptView.tsx"
         ],
-        "db_tables": ["speaker_profiles (id, display_name, embedding BLOB, sample_count)", "meeting_speakers (meeting_id, speaker_label, speaker_profile_id, confidence)"],
+        "db_tables": [
+          "speaker_profiles (id, display_name, embedding BLOB, sample_count)",
+          "meeting_speakers (meeting_id, speaker_label, speaker_profile_id, confidence)"
+        ],
         "effort_estimate": "3-4 weeks"
       },
       "passes": false
@@ -939,9 +985,17 @@
         "Phase 6 — n8n webhook escape hatch: POST standardized JSON payload to user-configured webhook URL. Supports any CRM via n8n's 400+ integrations. Fire-and-forget with status callback",
         "Phase 7 — Frontend: 'Push to CRM' button on meeting details, CRM connection settings in Settings page, sync status badges on sidebar meeting cards (synced/pending/failed)"
       ],
-      "dependencies": ["F006", "F021", "F022"],
+      "dependencies": [
+        "F006",
+        "F021",
+        "F022"
+      ],
       "implementation": {
-        "python_packages": ["simple-salesforce>=1.12.9 (sync — wrap with asyncio.to_thread)", "hubspot-api-client>=9.0.0 (official HubSpot SDK, updated Feb 2026)", "httpx>=0.27.0 (async webhook calls)"],
+        "python_packages": [
+          "simple-salesforce>=1.12.9 (sync — wrap with asyncio.to_thread)",
+          "hubspot-api-client>=9.0.0 (official HubSpot SDK, updated Feb 2026)",
+          "httpx>=0.27.0 (async webhook calls)"
+        ],
         "salesforce_endpoints": {
           "search": "SOSL FIND {email} IN EMAIL FIELDS RETURNING Contact, Lead",
           "create_note": "POST /sobjects/ContentNote + ContentDocumentLink",
@@ -1014,8 +1068,17 @@
         "audit_log_schema": "Structured JSON: {id (ULID), timestamp, event_type, severity, actor {user_id, email, device_id}, resource {type, id}, context {}, result, chain_hash, prev_hash}",
         "retention_schema": "Tables: retention_policies, legal_holds, meeting_legal_holds. Legal hold is additive — meeting only eligible for deletion when ALL holds released",
         "server_requirement": "SSO, SCIM, admin console, and audit aggregation ALL require a hosted server component. Cannot be fully local. MDM (Intune/Jamf) is a limited alternative for policy distribution only",
-        "soc2_auditors": ["Schellman", "A-LIGN", "Prescient Assurance", "Johanson Group"],
-        "grc_platforms": ["Vanta (recommended, has non-SaaS templates)", "Drata", "Secureframe"],
+        "soc2_auditors": [
+          "Schellman",
+          "A-LIGN",
+          "Prescient Assurance",
+          "Johanson Group"
+        ],
+        "grc_platforms": [
+          "Vanta (recommended, has non-SaaS templates)",
+          "Drata",
+          "Secureframe"
+        ],
         "total_budget": "$150K-$250K including engineering, tooling, and audit fees",
         "total_timeline": "12-14 months to SOC 2 Type 2",
         "effort_estimate": "Phase 1-2: 1.5 eng-months. Phase 3-6: 3 eng-months. Phase 7: ongoing support during audit"
@@ -1068,6 +1131,618 @@
         "Quick Capture mode (one-tap start, auto-stop on silence, AI-generated title, 'Quick Notes' sidebar section)"
       ],
       "notes": "The audio pipeline already supports optional system audio (system_device = None pads with zeros). Core implementation is mostly wiring — the main new logic is the solo summary prompt template and AI prompt awareness. No structural changes to the audio pipeline needed.",
+      "passes": false
+    },
+    {
+      "id": "F026",
+      "category": "functional",
+      "name": "Auto-Title from Transcript",
+      "description": "After the first 30s of transcription, send the initial segments to the LLM with 'generate a 5-word meeting title'. Replace generic 'Meeting 2026-02-25_16-04-44' with something like 'Acme Pricing Discovery Call'. Retitle in sidebar + meeting folder automatically.",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Trigger: in TranscriptContext, after ~30s of segments accumulated (or 10+ segments), fire a one-shot LLM call via existing backend /api/generate endpoint with prompt 'Generate a concise 5-word title for this meeting based on the transcript so far: {first_segments}'",
+        "Phase 2 — Apply title: update meeting title in Rust SQLite via existing rename Tauri command, update SidebarProvider state, rename meeting folder on disk if applicable",
+        "Phase 3 — UI: show subtle toast 'Meeting renamed to: Acme Pricing Discovery Call' with undo button (reverts to timestamp title)"
+      ],
+      "dependencies": [],
+      "modified_files": [
+        "frontend/src/contexts/TranscriptContext.tsx",
+        "frontend/src/components/Sidebar/SidebarProvider.tsx",
+        "backend/app/main.py"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F027",
+      "category": "functional",
+      "name": "Transcript In-Panel Search",
+      "description": "Ctrl+F within the transcript panel with match highlighting and prev/next navigation. Different from the sidebar global search (F008) — this searches only the current meeting's live transcript with instant visual highlighting of matches.",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Search bar: floating search input that appears on Ctrl+F when transcript panel is focused. Shows match count (e.g. '3 of 12'). Prev/Next buttons + Enter/Shift+Enter to cycle.",
+        "Phase 2 — Highlight matches: wrap matching text spans in <mark> with yellow background (dark:amber). Current match gets a brighter highlight. Use simple string match (case-insensitive), no regex needed.",
+        "Phase 3 — Auto-scroll: when cycling matches, scroll the VirtualizedTranscriptView to bring the current match into view. Escape closes search bar."
+      ],
+      "dependencies": [],
+      "modified_files": [
+        "frontend/src/components/VirtualizedTranscriptView.tsx",
+        "frontend/src/components/TranscriptChunks.tsx",
+        "frontend/src/app/_components/TranscriptPanel.tsx"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F028",
+      "category": "functional",
+      "name": "Email Meeting Summary",
+      "description": "One-click 'Email Summary' button that formats the meeting summary as an email and sends it via the user's local Proton Mail Bridge (SMTP on 127.0.0.1:1025). Supports any local SMTP server. Pre-fills subject with meeting title, body with formatted summary + action items. Settings page for SMTP configuration.",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — SMTP settings UI: new 'Email' section in Settings page. Fields: SMTP host (default 127.0.0.1), port (default 1025), username, password (stored encrypted), security mode (STARTTLS/SSL/None), from address. 'Test Connection' button that sends a test email.",
+        "Phase 2 — Backend endpoint: POST /api/email/send accepting {to, subject, body_html, body_text}. Uses Python smtplib with STARTTLS or SMTP_SSL based on config. Self-signed cert handling (ssl.CERT_NONE for localhost). Store SMTP config in backend SQLite.",
+        "Phase 3 — Email composer: 'Email Summary' button on meeting detail view. Opens a small modal with pre-filled To (empty), Subject (meeting title), Body (HTML-formatted summary with sections: Summary, Key Points, Action Items, Decisions). User edits To and optionally tweaks body, then hits Send.",
+        "Phase 4 — Email template: clean HTML email template with Tandem branding footer. Sections from the LLM summary mapped to email sections. Plain text fallback for non-HTML clients."
+      ],
+      "dependencies": [
+        "F006"
+      ],
+      "implementation": {
+        "python_library": "smtplib (stdlib — no new dependency)",
+        "proton_bridge": {
+          "protocol": "SMTP on 127.0.0.1:1025 (default)",
+          "auth": "PLAIN/LOGIN with Bridge-generated password (not Proton account password)",
+          "tls": "STARTTLS (default) or SSL mode, self-signed cert — use ssl.CERT_NONE for localhost",
+          "requirement": "Paid Proton plan + Bridge installed and running"
+        },
+        "alternative_no_bridge": "Proton SMTP submission via smtp.protonmail.ch:587 with SMTP token (requires custom domain on paid plan)",
+        "generic_smtp": "Works with any local SMTP relay — not Proton-specific. Gmail app passwords, Outlook SMTP, Fastmail, etc.",
+        "new_files": [
+          "backend/app/email_sender.py",
+          "frontend/src/components/EmailComposerModal.tsx",
+          "frontend/src/components/EmailSettings.tsx"
+        ],
+        "modified_files": [
+          "backend/app/main.py",
+          "frontend/src/app/settings/page.tsx"
+        ],
+        "api_endpoints": [
+          "POST /api/email/send",
+          "POST /api/email/test-connection",
+          "GET /api/email/config",
+          "PUT /api/email/config"
+        ]
+      },
+      "passes": false
+    },
+    {
+      "id": "F029",
+      "category": "functional",
+      "name": "Open Meeting Folder",
+      "description": "One-click button to open the current meeting's directory in File Explorer. Uses Tauri shell.open(meetingFolderPath). Currently users navigate manually to find recordings, screenshots, and exports.",
+      "priority": "low",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Add 'Open Folder' icon button to meeting detail header (folder icon). On click, invoke Tauri shell.open with the meeting's folder path from the recordings directory.",
+        "Phase 2 — Also add to right-click context menu on sidebar meeting items."
+      ],
+      "dependencies": [],
+      "passes": false
+    },
+    {
+      "id": "F030",
+      "category": "functional",
+      "name": "Inline Transcript Editing",
+      "description": "Double-click any transcript segment to inline-edit and fix Whisper errors. Save correction to SQLite. Shows subtle 'edited' badge. No re-transcription needed — just a text override.",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Double-click handler on transcript chunks: replace text span with a textarea pre-filled with current text. Enter saves, Escape cancels.",
+        "Phase 2 — Persist: save edited text to Rust SQLite (new edited_text column on transcripts table, NULL = original). Update in-memory transcript array.",
+        "Phase 3 — Visual indicator: show small 'edited' badge or pencil icon on modified segments. Tooltip shows original text."
+      ],
+      "dependencies": [],
+      "modified_files": [
+        "frontend/src/components/TranscriptChunks.tsx",
+        "frontend/src/components/VirtualizedTranscriptView.tsx",
+        "frontend/src-tauri/src/database/repositories/transcript.rs",
+        "frontend/src-tauri/src/api/api.rs"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F031",
+      "category": "functional",
+      "name": "LAN Meeting Share",
+      "description": "Quick-share a meeting summary as a temporary local HTTP page. Serve at localhost:PORT/share/{meeting-id} so a coworker on the same network can view it in their browser. No cloud, no accounts — just a link. Auto-expires after configurable time (default 1 hour). Shows summary, action items, and optionally transcript.",
+      "priority": "low",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Backend endpoint: GET /api/share/{meeting_id} returns a self-contained HTML page (inline CSS, no external deps) with meeting summary, action items, transcript. Add share_tokens table with meeting_id, token, expires_at.",
+        "Phase 2 — Generate share link: 'Share on LAN' button on meeting detail. Creates a token, shows copyable URL like http://192.168.1.x:5167/share/{token}. QR code option for mobile.",
+        "Phase 3 — Expiry + revoke: auto-delete expired tokens on access. 'Stop Sharing' button to revoke immediately."
+      ],
+      "dependencies": [
+        "F006"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F032",
+      "category": "functional",
+      "name": "AI Meeting Prep Brief",
+      "description": "Before a call starts, AI auto-generates a prep sheet from context: prospect's website (web scrape), previous meeting transcripts with this contact, CRM notes, LinkedIn profile. Outputs 'what we discussed last time, open action items, company news, suggested questions.' The #1 feature sales reps wish existed.",
+      "priority": "high",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Prep trigger: 'Generate Prep Brief' button on meeting detail (pre-recording). User pastes prospect URL, company name, or selects from previous meetings.",
+        "Phase 2 — Context gathering: backend scrapes provided URL (httpx + BeautifulSoup), pulls previous meeting summaries for same contact/company from SQLite, fetches CRM notes if F023 is connected.",
+        "Phase 3 — LLM synthesis: send gathered context to Claude/Ollama with prompt: 'Generate a pre-meeting brief: key points from previous calls, open action items, company context, 5 suggested questions.'",
+        "Phase 4 — Display: show prep brief in AI panel as a pinned card above the chat. Collapsible. Also exportable as markdown.",
+        "Phase 5 — Auto-trigger (post-F021): when calendar event is approaching, auto-generate prep from calendar attendees + previous meetings with those names."
+      ],
+      "dependencies": [
+        "F006"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F033",
+      "category": "infrastructure",
+      "name": "Multi-Device Encrypted Sync",
+      "description": "Sync meetings across devices (work laptop + home desktop) using end-to-end encrypted cloud storage. Server never sees plaintext — keys derived locally from passphrase. Thin relay (S3/MinIO) stores opaque encrypted blobs. Enables team sharing without sacrificing the privacy story.",
+      "priority": "high",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Encryption layer: AES-256-GCM with keys derived from user passphrase via Argon2id. Encrypt meeting metadata, transcripts, summaries, AI conversations. Audio files optional (large). Use Rust ring crate.",
+        "Phase 2 — Sync protocol: content-addressed blobs (SHA-256 hash as key). Delta sync — only upload changed meetings. Conflict resolution: last-write-wins with merge for concurrent edits.",
+        "Phase 3 — Storage backend: abstract StorageProvider trait. Implementations: S3-compatible (AWS/MinIO/Backblaze B2), local folder (USB drive sync), WebDAV (Nextcloud). User configures in settings.",
+        "Phase 4 — Device pairing: generate sync key on device A, enter on device B. Key exchange via QR code or manual passphrase entry. No account creation needed.",
+        "Phase 5 — Selective sync: choose which meetings/date ranges to sync. Don't sync audio by default (bandwidth). Transcript + summary + metadata only."
+      ],
+      "dependencies": [
+        "F019"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F034",
+      "category": "integration",
+      "name": "Knowledge Base Export (Vector DB / Obsidian)",
+      "description": "Export meeting transcripts and summaries into a personal knowledge base. Two modes: (1) Obsidian vault — write each meeting as a markdown note with YAML frontmatter, backlinks between related meetings, tags from meeting labels. (2) Vector DB — embed transcript chunks into a local ChromaDB/Qdrant instance for semantic search across all meetings ('What did the Acme team say about pricing in any call?').",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Obsidian export: 'Export to Obsidian' button on meeting detail. Writes a .md file to user-configured vault path. YAML frontmatter: title, date, duration, attendees, tags. Body: summary, transcript with timestamps, action items. Backlinks: [[Previous Meeting with Acme]] if related meetings exist.",
+        "Phase 2 — Auto-sync to Obsidian: toggle in settings to auto-export every meeting on recording stop. Watches vault folder for conflicts.",
+        "Phase 3 — Vector DB ingestion: POST /api/knowledge/ingest endpoint. Chunk transcript into 200-word overlapping segments. Embed with a local model (nomic-embed-text via Ollama, or sentence-transformers). Store in ChromaDB (pip install chromadb, serverless local mode).",
+        "Phase 4 — Semantic search: 'Search all meetings' input in sidebar. Query the vector DB, return top-K matching segments with meeting title + timestamp + snippet. Click to navigate to that meeting.",
+        "Phase 5 — AI context enrichment: when using the AI panel, optionally pull relevant past meeting context from the vector DB and inject into the prompt. 'Based on your previous calls, the prospect mentioned budget constraints in 3 separate meetings.'"
+      ],
+      "dependencies": [
+        "F006"
+      ],
+      "implementation": {
+        "obsidian": {
+          "format": "Markdown with YAML frontmatter",
+          "vault_path": "User-configured in settings, default ~/Obsidian/Tandem/",
+          "backlinks": "Match meetings by attendee names or company extracted from title",
+          "tags": "Map meeting tags (F-labels) to Obsidian #tags"
+        },
+        "vector_db": {
+          "library": "chromadb (pip install chromadb, local persistent mode, no server needed)",
+          "embedding_model": "nomic-embed-text via Ollama (768-dim, ~275MB) or all-MiniLM-L6-v2 via sentence-transformers (384-dim, ~80MB)",
+          "chunk_size": "200 words with 50-word overlap",
+          "search": "Cosine similarity, top-10 results, filtered by date range / meeting tags"
+        },
+        "new_files": [
+          "backend/app/knowledge_base.py",
+          "backend/app/obsidian_exporter.py",
+          "frontend/src/components/KnowledgeBaseSettings.tsx",
+          "frontend/src/components/SemanticSearch.tsx"
+        ],
+        "api_endpoints": [
+          "POST /api/knowledge/ingest",
+          "POST /api/knowledge/search",
+          "POST /api/export/obsidian",
+          "PUT /api/export/obsidian/config"
+        ]
+      },
+      "passes": false
+    },
+    {
+      "id": "F035",
+      "category": "functional",
+      "name": "LLM Transcript Correction",
+      "description": "Use a local lightweight LLM (Qwen2.5-1.5B via Ollama) to post-process Parakeet/Whisper output in real-time. Fixes grammar, spelling, homophones (their/there/they're), punctuation, and removes filler words (um, uh, like, you know). Parakeet is CTC-based and benefits enormously from LLM post-correction — the combination matches Whisper large-v3 quality at lower latency.",
+      "priority": "high",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Correction service: new backend/app/transcript_corrector.py. TranscriptCorrector class using Ollama AsyncClient with qwen2.5:1.5b. Preload model on startup with keep_alive=-1 (permanent VRAM residency, ~1.2GB).",
+        "Phase 2 — Real-time pipeline: after each Whisper/Parakeet segment, POST to /api/correct with raw text + last 100 words as context. Debounce: accumulate 2-3 segments (~10s speech) for better homophone disambiguation. Timeout at 500ms, fall back to uncorrected text.",
+        "Phase 3 — Safety: reject hallucinated output if corrected text > 2x input length. Log correction diffs for debugging. Store both original and corrected text in SQLite (original_text + corrected_text columns).",
+        "Phase 4 — Settings: toggle correction on/off in Transcription settings. Model selector (qwen2.5:0.5b for speed, qwen2.5:1.5b for quality, qwen2.5:3b for best). Show correction latency stats.",
+        "Phase 5 — Rust-side option: for lowest latency, call Ollama HTTP API directly from transcription worker.rs, bypassing Python backend. Configurable in settings.",
+        "Phase 6 — Post-recording refinement: after recording stops, run a second pass over full transcript with larger context windows (5-10 segments at a time) to catch cross-segment errors."
+      ],
+      "dependencies": [],
+      "implementation": {
+        "model": "qwen2.5:1.5b via Ollama (1.18 GB Q4, best balance of speed and quality)",
+        "alternatives": {
+          "qwen2.5:0.5b": "Fastest (~30-60ms), may miss subtle errors",
+          "qwen2.5:3b": "Best quality (~80-180ms), 2GB VRAM",
+          "phi4-mini": "Good quality (~100-250ms), 2.5GB VRAM",
+          "llama3.2:1b": "Fast (~40-80ms), good for simple corrections",
+          "flan-t5-large-grammar-synthesis": "Grammar-specialized T5, ~60-150ms, but limited Ollama/GGUF support"
+        },
+        "latency_rtx3090": {
+          "qwen2.5_1.5b": "50-120ms per 10-50 word segment",
+          "qwen2.5_0.5b": "30-60ms per segment",
+          "qwen2.5_3b": "80-180ms per segment"
+        },
+        "vram_budget": "RTX 3090 has 24GB. Whisper: 1-4GB. Correction model: 1.2GB. Plenty of headroom.",
+        "prompt_template": "Fix grammar/spelling/punctuation/homophones. Remove filler words (um, uh, like, you know). Output ONLY corrected text.\nContext: {last_100_words}\nTranscript: {raw_text}\nCorrected:",
+        "why_parakeet_benefits_most": "Parakeet-TDT is CTC-based (no attention decoder for self-correction). Research shows LLM correction provides 68% relative WER reduction on CTC models vs minimal improvement on attention-based models like Whisper. Filler word removal is unique to LLM correction — no ASR model does this.",
+        "new_files": [
+          "backend/app/transcript_corrector.py"
+        ],
+        "modified_files": [
+          "backend/app/main.py",
+          "frontend/src-tauri/src/audio/transcription/worker.rs",
+          "frontend/src/app/settings/page.tsx",
+          "frontend/src/contexts/TranscriptContext.tsx"
+        ]
+      },
+      "passes": false
+    },
+    {
+      "id": "F036",
+      "category": "functional",
+      "name": "Push-to-Talk Director's Commentary",
+      "description": "During a live meeting, the user presses a hotkey (e.g., holding Alt) and speaks a note only to the Tandem app. This audio is transcribed separately and injected into the AI context as a [Director's Note] and is visually distinguished in the transcript. Allows the user to verbally tag action items or leave breadcrumbs for the AI summary without having to type or disrupt the flow of the conversation.",
+      "priority": "high",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 \u2014 Hotkey listener: register global shortcut (e.g., Alt/Cmd+Shift+Space) via Tauri globalShortcut plugin to activate 'Director mode'.",
+        "Phase 2 \u2014 Audio routing: when hotkey is held, capture default microphone stream, flag the resulting audio chunks in the pipeline as 'Director Note'.",
+        "Phase 3 \u2014 Transcript injection: insert the transcribed text into the live transcript with a special visual style (e.g., distinct background color, distinct icon) and an explicit [Director's Note] label.",
+        "Phase 4 \u2014 AI context handling: ensure this note is heavily weighted in the summary generation prompt (since it's explicit user instruction) but optionally excluded from plain PDF/text exports if the user wants separate clean notes."
+      ],
+      "dependencies": [],
+      "passes": false
+    },
+    {
+      "id": "F037",
+      "category": "infrastructure",
+      "name": "Upgrade ASR Engine (Parakeet-TDT-1.1B + WER Research)",
+      "description": "Evaluate and integrate the latest ASR models based on 2025-2026 WER research. Parakeet-TDT-1.1B achieves 1.39% WER on LibriSpeech (best open-source), 23x faster than Whisper large-v3. Combined with F035 (LLM correction), effective meeting WER should drop from ~11% to ~5-7%. This feature tracks the ASR engine upgrade path and benchmark validation.",
+      "priority": "high",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Benchmark current setup: measure WER on a set of 5-10 saved meeting recordings using the existing Whisper/Parakeet pipeline. Establish baseline numbers for clean speech, noisy speech, and multi-speaker audio.",
+        "Phase 2 — Evaluate Parakeet-TDT-1.1B: download from HuggingFace, run same benchmark set. Compare WER + latency vs current 0.6B model. 1.1B requires ~4GB VRAM (fits alongside correction model on RTX 3090).",
+        "Phase 3 — Evaluate Canary-Qwen-2.5B: if accuracy is critical, test NVIDIA's SALM model (FastConformer encoder + Qwen3-1.7B decoder). 5.63% avg WER on diverse audio — best overall. Requires NeMo framework.",
+        "Phase 4 — Model selector in settings: let users choose ASR model (Whisper small/medium/large-v3-turbo, Parakeet 0.6B/1.1B, Canary). Auto-detect VRAM and recommend appropriate model.",
+        "Phase 5 — Streaming evaluation: test NVIDIA Nemotron-Speech-Streaming-EN-0.6B for real-time transcription with cache-aware architecture. Compare latency vs current chunked approach.",
+        "Phase 6 — Combined pipeline benchmark: measure WER of Parakeet-TDT-1.1B + Qwen2.5-1.5B correction (F035) end-to-end. Target: <6% WER on meeting audio, <2% on clean speech."
+      ],
+      "dependencies": ["F035"],
+      "research": {
+        "state_of_the_art_2026": {
+          "best_librispeech_clean": "Parakeet-TDT-1.1B: 1.39% WER (NVIDIA, 2025)",
+          "best_diverse_avg": "Canary-Qwen-2.5B: 5.63% avg WER across 8 datasets (NVIDIA, 2025)",
+          "best_speed": "Parakeet-TDT-0.6B-v2: 3,380 RTFx (23x faster than Whisper large-v3)",
+          "human_parity": "5.9% WER on Switchboard (Microsoft, 2016). Current models beat this on clean speech."
+        },
+        "model_comparison": {
+          "parakeet_tdt_1.1b": {"params": "1.1B", "libri_clean": "1.39%", "libri_other": "2.62%", "rtfx": ">2000", "vram": "~4GB"},
+          "parakeet_tdt_0.6b_v2": {"params": "0.6B", "libri_clean": "1.69%", "libri_other": "3.19%", "open_asr_avg": "6.05%", "rtfx": "3380", "vram": "~2GB", "ami_meetings": "11.16%"},
+          "parakeet_tdt_0.6b_v3": {"params": "0.6B", "libri_clean": "1.92%", "libri_other": "3.59%", "open_asr_avg": "6.32%", "rtfx": "3333", "languages": "25"},
+          "whisper_large_v3": {"params": "1.55B", "libri_clean": "2.01%", "libri_other": "3.91%", "open_asr_avg": "7.44%", "rtfx": "146", "languages": "99+"},
+          "whisper_large_v3_turbo": {"params": "0.81B", "libri_clean": "~2.2%", "open_asr_avg": "7.75%", "rtfx": "216", "languages": "99+"},
+          "canary_qwen_2.5b": {"params": "2.5B", "open_asr_avg": "5.63%", "rtfx": "418", "architecture": "FastConformer + Qwen3-1.7B LLM decoder"},
+          "whale": {"libri_clean": "2.4%", "architecture": "w2v-BERT + E-Branchformer", "languages": "144"},
+          "moonshine_27m": {"params": "27M", "note": "Matches Whisper Medium (28x larger), optimized for edge"}
+        },
+        "key_techniques": {
+          "tdt_transducer": "Token-and-Duration Transducer decouples token/duration predictions, enabling 4-frame skip inference. Key to Parakeet's speed advantage.",
+          "salm_architecture": "Speech-Augmented Language Model pairs ASR encoder with general-purpose LLM decoder (Canary-Qwen). Currently best accuracy.",
+          "llm_post_correction": "68% relative WER reduction on CTC-based models. Minimal improvement on attention-based models (Whisper). See F035.",
+          "speculative_decoding": "SpecASR achieves 3-4x speedup on LLM-based ASR with zero accuracy loss.",
+          "cache_aware_streaming": "NVIDIA Nemotron maintains state across audio chunks, avoiding repeated computation. Tunable latency/accuracy tradeoff."
+        },
+        "practical_wer_floor": {
+          "clean_speech": "~1.4% (proper nouns, rare words, homophones remain)",
+          "meeting_audio": "~5-8% on good audio, 15-25% with cross-talk and noise",
+          "benchmark_to_production_gap": "2.8-5.7x degradation from benchmarks to real-world audio",
+          "implication": "Below ~4% WER, LLM correction and domain adaptation matter more than raw model improvements"
+        },
+        "recommendation_for_tandem": "Parakeet-TDT-0.6B-v2 (or 1.1B if VRAM allows) + Qwen2.5-1.5B correction is optimal. Parakeet gives speed + accuracy, LLM fixes homophones/grammar/fillers. Target: <300ms total latency per segment, ~5-7% effective meeting WER.",
+        "papers": [
+          "Canary-1B-v2 & Parakeet-TDT-0.6B-v3 (arXiv:2509.14128, Sep 2025)",
+          "Whale: Multilingual ASR with w2v-BERT (arXiv:2506.01439, Jun 2025)",
+          "SpecASR: Speculative Decoding for ASR (arXiv:2507.18181, Jul 2025)",
+          "Moonshine: Tiny ASR for Edge (arXiv:2509.02523, Sep 2025)",
+          "Open ASR Leaderboard (arXiv:2510.06961, Oct 2025)",
+          "ASR Error Correction using LLMs (arXiv:2409.09554)",
+          "Whisper Courtside: LLM Context for ASR (arXiv:2602.18966, Feb 2026)",
+          "Three-Stage LLM ASR Correction (arXiv:2505.24347)"
+        ]
+      },
+      "passes": false
+    },
+    {
+      "id": "F039",
+      "category": "functional",
+      "name": "Instant Fact Lookup Mid-Call",
+      "description": "AI monitors the conversation and proactively surfaces relevant facts when topics come up. 'They just asked about our uptime — here's our SLA page.' Uses RAG over user-provided reference docs + web search. Facts appear in AI panel sidebar without interrupting the conversation flow.",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Reference doc ingestion: drag-and-drop PDFs, URLs, or text files into a 'knowledge base' per meeting or globally. Chunk and embed locally (sentence-transformers or Ollama embeddings).",
+        "Phase 2 — Topic extraction: every 15s, extract key topics/entities from recent transcript. Compare against embedded knowledge base for relevant hits (cosine similarity > 0.7).",
+        "Phase 3 — Proactive surfacing: when a match is found, show a 'Fact Card' in the AI panel — source doc name, relevant excerpt, confidence score. Collapsible, dismissible.",
+        "Phase 4 — Web search fallback: if no local knowledge base hit, optionally search the web (via Brave/Tavily API) for the topic. User toggles this on/off.",
+        "Phase 5 — Learning loop: track which fact cards the user clicks/dismisses. Over time, improve relevance scoring per user."
+      ],
+      "dependencies": ["F007"],
+      "passes": false
+    },
+    {
+      "id": "F040",
+      "category": "functional",
+      "name": "Smart Follow-up Drafting",
+      "description": "After a call ends, AI drafts a follow-up email/message based on the full transcript, action items, and decisions made. User reviews, edits, and sends directly or copies to clipboard. Supports templates for different follow-up styles (formal recap, casual check-in, proposal next steps).",
+      "priority": "high",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Draft generation: after meeting ends, 'Draft Follow-up' button in summary view. LLM generates email from transcript + summary + action items.",
+        "Phase 2 — Template system: built-in templates (Meeting Recap, Action Items Only, Proposal Follow-up, Thank You). User can create custom templates with variable placeholders.",
+        "Phase 3 — Edit and send: rich text editor for the draft. Copy to clipboard, or send via mailto: link. Track which follow-ups were sent per meeting.",
+        "Phase 4 — Multi-recipient: detect participants from transcript (speaker diarization names). Generate personalized follow-ups per recipient with relevant-to-them highlights.",
+        "Phase 5 — Scheduled follow-ups: 'Remind me to follow up in 3 days if no response.' Local notification + pre-drafted nudge email."
+      ],
+      "dependencies": ["F006"],
+      "passes": false
+    },
+    {
+      "id": "F041",
+      "category": "functional",
+      "name": "Decision Logger",
+      "description": "Automatically detect and log decisions made during calls. AI identifies statements like 'Let's go with option B', 'We agreed to...', 'The deadline is...' and tags them as decisions. Decisions get their own timeline view, searchable across all meetings. Never lose track of what was decided and when.",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Decision detection: NLP classifier on transcript segments to identify decision statements. Use prompt-based classification with LLM — 'Is this a decision, action item, or neither?'",
+        "Phase 2 — Decision card UI: each detected decision shown as a card with timestamp, speaker, context (surrounding transcript), and confidence. User can confirm/dismiss/edit.",
+        "Phase 3 — Decision log view: new tab/section showing all decisions across meetings. Filter by date, participant, topic. Search full-text.",
+        "Phase 4 — Decision linking: link related decisions across meetings ('In Jan we decided X, but in March we changed to Y'). Show decision history per topic.",
+        "Phase 5 — Export: decisions as structured data (JSON, CSV) for project management tools. Webhook integration for auto-creating tickets from decisions."
+      ],
+      "dependencies": ["F006", "F007"],
+      "passes": false
+    },
+    {
+      "id": "F042",
+      "category": "functional",
+      "name": "Action Item Assignment and Tracking",
+      "description": "Detect action items from calls ('I'll send the proposal by Friday'), assign owners, set due dates, and track completion. Dashboard shows all open action items across meetings. Integrates with the decision logger for a complete accountability trail.",
+      "priority": "high",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Action item extraction: LLM prompt on transcript to extract action items with owner, due date, and description. Show inline during live transcript with 'task' icon.",
+        "Phase 2 — Assignment UI: action items appear in meeting summary with editable owner and due date fields. Auto-suggest owners from detected speaker names.",
+        "Phase 3 — Action item dashboard: new view showing all action items across all meetings. Filter by status (open/done/overdue), owner, date range. Sort by due date.",
+        "Phase 4 — Status tracking: mark items as done/in-progress. Show completion rate per meeting, per person. Local notifications for approaching due dates.",
+        "Phase 5 — Cross-meeting continuity: at start of follow-up meeting with same participants, surface open action items from previous meetings. 'Last time, Alice committed to X — is that done?'"
+      ],
+      "dependencies": ["F006", "F041"],
+      "passes": false
+    },
+    {
+      "id": "F043",
+      "category": "functional",
+      "name": "Multi-Call Memory (Relationship Context)",
+      "description": "AI remembers context across multiple calls with the same person/company. 'Last call with Acme Corp, they mentioned Q3 budget freeze — bring it up.' Builds a relationship graph over time. The AI co-pilot gets smarter with every interaction, like a teammate who was in every meeting.",
+      "priority": "high",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Contact/company entity extraction: identify people and companies from transcripts using NER. Link meetings to contacts automatically.",
+        "Phase 2 — Relationship timeline: per-contact view showing all meetings, key topics discussed, decisions made, action items. Chronological timeline.",
+        "Phase 3 — Context injection: when starting a new meeting, AI panel auto-loads summary context from previous meetings with same contact. Shown as 'Previous context' card.",
+        "Phase 4 — Relationship insights: AI generates relationship health metrics — frequency of contact, sentiment trend, open commitments, topics that keep recurring.",
+        "Phase 5 — Smart suggestions: before a call, AI suggests topics to revisit based on relationship history. 'You discussed pricing 3 calls ago but never followed up.'"
+      ],
+      "dependencies": ["F006", "F007"],
+      "passes": false
+    },
+    {
+      "id": "F044",
+      "category": "functional",
+      "name": "Document Reference (Drag-in PDFs and Files)",
+      "description": "Drag PDFs, spreadsheets, or documents into the AI panel to give the AI instant context. 'Here's the contract — what are the key terms?' or 'Compare this proposal against what was discussed on the call.' Files are processed locally, never uploaded to cloud.",
+      "priority": "medium",
+      "status": "complete",
+      "branch": "feature/document-ref-voice-commands",
+      "worktree": "Tandem-f044-f047",
+      "commit": "8d46af9",
+      "steps": [
+        "[DONE] Phase 1 — Backend document parser: POST /api/documents/parse endpoint using PyMuPDF (PDF), python-docx (DOCX), pandas (CSV), raw (TXT/MD). Max 50k chars with truncation.",
+        "[DONE] Phase 2 — Frontend integration: 'document' type in ContextBasketItemType, paperclip button + OS file drop handler in ClaudePanel, parseDocument() in claudeService.ts, FileText icon in ContextBasket.",
+        "Phase 3 — Token budget: truncate large documents with notice. Show estimated token count in basket chip.",
+        "Phase 4 — Document Q&A: Claude handles naturally via text in context_block. Page references preserved via [Page N/M] headers."
+      ],
+      "dependencies": ["F007"],
+      "passes": false
+    },
+    {
+      "id": "F045",
+      "category": "functional",
+      "name": "Template-Driven Exports",
+      "description": "Export meeting outputs (summary, transcript, action items, decisions) using customizable templates. Built-in templates for common formats: executive brief, detailed minutes, SOAP notes (medical), sprint retrospective. Users create custom templates with Mustache/Handlebars syntax. Export to Markdown, PDF, DOCX.",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Template engine: Handlebars-based templates with variables ({{title}}, {{date}}, {{summary}}, {{action_items}}, {{transcript}}). 5 built-in templates.",
+        "Phase 2 — Template editor: settings page for creating/editing custom templates. Live preview with sample meeting data. Import/export templates as JSON.",
+        "Phase 3 — Export formats: Markdown (always available), PDF (via puppeteer or pdfkit), DOCX (via docx.js). User selects format at export time.",
+        "Phase 4 — Batch export: export multiple meetings at once with the same template. Useful for weekly reports or compliance audits.",
+        "Phase 5 — Auto-export: configure auto-export after every meeting. Save to a folder, send via webhook, or push to connected integrations (Notion, Google Docs)."
+      ],
+      "dependencies": ["F006"],
+      "passes": false
+    },
+    {
+      "id": "F046",
+      "category": "functional",
+      "name": "Async Handoff (Briefing Doc for Absent Teammates)",
+      "description": "Generate a structured briefing document for teammates who missed the call. More than a summary — includes context they need, decisions that affect them, action items assigned to them, and questions that came up about their work. 'Here's what you missed and what you need to do.'",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Handoff generation: after meeting ends, 'Create Handoff' button. User selects recipient(s) and their role/context. LLM generates personalized briefing.",
+        "Phase 2 — Recipient-aware filtering: briefing highlights only parts relevant to the recipient. Engineer gets technical decisions, manager gets timeline changes, designer gets UX feedback.",
+        "Phase 3 — Question flagging: identify moments where absent teammate was mentioned or questions were raised about their work. Flag these prominently in the handoff.",
+        "Phase 4 — Format options: generate as email draft, Slack message, or document. Copy to clipboard with formatting preserved.",
+        "Phase 5 — Handoff templates: customizable per team. Engineering handoff includes code references, sales handoff includes next steps and objections, executive handoff includes key metrics discussed."
+      ],
+      "dependencies": ["F006", "F007"],
+      "passes": false
+    },
+    {
+      "id": "F047",
+      "category": "functional",
+      "name": "Voice Commands for AI Panel",
+      "description": "Control the AI panel with voice during calls via Ctrl+Space push-to-talk hotkey. Hold to listen, release to send. Wake word detection (OpenWakeWord ONNX pipeline) is built but dormant — needs custom 'Hey Tandem' model training. Currently using Alexa dev model as stand-in.",
+      "priority": "low",
+      "status": "in-progress",
+      "branch": "feature/document-ref-voice-commands",
+      "worktree": "Tandem-f044-f047",
+      "commit": "8d46af9",
+      "steps": [
+        "[DONE] Phase 1 — Audio plumbing: kws_sender mic-only tap in RecordingState, 48kHz→16kHz resampler, Tauri event emission. Already wired into recording lifecycle.",
+        "[DONE] Phase 2 — KWS engine: OpenWakeWord 3-stage ONNX pipeline (melspectrogram → embedding → classifier) via ort crate. Replaces rustpotter (broken candle-core dependency). Rolling avg smoothing + cooldown detection logic.",
+        "[DONE] Phase 3 — Frontend hook: useVoiceCommand hook listens for wake-word-detected events, manages listening state, parses voice commands (summarize, actions, key_points, screenshot, free-form ask).",
+        "[DONE] Phase 4 — UI integration: 'Listening...' indicator in ClaudePanel, Voice Commands settings section in Commands tab (enable/disable toggle, sensitivity slider).",
+        "[DONE] Phase 5 — Push-to-talk hotkey: Ctrl+Space hold-to-listen with 1.5s grace period on release for transcription lag. Shares activityTimerRef with wake-word mode. 15s safety timeout. Mode-specific listening indicator in ClaudePanel.",
+        "[DONE] Phase 6 — Semantic wake-word handling: removed regex-based wake word stripping (Whisper transcribes 'Alexa' as 'Alex'). AI handles wake word via prompt prefix instead. Transcript snapshot on listening start prevents pre-existing text from leaking into voice commands.",
+        "Phase 7 — Model training: train custom 'Hey Tandem' wake word model via openwakeword-trainer Docker pipeline. Ship melspectrogram.onnx + embedding_model.onnx + hey_tandem.onnx.",
+        "Phase 8 — End-to-end testing: record, say wake word / press Ctrl+Space, verify full pipeline from audio tap → ONNX inference / hotkey → Tauri event → UI response → AI command execution."
+      ],
+      "dependencies": ["F007", "F018"],
+      "passes": false
+    },
+    {
+      "id": "F048",
+      "category": "infrastructure",
+      "name": "Tandem Auto-Update System",
+      "description": "Connect the existing Tauri updater infrastructure (UpdateCheckProvider, UpdateDialog, UpdateNotification, updateService) to Tandem's own GitHub releases. Currently disabled because the endpoint still points to the upstream Meetily repo. When Tandem has its own repo/releases: update the endpoint in tauri.conf.json, generate a new signing keypair, re-enable checkOnMount in UpdateCheckProvider.tsx.",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "worktree": null,
+      "commit": null,
+      "steps": [
+        "Create Tandem GitHub repo and set up GitHub Releases workflow",
+        "Generate new Tauri updater signing keypair (minisign)",
+        "Update tauri.conf.json endpoint to point to Tandem releases",
+        "Update pubkey in tauri.conf.json to the new Tandem key",
+        "Re-enable checkOnMount: true in UpdateCheckProvider.tsx",
+        "Test full update flow: check → notification → dialog → download → install → relaunch"
+      ],
+      "dependencies": [],
+      "passes": false
+    },
+    {
+      "id": "F049",
+      "category": "functional",
+      "name": "AI Diagram Generation (Excalidraw Skill)",
+      "description": "The AI assistant can create high-quality visual diagrams (flowcharts, architecture, workflows, n8n automations) mid-conversation. Based on Cole Medin's Excalidraw diagram skill. Agent generates hand-crafted Excalidraw JSON following a 27-point design methodology, renders to PNG via Playwright + headless Chromium, visually validates the output, and iterates 2-4 times until the diagram looks great. Final PNG + .excalidraw file appear inline in the chat panel via a dedicated DiagramBlock component.",
+      "priority": "medium",
+      "status": "in-progress",
+      "branch": "main",
+      "worktree": null,
+      "commit": null,
+      "steps": [
+        "Port Excalidraw skill files (SKILL_PROMPT.md, render script, templates, color palette, JSON schema) to backend/skills/excalidraw/",
+        "Create render_excalidraw.py + render_template.html (Playwright + headless Chromium → PNG)",
+        "Create DiagramBlock.tsx frontend component (renders PNG inline, download/copy/open buttons)",
+        "Update ConversationView.tsx to route diagram tool results to DiagramBlock",
+        "Update claude_agent.py system prompt with diagram capability hint and skill file paths",
+        "Install Playwright + Chromium one-time setup (uv sync && playwright install chromium)",
+        "Integration test: ask AI for a diagram, verify render-validate loop, PNG appears in chat"
+      ],
+      "files": [
+        "backend/skills/excalidraw/SKILL_PROMPT.md",
+        "backend/skills/excalidraw/render_excalidraw.py",
+        "backend/skills/excalidraw/render_template.html",
+        "backend/skills/excalidraw/pyproject.toml",
+        "backend/skills/excalidraw/references/color-palette.md",
+        "backend/skills/excalidraw/references/element-templates.md",
+        "backend/skills/excalidraw/references/json-schema.md",
+        "frontend/src/components/ClaudePanel/DiagramBlock.tsx",
+        "frontend/src/components/ClaudePanel/ConversationView.tsx",
+        "backend/app/claude_agent.py"
+      ],
+      "dependencies": ["F007"],
+      "passes": false
+    },
+    {
+      "id": "F050",
+      "category": "functional",
+      "name": "Multi-Session AI Panel (Parallel Conversations)",
+      "description": "Allow multiple concurrent AI conversations so long-running tasks don't block the chat. Three implementation tiers: (A) Tab bar with independent sessions — quick to build, purely frontend state. (B) Background task queue — send a running task to background, get a notification when done. (C) Agent team delegation — main agent stays responsive and delegates heavy work to specialist sub-agents via Claude Agent SDK multi-agent pattern.",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "worktree": null,
+      "commit": null,
+      "steps": [
+        "Phase 1 — Multi-tab sessions: Refactor ClaudeContext to support an array of sessions (each with own conversation, streaming state, context basket). Add tab bar UI to ClaudePanel header. New tab button creates fresh session.",
+        "Phase 2 — Background tasks: Add 'Send to background' button during streaming. Background queue stores running SSE streams. Toast notification on completion. Click to view result in conversation.",
+        "Phase 3 — Agent team delegation: Backend multi-agent orchestration via Claude Agent SDK. Main chat agent delegates to specialist sub-agents (data analyst, researcher, etc.). Sub-agents run as separate sessions, report results back to main conversation."
+      ],
+      "dependencies": ["F007"],
       "passes": false
     }
   ]
