@@ -458,6 +458,7 @@ pub fn run() {
                                             serde_json::json!({
                                                 "monitor_width": result.monitor_width,
                                                 "monitor_height": result.monitor_height,
+                                                "annotate": false,
                                             }),
                                         );
                                     }
@@ -472,7 +473,7 @@ pub fn run() {
                                 }
                             });
                         } else if shortcut == &region_shortcut {
-                            log::info!("Global shortcut pressed: Alt+Shift+R (region screenshot)");
+                            log::info!("Global shortcut pressed: Alt+Shift+R (annotate screenshot)");
 
                             // Self-healing guard: if a previous capture left the flag stuck
                             // (e.g. overlay failed to mount or user dismissed it unexpectedly),
@@ -495,7 +496,7 @@ pub fn run() {
                                 {
                                     Ok(Ok(result)) => {
                                         log::info!(
-                                            "Pre-captured screen: {}x{}",
+                                            "Pre-captured screen for annotation: {}x{}",
                                             result.monitor_width,
                                             result.monitor_height,
                                         );
@@ -512,6 +513,7 @@ pub fn run() {
                                             serde_json::json!({
                                                 "monitor_width": result.monitor_width,
                                                 "monitor_height": result.monitor_height,
+                                                "annotate": true,
                                             }),
                                         );
                                     }

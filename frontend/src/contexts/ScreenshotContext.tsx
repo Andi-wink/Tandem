@@ -72,13 +72,17 @@ export function ScreenshotProvider({ children }: { children: React.ReactNode }) 
 
       if (abortController.signal.aborted) { unlistenRef.current?.(); return; }
 
-      // Region select event carries only dimensions — preview fetched as raw bytes (no base64)
+      // Region select event carries dimensions + annotate flag — preview fetched as raw bytes (no base64)
       unlistenRegionRef.current = await listen<{
         monitor_width: number;
         monitor_height: number;
+        annotate?: boolean;
       }>('screenshot-region-select', async (event) => {
         if (abortController.signal.aborted) return;
         try {
+          // Set annotation mode based on the hotkey that triggered this event
+          setAnnotateAfterSelect(event.payload.annotate ?? false);
+
           // Fetch raw JPEG bytes via IPC, get back a blob URL
           const blobUrl = await getPreCapturePreview();
           if (abortController.signal.aborted) {
