@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import React from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { RecordingStateProvider, useRecordingState, RecordingStatus } from './RecordingStateContext';
 
 const mockInvoke = vi.mocked(invoke);
@@ -27,7 +27,7 @@ beforeEach(() => {
   // Capture event handlers as they're registered
   mockListen.mockImplementation(async (event, handler) => {
     eventHandlers[event as string] = handler as Function;
-    return vi.fn(); // unlisten
+    return (() => {}) as UnlistenFn; // unlisten
   });
 });
 

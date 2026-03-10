@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { RecordingService } from './recordingService';
 
 const mockInvoke = vi.mocked(invoke);
@@ -94,7 +94,7 @@ describe('RecordingService', () => {
   describe('event listeners', () => {
     it('onRecordingStarted listens to recording-started', async () => {
       const callback = vi.fn();
-      const mockUnlisten = vi.fn();
+      const mockUnlisten: UnlistenFn = () => {};
       mockListen.mockResolvedValue(mockUnlisten);
 
       const unlisten = await service.onRecordingStarted(callback);
@@ -107,7 +107,7 @@ describe('RecordingService', () => {
       let capturedHandler: Function;
       mockListen.mockImplementation(async (_event, handler) => {
         capturedHandler = handler as Function;
-        return vi.fn();
+        return (() => {}) as UnlistenFn;
       });
 
       await service.onRecordingStopped(callback);
