@@ -1,14 +1,14 @@
 {
   "project": "Tandem",
   "description": "Comprehensive bug review across frontend (React/TypeScript), backend (Python/FastAPI), and Rust (Tauri audio system). Identified via static analysis of source code.",
-  "last_updated": "2026-02-25",
+  "last_updated": "2026-03-10",
   "summary": {
-    "total": 33,
+    "total": 43,
     "critical": 1,
     "critical_fixed": 2,
     "high": 8,
-    "medium": 17,
-    "low": 5
+    "medium": 25,
+    "low": 7
   },
   "bugs": [
     {
@@ -87,11 +87,12 @@
       "severity": "high",
       "name": "asyncio.create_task() in synchronous cleanup method",
       "description": "The cleanup() method in transcript_processor.py is synchronous (not async) but calls asyncio.create_task() which requires a running event loop. Will fail with RuntimeError. Additionally the task is never awaited so Ollama clients are never properly closed.",
-      "status": "open",
+      "status": "fixed",
       "file": "backend/app/transcript_processor.py",
       "lines": [305],
       "fix": "Make cleanup() async or use loop.run_until_complete(), or call synchronous close methods instead",
-      "passes": false
+      "fix_notes": "Fixed 2026-03-10: Made cleanup() async, replaced fire-and-forget create_task with direct await asyncio.gather(). Updated callers in main.py (SummaryProcessor.cleanup and lifespan) to await.",
+      "passes": true
     },
     {
       "id": "B007",
@@ -448,6 +449,136 @@
       "file": "frontend/src/components/Sidebar/index.tsx",
       "lines": [1],
       "fix": "Extract into focused components: SidebarItem (~100 lines), SearchBar (~30 lines), CollapsedSidebar (~50 lines, currently lines 476-527). Move search logic into a useSearch hook.",
+      "passes": false
+    },
+    {
+      "id": "B030",
+      "category": "frontend",
+      "component": "conversation-view",
+      "severity": "medium",
+      "status": "open",
+      "name": "RAF not cancelled on unmount in ConversationView",
+      "description": "The requestAnimationFrame call in the auto-scroll useEffect has no cleanup function. If the component unmounts while a RAF is pending, it will still execute and attempt to scroll a non-existent DOM node.",
+      "file": "frontend/src/components/ClaudePanel/ConversationView.tsx",
+      "lines": [68],
+      "fix": "Return cancelAnimationFrame(rafId) from the useEffect cleanup",
+      "passes": false
+    },
+    {
+      "id": "B031",
+      "category": "frontend",
+      "component": "onboarding-context",
+      "severity": "medium",
+      "status": "open",
+      "name": "Async setup race in OnboardingContext",
+      "description": "loadOnboardingStatus() and checkDatabaseStatus() are called in useEffect without awaiting them. If the component unmounts before these async operations complete, setState will be called on an unmounted component.",
+      "file": "frontend/src/contexts/OnboardingContext.tsx",
+      "lines": [101],
+      "fix": "Wrap in async IIFE with a cancelled flag checked after each await",
+      "passes": false
+    },
+    {
+      "id": "B032",
+      "category": "frontend",
+      "component": "screenshot-context",
+      "severity": "medium",
+      "status": "open",
+      "name": "Blob URL leak on abort in ScreenshotContext",
+      "description": "If the setup completes and assigns a blobUrl but the component unmounts before cleanup runs, the blob URL is never revoked. A race exists between blob URL creation and the abort check.",
+      "file": "frontend/src/contexts/ScreenshotContext.tsx",
+      "lines": [62],
+      "fix": "Ensure blob URLs are always revoked in cleanup: if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current)",
+      "passes": false
+    },
+    {
+      "id": "B033",
+      "category": "frontend",
+      "component": "clipboard-context",
+      "severity": "medium",
+      "status": "open",
+      "name": "Async listener race in ClipboardContext",
+      "description": "The setup() function is async but not awaited. If the component unmounts before setup() completes, the listeners may still be registered but cleanup finds undefined refs, leaking event listeners.",
+      "file": "frontend/src/contexts/ClipboardContext.tsx",
+      "lines": [37],
+      "fix": "Use a mounted flag pattern: check flag after each await before registering listeners",
+      "passes": false
+    },
+    {
+      "id": "B034",
+      "category": "frontend",
+      "component": "claude-context",
+      "severity": "medium",
+      "status": "open",
+      "name": "API key save error silently swallowed",
+      "description": "The fetch call to save the API key uses .catch(() => {}) which silently swallows errors. If the backend fails to save, the user is not notified and believes their key is saved.",
+      "file": "frontend/src/contexts/ClaudeContext.tsx",
+      "lines": [415],
+      "fix": "Show a toast warning or retry on failure instead of silently swallowing",
+      "passes": false
+    },
+    {
+      "id": "B035",
+      "category": "backend",
+      "component": "api",
+      "severity": "medium",
+      "status": "open",
+      "name": "get_model_config returns None causing 500 error",
+      "description": "If get_model_config() returns None (no config exists), the endpoint returns None directly which FastAPI cannot serialize, causing a 500 error instead of a proper empty response.",
+      "file": "backend/app/main.py",
+      "lines": [581],
+      "fix": "Return an empty dict {} or a 404 response when model_config is None",
+      "passes": false
+    },
+    {
+      "id": "B036",
+      "category": "backend",
+      "component": "api",
+      "severity": "medium",
+      "status": "open",
+      "name": "SSE CancelledError re-raised prevents cleanup",
+      "description": "In _sse_generator(), asyncio.CancelledError is caught and re-raised, which causes the StreamingResponse to close without draining buffered events. Cleanup code in stream_session() may not run.",
+      "file": "backend/app/main.py",
+      "lines": [708],
+      "fix": "Don't re-raise CancelledError; break and let the generator exit cleanly so stream_session() finally block runs",
+      "passes": false
+    },
+    {
+      "id": "B037",
+      "category": "frontend",
+      "component": "main-content",
+      "severity": "medium",
+      "status": "open",
+      "name": "panelWidth not transitioned on first load",
+      "description": "The marginRight style is set via inline style which bypasses CSS transition-all. Content jumps instantly when the AI panel opens instead of smoothly sliding.",
+      "file": "frontend/src/components/MainContent/index.tsx",
+      "lines": [],
+      "fix": "Add transition: 'margin-right 300ms' to the inline style object",
+      "passes": false
+    },
+    {
+      "id": "B038",
+      "category": "frontend",
+      "component": "claude-service",
+      "severity": "low",
+      "status": "open",
+      "name": "SSE JSON not validated against schema",
+      "description": "Parsed SSE JSON is cast to ClaudeFrontendEvent without runtime validation. If the backend sends malformed events with missing fields, the handler may crash or behave unexpectedly.",
+      "file": "frontend/src/services/claudeService.ts",
+      "lines": [83],
+      "fix": "Add runtime validation (e.g., Zod schema) or at minimum check required fields before processing",
+      "passes": false
+    },
+    {
+      "id": "B039",
+      "category": "backend",
+      "component": "api",
+      "severity": "low",
+      "status": "open",
+      "name": "Unused threading Lock import",
+      "description": "Line 13 imports Lock from threading but it is never used. The SummaryProcessor docstring claims thread-safety but no locks are applied.",
+      "file": "backend/app/main.py",
+      "lines": [13],
+      "fix": "Remove the unused import: from threading import Lock",
       "passes": false
     }
   ]

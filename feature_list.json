@@ -561,7 +561,7 @@
       "name": "GPU Acceleration (CUDA)",
       "description": "Enable CUDA GPU acceleration for whisper-rs transcription using the RTX 3090, providing 5-10x speed improvement over CPU-only mode",
       "priority": "low",
-      "status": "planned",
+      "status": "done",
       "branch": null,
       "commit": null,
       "steps": [
@@ -919,15 +919,17 @@
       "name": "Speaker Diarization (Who Said What)",
       "description": "Identify and label different speakers in the transcript. Without diarization, transcripts are a single undifferentiated stream — useless for meeting notes where 'who said it' matters. Use pyannote.audio for local on-device diarization to maintain the privacy-first promise. Speaker labels appear inline with transcript segments.",
       "priority": "critical",
-      "status": "planned",
-      "branch": null,
+      "status": "in-progress",
+      "branch": "feature/speaker-diarization",
       "commit": null,
+      "worktree": "../Tandem-f022",
       "steps": [
-        "Phase 1 — Install: pip install pyannote-audio>=4.0.0 torch (CUDA). One-time download of pyannote/speaker-diarization-community-1 (CC-BY-4.0, ~1GB) from HuggingFace to local models/ dir. Runs fully offline after download",
-        "Phase 2 — Backend diarizer.py: DiarizationService class wrapping Pipeline.from_pretrained(local_path). POST /api/diarize endpoint accepts audio file path, runs pyannote pipeline, returns speaker segments [{speaker, start, end}]. Background task since GPU takes 1.5-5min for 30min audio",
-        "Phase 3 — Alignment: for each existing Whisper transcript segment (already has audio_start_time/audio_end_time), find pyannote speaker segment with greatest overlap at midpoint. Simple temporal intersection — no changes to Whisper pipeline needed",
-        "Phase 4 — Frontend: add optional speaker field to TranscriptUpdate type. Display 'Speaker 1:', 'Speaker 2:' prefixes with color-coded badges in TranscriptChunks.tsx and VirtualizedTranscriptView.tsx",
-        "Phase 5 — Speaker naming UI: after diarization completes, show modal where user can name speakers ('SPEAKER_00' → 'Sarah from Acme'). Names stored in backend SQLite speaker_profiles table",
+        "✅ Phase 1 — Install: Added pyannote.audio>=3.3.0 to requirements.txt. User still needs to pip install torch+torchaudio (CUDA) and pyannote.audio",
+        "✅ Phase 2 — Backend diarizer.py + db.py + main.py: Created diarizer.py service (model loading, GPU inference, transcript alignment). Added 4 DB tables (diarization_processes, speaker_names, speaker_profiles, meeting_speakers) + CRUD helpers. Added 7 API endpoints (/api/diarize/*) with background task processing",
+        "✅ Phase 3 — Alignment: Built into diarizer.align_with_transcripts() — midpoint matching with overlap fallback, UNKNOWN as last resort",
+        "✅ Phase 4 — Frontend: Added speaker_label to types, color-coded speaker badges in VirtualizedTranscriptView, speaker prefix in transcript chunks for AI context, pass-through in usePaginatedTranscripts and TranscriptPanel",
+        "✅ Phase 5 — Speaker naming UI + triggers: SpeakerNamingModal component, diarization settings in PreferenceSettings (HF token, model download, auto-diarize toggle), Identify Speakers button in meeting details, auto-trigger in useRecordingStop",
+        "⏳ Phase 5.5 — Runtime setup: Install pyannote.audio + torch CUDA deps, get HuggingFace token, download model via Settings UI, test end-to-end on a real recording",
         "Phase 6 — Voice fingerprinting: extract 192-dim embeddings via pyannote/embedding model, store in speaker_profiles table (BLOB). On new meetings, match unknown speakers against known profiles via cosine similarity (threshold ~0.75). Running average updates embedding over multiple meetings",
         "Phase 7 — Export: include speaker labels in all export formats (F010). Add speaker filter to transcript search"
       ],
@@ -935,7 +937,7 @@
         "F010"
       ],
       "implementation": {
-        "library": "pyannote.audio 4.0 with speaker-diarization-community-1 (CC-BY-4.0, free, no gating)",
+        "library": "pyannote.audio 3.3+ with speaker-diarization-community-1 (CC-BY-4.0, free, no gating)",
         "alternatives_rejected": {
           "WhisperX": "Uses its own faster-whisper engine — would duplicate Tandem's existing whisper-rs transcription",
           "NeMo": "Overkill, 2x slower pipeline, 4-speaker limit for Sortformer, 3GB+ install",
@@ -949,21 +951,31 @@
         "architecture": "Post-processing (not real-time). After recording stops, send saved audio.mp4 path to backend /api/diarize. Pyannote runs on GPU, aligns with existing Whisper timestamps, returns speaker-labeled segments. Optional future: diart library for streaming real-time labels",
         "new_files": [
           "backend/app/diarizer.py",
-          "frontend/src/components/SpeakerNamingModal.tsx"
+          "frontend/src/services/diarizationService.ts",
+          "frontend/src/components/SpeakerNamingModal.tsx",
+          "frontend/src/lib/speakerColors.ts"
         ],
         "modified_files": [
           "backend/requirements.txt",
           "backend/app/main.py",
           "backend/app/db.py",
           "frontend/src/types/index.ts",
-          "frontend/src/components/TranscriptChunks.tsx",
-          "frontend/src/components/VirtualizedTranscriptView.tsx"
+          "frontend/src/hooks/useTimeline.ts",
+          "frontend/src/hooks/usePaginatedTranscripts.ts",
+          "frontend/src/components/VirtualizedTranscriptView.tsx",
+          "frontend/src/components/MeetingDetails/TranscriptPanel.tsx",
+          "frontend/src/components/PreferenceSettings.tsx",
+          "frontend/src/app/meeting-details/page-content.tsx",
+          "frontend/src/hooks/useRecordingStop.ts"
         ],
         "db_tables": [
-          "speaker_profiles (id, display_name, embedding BLOB, sample_count)",
-          "meeting_speakers (meeting_id, speaker_label, speaker_profile_id, confidence)"
+          "diarization_processes (meeting_id, status, progress_pct, num_speakers, result JSON)",
+          "speaker_names (meeting_id, speaker_label, display_name)",
+          "speaker_profiles (id, display_name, embedding BLOB, sample_count) — Phase 6 future",
+          "meeting_speakers (meeting_id, speaker_label, speaker_profile_id, confidence) — Phase 6 future"
         ],
-        "effort_estimate": "3-4 weeks"
+        "effort_estimate": "3-4 weeks",
+        "remaining_work": "Install pyannote.audio + torch CUDA dependencies, get HuggingFace token, download model, test end-to-end. Then Phase 6 (voice fingerprinting) and Phase 7 (export integration)"
       },
       "passes": false
     },
@@ -1452,7 +1464,9 @@
         "Phase 5 — Streaming evaluation: test NVIDIA Nemotron-Speech-Streaming-EN-0.6B for real-time transcription with cache-aware architecture. Compare latency vs current chunked approach.",
         "Phase 6 — Combined pipeline benchmark: measure WER of Parakeet-TDT-1.1B + Qwen2.5-1.5B correction (F035) end-to-end. Target: <6% WER on meeting audio, <2% on clean speech."
       ],
-      "dependencies": ["F035"],
+      "dependencies": [
+        "F035"
+      ],
       "research": {
         "state_of_the_art_2026": {
           "best_librispeech_clean": "Parakeet-TDT-1.1B: 1.39% WER (NVIDIA, 2025)",
@@ -1461,14 +1475,60 @@
           "human_parity": "5.9% WER on Switchboard (Microsoft, 2016). Current models beat this on clean speech."
         },
         "model_comparison": {
-          "parakeet_tdt_1.1b": {"params": "1.1B", "libri_clean": "1.39%", "libri_other": "2.62%", "rtfx": ">2000", "vram": "~4GB"},
-          "parakeet_tdt_0.6b_v2": {"params": "0.6B", "libri_clean": "1.69%", "libri_other": "3.19%", "open_asr_avg": "6.05%", "rtfx": "3380", "vram": "~2GB", "ami_meetings": "11.16%"},
-          "parakeet_tdt_0.6b_v3": {"params": "0.6B", "libri_clean": "1.92%", "libri_other": "3.59%", "open_asr_avg": "6.32%", "rtfx": "3333", "languages": "25"},
-          "whisper_large_v3": {"params": "1.55B", "libri_clean": "2.01%", "libri_other": "3.91%", "open_asr_avg": "7.44%", "rtfx": "146", "languages": "99+"},
-          "whisper_large_v3_turbo": {"params": "0.81B", "libri_clean": "~2.2%", "open_asr_avg": "7.75%", "rtfx": "216", "languages": "99+"},
-          "canary_qwen_2.5b": {"params": "2.5B", "open_asr_avg": "5.63%", "rtfx": "418", "architecture": "FastConformer + Qwen3-1.7B LLM decoder"},
-          "whale": {"libri_clean": "2.4%", "architecture": "w2v-BERT + E-Branchformer", "languages": "144"},
-          "moonshine_27m": {"params": "27M", "note": "Matches Whisper Medium (28x larger), optimized for edge"}
+          "parakeet_tdt_1.1b": {
+            "params": "1.1B",
+            "libri_clean": "1.39%",
+            "libri_other": "2.62%",
+            "rtfx": ">2000",
+            "vram": "~4GB"
+          },
+          "parakeet_tdt_0.6b_v2": {
+            "params": "0.6B",
+            "libri_clean": "1.69%",
+            "libri_other": "3.19%",
+            "open_asr_avg": "6.05%",
+            "rtfx": "3380",
+            "vram": "~2GB",
+            "ami_meetings": "11.16%"
+          },
+          "parakeet_tdt_0.6b_v3": {
+            "params": "0.6B",
+            "libri_clean": "1.92%",
+            "libri_other": "3.59%",
+            "open_asr_avg": "6.32%",
+            "rtfx": "3333",
+            "languages": "25"
+          },
+          "whisper_large_v3": {
+            "params": "1.55B",
+            "libri_clean": "2.01%",
+            "libri_other": "3.91%",
+            "open_asr_avg": "7.44%",
+            "rtfx": "146",
+            "languages": "99+"
+          },
+          "whisper_large_v3_turbo": {
+            "params": "0.81B",
+            "libri_clean": "~2.2%",
+            "open_asr_avg": "7.75%",
+            "rtfx": "216",
+            "languages": "99+"
+          },
+          "canary_qwen_2.5b": {
+            "params": "2.5B",
+            "open_asr_avg": "5.63%",
+            "rtfx": "418",
+            "architecture": "FastConformer + Qwen3-1.7B LLM decoder"
+          },
+          "whale": {
+            "libri_clean": "2.4%",
+            "architecture": "w2v-BERT + E-Branchformer",
+            "languages": "144"
+          },
+          "moonshine_27m": {
+            "params": "27M",
+            "note": "Matches Whisper Medium (28x larger), optimized for edge"
+          }
         },
         "key_techniques": {
           "tdt_transducer": "Token-and-Duration Transducer decouples token/duration predictions, enabling 4-frame skip inference. Key to Parakeet's speed advantage.",
@@ -1513,7 +1573,9 @@
         "Phase 4 — Web search fallback: if no local knowledge base hit, optionally search the web (via Brave/Tavily API) for the topic. User toggles this on/off.",
         "Phase 5 — Learning loop: track which fact cards the user clicks/dismisses. Over time, improve relevance scoring per user."
       ],
-      "dependencies": ["F007"],
+      "dependencies": [
+        "F007"
+      ],
       "passes": false
     },
     {
@@ -1532,7 +1594,9 @@
         "Phase 4 — Multi-recipient: detect participants from transcript (speaker diarization names). Generate personalized follow-ups per recipient with relevant-to-them highlights.",
         "Phase 5 — Scheduled follow-ups: 'Remind me to follow up in 3 days if no response.' Local notification + pre-drafted nudge email."
       ],
-      "dependencies": ["F006"],
+      "dependencies": [
+        "F006"
+      ],
       "passes": false
     },
     {
@@ -1551,7 +1615,10 @@
         "Phase 4 — Decision linking: link related decisions across meetings ('In Jan we decided X, but in March we changed to Y'). Show decision history per topic.",
         "Phase 5 — Export: decisions as structured data (JSON, CSV) for project management tools. Webhook integration for auto-creating tickets from decisions."
       ],
-      "dependencies": ["F006", "F007"],
+      "dependencies": [
+        "F006",
+        "F007"
+      ],
       "passes": false
     },
     {
@@ -1570,7 +1637,10 @@
         "Phase 4 — Status tracking: mark items as done/in-progress. Show completion rate per meeting, per person. Local notifications for approaching due dates.",
         "Phase 5 — Cross-meeting continuity: at start of follow-up meeting with same participants, surface open action items from previous meetings. 'Last time, Alice committed to X — is that done?'"
       ],
-      "dependencies": ["F006", "F041"],
+      "dependencies": [
+        "F006",
+        "F041"
+      ],
       "passes": false
     },
     {
@@ -1589,7 +1659,10 @@
         "Phase 4 — Relationship insights: AI generates relationship health metrics — frequency of contact, sentiment trend, open commitments, topics that keep recurring.",
         "Phase 5 — Smart suggestions: before a call, AI suggests topics to revisit based on relationship history. 'You discussed pricing 3 calls ago but never followed up.'"
       ],
-      "dependencies": ["F006", "F007"],
+      "dependencies": [
+        "F006",
+        "F007"
+      ],
       "passes": false
     },
     {
@@ -1608,7 +1681,9 @@
         "Phase 3 — Token budget: truncate large documents with notice. Show estimated token count in basket chip.",
         "Phase 4 — Document Q&A: Claude handles naturally via text in context_block. Page references preserved via [Page N/M] headers."
       ],
-      "dependencies": ["F007"],
+      "dependencies": [
+        "F007"
+      ],
       "passes": false
     },
     {
@@ -1627,7 +1702,9 @@
         "Phase 4 — Batch export: export multiple meetings at once with the same template. Useful for weekly reports or compliance audits.",
         "Phase 5 — Auto-export: configure auto-export after every meeting. Save to a folder, send via webhook, or push to connected integrations (Notion, Google Docs)."
       ],
-      "dependencies": ["F006"],
+      "dependencies": [
+        "F006"
+      ],
       "passes": false
     },
     {
@@ -1646,7 +1723,10 @@
         "Phase 4 — Format options: generate as email draft, Slack message, or document. Copy to clipboard with formatting preserved.",
         "Phase 5 — Handoff templates: customizable per team. Engineering handoff includes code references, sales handoff includes next steps and objections, executive handoff includes key metrics discussed."
       ],
-      "dependencies": ["F006", "F007"],
+      "dependencies": [
+        "F006",
+        "F007"
+      ],
       "passes": false
     },
     {
@@ -1669,7 +1749,10 @@
         "Phase 7 — Model training: train custom 'Hey Tandem' wake word model via openwakeword-trainer Docker pipeline. Ship melspectrogram.onnx + embedding_model.onnx + hey_tandem.onnx.",
         "Phase 8 — End-to-end testing: record, say wake word / press Ctrl+Space, verify full pipeline from audio tap → ONNX inference / hotkey → Tauri event → UI response → AI command execution."
       ],
-      "dependencies": ["F007", "F018"],
+      "dependencies": [
+        "F007",
+        "F018"
+      ],
       "passes": false
     },
     {
@@ -1724,7 +1807,9 @@
         "frontend/src/components/ClaudePanel/ConversationView.tsx",
         "backend/app/claude_agent.py"
       ],
-      "dependencies": ["F007"],
+      "dependencies": [
+        "F007"
+      ],
       "passes": false
     },
     {
@@ -1742,7 +1827,9 @@
         "Phase 2 — Background tasks: Add 'Send to background' button during streaming. Background queue stores running SSE streams. Toast notification on completion. Click to view result in conversation.",
         "Phase 3 — Agent team delegation: Backend multi-agent orchestration via Claude Agent SDK. Main chat agent delegates to specialist sub-agents (data analyst, researcher, etc.). Sub-agents run as separate sessions, report results back to main conversation."
       ],
-      "dependencies": ["F007"],
+      "dependencies": [
+        "F007"
+      ],
       "passes": false
     },
     {
@@ -1813,7 +1900,74 @@
         "frontend/src/contexts/ClaudeContext.tsx",
         "frontend/src/app/settings/page.tsx"
       ],
-      "dependencies": ["F007"],
+      "dependencies": [
+        "F007"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F053",
+      "category": "audio",
+      "name": "Transcription Quality Improvements",
+      "description": "Improve Whisper transcription accuracy through audio pipeline optimizations and parameter tuning",
+      "priority": "high",
+      "status": "in-progress",
+      "branch": "main",
+      "sub_features": [
+        {
+          "id": "F053-A",
+          "name": "Buffer VAD segments to minimum 3 seconds",
+          "description": "Accumulate VAD speech segments in a buffer before sending to Whisper. Short chunks (<3s) produce poor transcription quality. Buffer flushes when >= 3s of audio is accumulated or after a 2-second silence gap.",
+          "status": "complete",
+          "files": [
+            "frontend/src-tauri/src/audio/pipeline.rs"
+          ],
+          "steps": [
+            "Add transcription_buffer, transcription_buffer_start_ts, transcription_buffer_last_activity fields to AudioPipeline struct",
+            "Replace direct VAD segment sends with buffer accumulation (append to Vec<f32>)",
+            "Flush buffer to Whisper when >= 48000 samples (3s at 16kHz)",
+            "Add silence-gap detection: flush partial buffer after 2s of no new VAD speech",
+            "Update flush_remaining_audio() to drain buffer on recording stop"
+          ]
+        },
+        {
+          "id": "F053-B",
+          "name": "Set temperature to 0.0 with automatic fallback",
+          "description": "Use greedy decoding (temperature 0.0) for deterministic output. Whisper's built-in entropy_thold fallback retries with higher temperatures only when needed.",
+          "status": "planned",
+          "files": [
+            "frontend/src-tauri/src/whisper_engine/whisper_engine.rs",
+            "frontend/src-tauri/src/audio/hardware_detector.rs"
+          ]
+        },
+        {
+          "id": "F053-C",
+          "name": "Flip suppress_non_speech_tokens to false",
+          "description": "whisper.cpp changed the default to false because true paradoxically causes end-of-segment hallucinations ('Thank you for watching', 'Amen', etc.).",
+          "status": "planned",
+          "files": [
+            "frontend/src-tauri/src/whisper_engine/whisper_engine.rs"
+          ]
+        },
+        {
+          "id": "F053-D",
+          "name": "Add initial_prompt for meeting context",
+          "description": "Set a meeting-oriented initial_prompt to bias Whisper toward business vocabulary. Feed previous segment output as context for continuity.",
+          "status": "planned",
+          "files": [
+            "frontend/src-tauri/src/whisper_engine/whisper_engine.rs"
+          ]
+        },
+        {
+          "id": "F053-E",
+          "name": "Expand hallucination post-filter",
+          "description": "Add more hallucination patterns, compression ratio check, and language sanity check to the existing clean_repetitive_text() filter.",
+          "status": "planned",
+          "files": [
+            "frontend/src-tauri/src/whisper_engine/whisper_engine.rs"
+          ]
+        }
+      ],
       "passes": false
     }
   ]
