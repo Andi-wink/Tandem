@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X, Send, Trash2, AlertCircle, Square, ChevronUp, Check, Shield, Paperclip, Mic, FolderOpen } from 'lucide-react';
+import { X, Send, Trash2, AlertCircle, Square, ChevronUp, Check, Shield, Paperclip, Mic, FolderOpen, Code } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
@@ -19,6 +19,7 @@ import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { parseDocument, isSupportedDocument } from '@/services/claudeService';
+import { writeTaskHandoff, getRecentTranscripts, HANDOFF_TRANSCRIPT_WINDOW_SECS, TaskHandoffData, ensureTandemClaudeMd } from '@/services/handoffService';
 import type { ContextBasketItem } from '@/contexts/ContextBasketContext';
 
 export function ClaudePanel() {
@@ -135,6 +136,13 @@ export function ClaudePanel() {
   const recordingState = useRecordingState();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isParsingFile, setIsParsingFile] = useState(false);
+
+  // F054: Auto-show project dir modal when panel opens during recording without projectDir
+  useEffect(() => {
+    if (isPanelOpen && recordingState.isRecording && !projectDir && meetingTitle && !showProjectModal) {
+      setShowProjectModal(true);
+    }
+  }, [isPanelOpen, recordingState.isRecording, projectDir, meetingTitle, showProjectModal]);
 
   // F044: Handle file selection (from button or OS drop)
   const handleFileUpload = async (file: File) => {
@@ -311,6 +319,22 @@ export function ClaudePanel() {
       cancelCommand();
     }
 
+    // F054: Detect @code tag — strip it, queue a task file, DON'T send to AI
+    const hasCodeTag = /@code\b/i.test(messageToSend);
+    if (hasCodeTag) {
+      const taskText = messageToSend.replace(/@code\b/gi, '').trim();
+      if (!projectDir) {
+        // Need projectDir first — show modal, save task text as pending
+        setPendingFirstMessage(`@code ${taskText}`);
+        setShowProjectModal(true);
+        return;
+      }
+      setInputText('');
+      if (inputRef.current) inputRef.current.style.height = 'auto';
+      writeCodeHandoff(taskText);
+      return; // Don't send to AI
+    }
+
     // Show setup modal if no session yet, API key missing, or projectDir empty
     if ((!sessionId && meetingId && meetingTitle) || !hasApiKey || !projectDir) {
       setPendingFirstMessage(messageToSend);
@@ -331,12 +355,47 @@ export function ClaudePanel() {
     }
   };
 
+  // F054: Write task handoff file for Claude Code /loop (fire-and-forget)
+  const writeCodeHandoff = async (taskDescription: string) => {
+    try {
+      const recentTranscripts = getRecentTranscripts(transcripts, HANDOFF_TRANSCRIPT_WINDOW_SECS);
+      const data: TaskHandoffData = {
+        taskDescription,
+        meetingTitle: meetingTitle || 'Meeting',
+        meetingId: meetingId || 'unknown',
+        transcripts: recentTranscripts,
+        contextItems: [...contextBasket],
+        timestamp: new Date(),
+      };
+      const filePath = await writeTaskHandoff(projectDir!, data);
+      toast.success('Task queued for Claude Code', {
+        description: filePath.split(/[/\\]/).pop(),
+        action: {
+          label: 'Show File',
+          onClick: () => { invoke('show_in_folder', { path: filePath }); },
+        },
+        duration: 8000,
+      });
+    } catch (err) {
+      console.error('[F054] Failed to write handoff file:', err);
+      toast.error('Failed to queue task for Claude Code');
+    }
+  };
+
   // Send pending message once projectDir is available (replaces setTimeout race)
   useEffect(() => {
     if (pendingFirstMessage && projectDir) {
       const msg = pendingFirstMessage;
       setPendingFirstMessage(null);
       setInputText('');
+
+      // F054: If pending message was an @code task, write handoff instead of sending to AI
+      if (/^@code\b/i.test(msg)) {
+        const taskText = msg.replace(/@code\b/gi, '').trim();
+        writeCodeHandoff(taskText);
+        return;
+      }
+
       sendMessageRef.current(msg).catch(err => {
         console.error('Failed to send first message:', err);
         toast.error(err instanceof Error ? err.message : 'Failed to send message');
@@ -349,6 +408,8 @@ export function ClaudePanel() {
     if (meetingId && meetingTitle) {
       openPanel(meetingId, meetingTitle, dir);
     }
+    // F054: Write .tandem/CLAUDE.md so Claude Code knows about the integration
+    ensureTandemClaudeMd(dir).catch(() => {});
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -658,6 +719,16 @@ export function ClaudePanel() {
               >
                 <X className="w-3.5 h-3.5" />
               </button>
+            </div>
+          )}
+
+          {/* F054: @code tag detected indicator */}
+          {/@code\b/i.test(inputText) && !activeCommand && (
+            <div className="flex items-center gap-2 mb-2 px-2 py-1.5 rounded-md bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800/30 text-xs">
+              <Code className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+              <span className="font-medium text-emerald-700 dark:text-emerald-300">
+                @code — task will be queued for Claude Code
+              </span>
             </div>
           )}
 

@@ -1969,6 +1969,36 @@
         }
       ],
       "passes": false
+    },
+    {
+      "id": "F054",
+      "category": "functional",
+      "name": "@code Handoff + Live Transcript for Claude Code /loop",
+      "description": "Two-way bridge between Tandem meetings and Claude Code: (1) @code inline tag in AI panel writes task handoff files to ~/tandem-tasks/ that Claude Code picks up via /loop, (2) live transcript continuously written to {projectDir}/.tandem/live-transcript.md so Claude Code can detect spoken task requests. AI panel auto-opens on recording start to ensure projectDir is set.",
+      "priority": "medium",
+      "status": "in-progress",
+      "branch": "feature/code-handoff-loop",
+      "worktree": "D:\\Dev projects\\Tandem-f054",
+      "steps": [
+        "Phase 1 — Rust get_home_dir command for ~/tandem-tasks/ path resolution",
+        "Phase 2 — handoffService.ts: task markdown generation, live transcript generation, file writers via save_transcript Tauri command",
+        "Phase 3 — @code detection in ClaudePanel.tsx handleSend(): regex detect, strip tag, fire-and-forget writeTaskHandoff, visual indicator chip",
+        "Phase 4 — Auto-open AI panel on recording start in page.tsx so projectDir is always set",
+        "Phase 5 — useLiveTranscriptWriter hook: debounced 10s writes of 30-min rolling transcript window during recording"
+      ],
+      "files": [
+        "frontend/src-tauri/src/api/api.rs",
+        "frontend/src-tauri/src/lib.rs",
+        "frontend/src/services/handoffService.ts",
+        "frontend/src/hooks/useLiveTranscriptWriter.ts",
+        "frontend/src/components/ClaudePanel/ClaudePanel.tsx",
+        "frontend/src/app/page.tsx"
+      ],
+      "dependencies": [
+        "F007",
+        "F018"
+      ],
+      "passes": false
     }
   ]
 }

@@ -1357,6 +1357,16 @@ pub async fn show_in_folder(path: String) -> Result<(), String> {
     }
 }
 
+// ===== F054: HANDOFF HELPERS =====
+
+/// Returns the user's home directory path (for ~/tandem-tasks/)
+#[tauri::command]
+pub async fn get_home_dir() -> Result<String, String> {
+    dirs::home_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .ok_or_else(|| "Could not determine home directory".to_string())
+}
+
 // ===== CUSTOM OPENAI API COMMANDS =====
 
 /// Saves the custom OpenAI configuration

@@ -771,6 +771,7 @@ pub fn run() {
             api::debug_backend_connection,
             api::open_external_url,
             api::show_in_folder,
+            api::get_home_dir,
             // Custom OpenAI commands
             api::api_save_custom_openai_config,
             api::api_get_custom_openai_config,

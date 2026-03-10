@@ -18,6 +18,7 @@ import { useRecordingStop } from '@/hooks/useRecordingStop';
 import { useTranscriptRecovery } from '@/hooks/useTranscriptRecovery';
 import { TranscriptRecovery } from '@/components/TranscriptRecovery';
 import { useHandoffExport } from '@/hooks/useHandoffExport';
+import { useLiveTranscriptWriter } from '@/hooks/useLiveTranscriptWriter';
 import { HandoffDialog } from '@/components/HandoffDialog';
 import { indexedDBService } from '@/services/indexedDBService';
 import { toast } from 'sonner';
@@ -66,6 +67,9 @@ export default function Home() {
     confirmHandoff,
     cancelHandoff,
   } = useHandoffExport();
+
+  // F054: Write live transcript to .tandem/live-transcript.md during recording
+  useLiveTranscriptWriter();
 
   // Recovery hook
   const {
@@ -203,6 +207,20 @@ export default function Home() {
       return () => clearInterval(interval);
     }
   }, [recordingState.isRecording]);
+
+  // F054: Auto-open AI panel when recording starts so projectDir is set for live transcript writer
+  useEffect(() => {
+    if (recordingState.isRecording && !isPanelOpen) {
+      (async () => {
+        let dir = '';
+        try {
+          const folder = await invoke<string | null>('get_meeting_folder_path');
+          dir = folder || '';
+        } catch { /* use empty string — ProjectDirModal will prompt */ }
+        openPanel('live-recording', meetingTitle || 'Live Recording', dir);
+      })();
+    }
+  }, [recordingState.isRecording]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Computed values using global status
   const isProcessingStop = status === RecordingStatus.PROCESSING_TRANSCRIPTS || isProcessing;
