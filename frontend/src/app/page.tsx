@@ -209,16 +209,10 @@ export default function Home() {
   }, [recordingState.isRecording]);
 
   // F054: Auto-open AI panel when recording starts so projectDir is set for live transcript writer
+  // Pass empty projectDir so the setup modal always prompts for the project directory
   useEffect(() => {
     if (recordingState.isRecording && !isPanelOpen) {
-      (async () => {
-        let dir = '';
-        try {
-          const folder = await invoke<string | null>('get_meeting_folder_path');
-          dir = folder || '';
-        } catch { /* use empty string — ProjectDirModal will prompt */ }
-        openPanel('live-recording', meetingTitle || 'Live Recording', dir);
-      })();
+      openPanel('live-recording', meetingTitle || 'Live Recording', '');
     }
   }, [recordingState.isRecording]); // eslint-disable-line react-hooks/exhaustive-deps
 
