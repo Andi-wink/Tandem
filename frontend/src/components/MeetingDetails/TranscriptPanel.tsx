@@ -6,8 +6,9 @@ import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptVie
 import { ScreenshotLightbox } from '@/components/ScreenshotLightbox';
 import { TranscriptChunks } from '@/components/TranscriptChunks';
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useTimeline, useTranscriptChunks } from '@/hooks/useTimeline';
+import { invoke } from '@tauri-apps/api/core';
 
 interface TranscriptPanelProps {
   transcripts: Transcript[];
@@ -73,6 +74,16 @@ export function TranscriptPanel({
   const timelineItems = useTimeline(convertedSegments, screenshots, clipboardItems, timelineFilter);
   const transcriptChunks = useTranscriptChunks(convertedSegments);
 
+  // Handle inline transcript editing - persist to SQLite via Tauri command
+  const handleSegmentEdit = useCallback((segmentId: string, newText: string) => {
+    invoke('api_update_transcript_text', {
+      transcriptId: segmentId,
+      newText: newText,
+    }).catch((err) => {
+      console.error('Failed to update transcript text:', err);
+    });
+  }, []);
+
   const hasTimelineContent = screenshots.length > 0 || clipboardItems.length > 0;
 
   return (
@@ -112,6 +123,7 @@ export function TranscriptPanel({
           screenshotCount={screenshots.length}
           onScreenshotClick={setSelectedScreenshot}
           clipboardCount={clipboardItems.length}
+          onSegmentEdit={handleSegmentEdit}
         />
       </div>
 

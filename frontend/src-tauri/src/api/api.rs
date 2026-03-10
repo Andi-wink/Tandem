@@ -1134,6 +1134,40 @@ pub async fn api_save_transcript<R: Runtime>(
     }
 }
 
+/// Updates the text of a single transcript segment
+#[tauri::command]
+pub async fn api_update_transcript_text<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    transcript_id: String,
+    new_text: String,
+) -> Result<serde_json::Value, String> {
+    log_info!(
+        "api_update_transcript_text called for transcript_id: {}",
+        transcript_id
+    );
+
+    let pool = state.db_manager.pool();
+
+    match TranscriptsRepository::update_transcript_text(pool, &transcript_id, &new_text).await {
+        Ok(true) => {
+            log_info!("Successfully updated transcript text for {}", transcript_id);
+            Ok(serde_json::json!({
+                "status": "success",
+                "message": "Transcript text updated successfully"
+            }))
+        }
+        Ok(false) => {
+            log_warn!("Transcript not found: {}", transcript_id);
+            Err(format!("Transcript not found: {}", transcript_id))
+        }
+        Err(e) => {
+            log_error!("Error updating transcript {}: {}", transcript_id, e);
+            Err(format!("Failed to update transcript: {}", e))
+        }
+    }
+}
+
 /// Opens the meeting's recording folder in the system file explorer
 #[tauri::command]
 pub async fn open_meeting_folder<R: Runtime>(

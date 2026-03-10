@@ -1,12 +1,13 @@
 'use client';
 
 import { Transcript } from '@/types';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { ConfidenceIndicator } from './ConfidenceIndicator';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { RecordingStatusBar } from './RecordingStatusBar';
 import { motion, AnimatePresence } from 'framer-motion';
 import { logger } from '@/lib/logger';
+import { useTranscripts } from '@/contexts/TranscriptContext';
 
 interface TranscriptViewProps {
   transcripts: Transcript[];
@@ -107,6 +108,50 @@ function cleanStopWords(text: string): string {
 
 export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts, isRecording = false, isPaused = false, isProcessing = false, isStopping = false, enableStreaming = false }) => {
   const [speechDetected, setSpeechDetected] = useState(false);
+  const { updateTranscriptText } = useTranscripts();
+
+  // Inline editing state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState('');
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const handleDoubleClick = useCallback((transcript: Transcript) => {
+    setEditingId(transcript.id);
+    setEditText(transcript.text);
+  }, []);
+
+  const handleEditSave = useCallback(() => {
+    if (editingId && editText.trim()) {
+      updateTranscriptText(editingId, editText.trim());
+    }
+    setEditingId(null);
+    setEditText('');
+  }, [editingId, editText, updateTranscriptText]);
+
+  const handleEditCancel = useCallback(() => {
+    setEditingId(null);
+    setEditText('');
+  }, []);
+
+  const handleEditKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleEditSave();
+    } else if (e.key === 'Escape') {
+      handleEditCancel();
+    }
+  }, [handleEditSave, handleEditCancel]);
+
+  // Auto-focus and auto-resize textarea when editing starts
+  useEffect(() => {
+    if (editingId && editTextareaRef.current) {
+      const textarea = editTextareaRef.current;
+      textarea.focus();
+      textarea.selectionStart = textarea.value.length;
+      textarea.style.height = 'auto';
+      textarea.style.height = textarea.scrollHeight + 'px';
+    }
+  }, [editingId]);
 
   // Debug: Log the props to understand what's happening
   logger.log('TranscriptView render:', {
@@ -306,7 +351,27 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts, isR
                 </TooltipContent>
               </Tooltip>
               <div className="flex-1">
-                {isStreaming ? (
+                {editingId === transcript.id ? (
+                  // Editing mode - inline textarea
+                  <div className="relative">
+                    <textarea
+                      ref={editTextareaRef}
+                      value={editText}
+                      onChange={(e) => {
+                        setEditText(e.target.value);
+                        e.target.style.height = 'auto';
+                        e.target.style.height = e.target.scrollHeight + 'px';
+                      }}
+                      onKeyDown={handleEditKeyDown}
+                      onBlur={handleEditSave}
+                      className="w-full text-base text-foreground leading-relaxed bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-700 rounded-md px-2 py-1 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      rows={1}
+                    />
+                    <span className="text-[10px] text-muted-foreground mt-0.5 block">
+                      Enter to save · Esc to cancel
+                    </span>
+                  </div>
+                ) : isStreaming ? (
                   // Streaming transcript - show in bubble (full width)
                   <div className="bg-muted border border-border rounded-lg px-3 py-2">
                     <div className="relative">
@@ -319,8 +384,8 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts, isR
                     </div>
                   </div>
                 ) : (
-                  // Regular transcript - simple text
-                  <div className="relative">
+                  // Regular transcript - simple text, double-click to edit
+                  <div className="relative cursor-text" onDoubleClick={() => handleDoubleClick(transcript)}>
                     <p className="text-base text-foreground leading-relaxed select-none" style={{ visibility: 'hidden' }}>
                       {sizerText}
                     </p>

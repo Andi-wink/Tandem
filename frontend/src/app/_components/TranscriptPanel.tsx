@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
 import { PermissionWarning } from '@/components/PermissionWarning';
 import { Button } from '@/components/ui/button';
@@ -39,7 +39,7 @@ export function TranscriptPanel({
   showModal
 }: TranscriptPanelProps) {
   // Contexts
-  const { transcripts, transcriptContainerRef, copyTranscript } = useTranscripts();
+  const { transcripts, transcriptContainerRef, copyTranscript, updateTranscriptText } = useTranscripts();
   const { transcriptModelConfig } = useConfig();
   const { isRecording, isPaused } = useRecordingState();
   const { checkPermissions, isChecking, hasSystemAudio, hasMicrophone } = usePermissionCheck();
@@ -81,6 +81,15 @@ export function TranscriptPanel({
   const handleScreenshotClick = (screenshot: ScreenshotData) => {
     openLightbox(screenshot);
   };
+
+  // Handle inline transcript editing during live recording
+  const handleSegmentEdit = useCallback((segmentId: string, newText: string) => {
+    // Find the original transcript to get its id from TranscriptContext
+    const originalTranscript = transcripts.find(t => t.id === segmentId);
+    if (originalTranscript) {
+      updateTranscriptText(originalTranscript.id, newText);
+    }
+  }, [transcripts, updateTranscriptText]);
 
   return (
     <div ref={transcriptContainerRef} className="w-full border-r border-border bg-background flex flex-col overflow-y-auto">
@@ -188,6 +197,7 @@ export function TranscriptPanel({
               screenshotCount={screenshots.length}
               onScreenshotClick={handleScreenshotClick}
               clipboardCount={clipboardItems.length}
+              onSegmentEdit={handleSegmentEdit}
             />
           </div>
         </div>

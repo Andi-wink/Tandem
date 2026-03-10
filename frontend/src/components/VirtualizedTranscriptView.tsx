@@ -50,6 +50,9 @@ export interface VirtualizedTranscriptViewProps {
     onScreenshotClick?: (screenshot: ScreenshotData) => void;
     clipboardCount?: number;
     onClipboardItemClick?: (item: ClipboardData) => void;
+
+    /** Callback when a segment's text is edited (double-click to edit) */
+    onSegmentEdit?: (segmentId: string, newText: string) => void;
 }
 
 // Threshold for enabling virtualization (below this, use simple rendering)
@@ -146,6 +149,13 @@ const TranscriptSegment = memo(function TranscriptSegment({
     basketItem,
     isSelected,
     selectedItems,
+    isEditing,
+    editText,
+    onEditStart,
+    onEditChange,
+    onEditSave,
+    onEditCancel,
+    onEditKeyDown,
 }: {
     id: string;
     timestamp: number;
@@ -156,13 +166,32 @@ const TranscriptSegment = memo(function TranscriptSegment({
     basketItem?: ContextBasketItem;
     isSelected?: boolean;
     selectedItems?: ContextBasketItem[];
+    isEditing?: boolean;
+    editText?: string;
+    onEditStart?: () => void;
+    onEditChange?: (text: string) => void;
+    onEditSave?: () => void;
+    onEditCancel?: () => void;
+    onEditKeyDown?: (e: React.KeyboardEvent) => void;
 }) {
     const { isDragging, dragHandlers } = useDraggableBasketItem(basketItem ?? null, selectedItems);
     const displayText = cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+    // Auto-focus and auto-resize when editing starts
+    useEffect(() => {
+        if (isEditing && textareaRef.current) {
+            const textarea = textareaRef.current;
+            textarea.focus();
+            textarea.selectionStart = textarea.value.length;
+            textarea.style.height = 'auto';
+            textarea.style.height = textarea.scrollHeight + 'px';
+        }
+    }, [isEditing]);
 
     return (
-        <div id={`segment-${id}`} data-selectable-id={`segment-${id}`} className="mb-3" {...dragHandlers}>
-            <div className={`flex items-start gap-2 select-none transition-all ${isDragging ? 'opacity-60 ring-2 ring-blue-400 shadow-[0_0_12px_rgba(59,130,246,0.4)] scale-[0.97] rounded-lg' : ''} ${isSelected ? 'bg-blue-50 dark:bg-blue-900/30 ring-1 ring-blue-300 rounded-lg px-1' : ''} ${basketItem ? 'cursor-grab' : ''}`}>
+        <div id={`segment-${id}`} data-selectable-id={`segment-${id}`} className="mb-3" {...(isEditing ? {} : dragHandlers)}>
+            <div className={`flex items-start gap-2 select-none transition-all ${isDragging ? 'opacity-60 ring-2 ring-blue-400 shadow-[0_0_12px_rgba(59,130,246,0.4)] scale-[0.97] rounded-lg' : ''} ${isSelected && !isEditing ? 'bg-blue-50 dark:bg-blue-900/30 ring-1 ring-blue-300 rounded-lg px-1' : ''} ${basketItem && !isEditing ? 'cursor-grab' : ''}`}>
                 <Tooltip>
                     <TooltipTrigger>
                         <span className="text-xs text-muted-foreground mt-1 flex-shrink-0 min-w-[50px]">
@@ -176,12 +205,36 @@ const TranscriptSegment = memo(function TranscriptSegment({
                     </TooltipContent>
                 </Tooltip>
                 <div className="flex-1">
-                    {isStreaming ? (
+                    {isEditing ? (
+                        <div className="relative">
+                            <textarea
+                                ref={textareaRef}
+                                value={editText ?? ''}
+                                onChange={(e) => {
+                                    onEditChange?.(e.target.value);
+                                    e.target.style.height = 'auto';
+                                    e.target.style.height = e.target.scrollHeight + 'px';
+                                }}
+                                onKeyDown={onEditKeyDown}
+                                onBlur={onEditSave}
+                                className="w-full text-base text-foreground leading-relaxed bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-700 rounded-md px-2 py-1 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                rows={1}
+                            />
+                            <span className="text-[10px] text-muted-foreground mt-0.5 block">
+                                Enter to save · Esc to cancel
+                            </span>
+                        </div>
+                    ) : isStreaming ? (
                         <div className="bg-muted border border-border rounded-lg px-3 py-2">
                             <p className="text-base text-foreground leading-relaxed select-text">{displayText}</p>
                         </div>
                     ) : (
-                        <p className="text-base text-foreground leading-relaxed select-text">{displayText}</p>
+                        <p
+                            className="text-base text-foreground leading-relaxed select-text cursor-text"
+                            onDoubleClick={onEditStart}
+                        >
+                            {displayText}
+                        </p>
                     )}
                 </div>
             </div>
@@ -210,8 +263,40 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     onScreenshotClick,
     clipboardCount = 0,
     onClipboardItemClick,
+    onSegmentEdit,
 }) => {
     const { selectedIds, isSelected, replaceSelection, toggle, rangeTo } = useSelection();
+
+    // Inline editing state
+    const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
+    const [editText, setEditText] = useState('');
+
+    const handleEditStart = useCallback((segmentId: string, originalText: string) => {
+        setEditingSegmentId(segmentId);
+        setEditText(originalText);
+    }, []);
+
+    const handleEditSave = useCallback(() => {
+        if (editingSegmentId && editText.trim() && onSegmentEdit) {
+            onSegmentEdit(editingSegmentId, editText.trim());
+        }
+        setEditingSegmentId(null);
+        setEditText('');
+    }, [editingSegmentId, editText, onSegmentEdit]);
+
+    const handleEditCancel = useCallback(() => {
+        setEditingSegmentId(null);
+        setEditText('');
+    }, []);
+
+    const handleEditKeyDown = useCallback((e: React.KeyboardEvent) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            handleEditSave();
+        } else if (e.key === 'Escape') {
+            handleEditCancel();
+        }
+    }, [handleEditSave, handleEditCancel]);
 
     // Build ordered IDs for Shift+click range selection
     const orderedIds = useMemo(() => {
@@ -514,6 +599,13 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         basketItem={segmentToBasketItem(seg)}
                                         isSelected={isSelected(`segment-${seg.id}`)}
                                         selectedItems={selectedBasketItems}
+                                        isEditing={editingSegmentId === seg.id}
+                                        editText={editingSegmentId === seg.id ? editText : undefined}
+                                        onEditStart={onSegmentEdit ? () => handleEditStart(seg.id, seg.text) : undefined}
+                                        onEditChange={setEditText}
+                                        onEditSave={handleEditSave}
+                                        onEditCancel={handleEditCancel}
+                                        onEditKeyDown={handleEditKeyDown}
                                     />
                                 </motion.div>
                             );
@@ -571,6 +663,13 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         basketItem={segmentToBasketItem(segment)}
                                         isSelected={isSelected(`segment-${segment.id}`)}
                                         selectedItems={selectedBasketItems}
+                                        isEditing={editingSegmentId === segment.id}
+                                        editText={editingSegmentId === segment.id ? editText : undefined}
+                                        onEditStart={onSegmentEdit ? () => handleEditStart(segment.id, segment.text) : undefined}
+                                        onEditChange={setEditText}
+                                        onEditSave={handleEditSave}
+                                        onEditCancel={handleEditCancel}
+                                        onEditKeyDown={handleEditKeyDown}
                                     />
                                 </div>
                             );
@@ -631,6 +730,13 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         basketItem={segmentToBasketItem(segment)}
                                         isSelected={isSelected(`segment-${segment.id}`)}
                                         selectedItems={selectedBasketItems}
+                                        isEditing={editingSegmentId === segment.id}
+                                        editText={editingSegmentId === segment.id ? editText : undefined}
+                                        onEditStart={onSegmentEdit ? () => handleEditStart(segment.id, segment.text) : undefined}
+                                        onEditChange={setEditText}
+                                        onEditSave={handleEditSave}
+                                        onEditCancel={handleEditCancel}
+                                        onEditKeyDown={handleEditKeyDown}
                                     />
                                 </motion.div>
                             );
