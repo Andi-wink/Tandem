@@ -18,21 +18,21 @@ use super::vad::{ContinuousVadProcessor};
 struct AudioMixerRingBuffer {
     mic_buffer: VecDeque<f32>,
     system_buffer: VecDeque<f32>,
-    window_size_samples: usize,  // Fixed mixing window (e.g., 50ms)
-    max_buffer_size: usize,  // Safety limit (e.g., 100ms)
+    window_size_samples: usize,  // Fixed mixing window (600ms for audio stability)
+    max_buffer_size: usize,  // Safety limit (4800ms = 8x window)
 }
 
 impl AudioMixerRingBuffer {
     fn new(sample_rate: u32) -> Self {
-        // Use 50ms windows for mixing
+        // Use 600ms windows for mixing (increased from 50ms for system audio stability)
         let window_ms = 600.0;
         let window_size_samples = (sample_rate as f32 * window_ms / 1000.0) as usize;
 
-        // CRITICAL FIX: Increase max buffer to 400ms for system audio stability
+        // Max buffer = 8x window (4800ms) for system audio stability
         // System audio (especially Core Audio on macOS) can have significant jitter
         // due to sample-by-sample streaming → batching → channel transmission
         // Accounts for: RNNoise buffering + Core Audio jitter + processing delays
-        let max_buffer_size = window_size_samples * 8;  // 400ms (was 200ms)
+        let max_buffer_size = window_size_samples * 8;  // 4800ms (8x 600ms window)
 
         info!("🔊 Ring buffer initialized: window={}ms ({} samples), max={}ms ({} samples)",
               window_ms, window_size_samples,
@@ -693,6 +693,11 @@ pub struct AudioPipeline {
     mixer: ProfessionalAudioMixer,
     // Recording sender for pre-mixed audio
     recording_sender_for_mixed: Option<mpsc::UnboundedSender<AudioChunk>>,
+    // Transcription buffer: accumulate VAD segments until >= MIN_TRANSCRIPTION_SAMPLES
+    // before sending to Whisper. Short chunks (<3s) produce poor transcription quality.
+    transcription_buffer: Vec<f32>,
+    transcription_buffer_start_ts: f64,
+    transcription_buffer_last_activity: std::time::Instant,
 }
 
 impl AudioPipeline {
@@ -723,7 +728,7 @@ impl AudioPipeline {
         // This bridges natural pauses without excessive fragmentation
         // For mac os core audio, 900ms, for windows 400ms seems good
 
-        let redemption_time = if cfg!(target_os = "macos") { 400 } else { 400 };
+        let redemption_time = if cfg!(target_os = "macos") { 900 } else { 400 };
 
         let vad_processor = ContinuousVadProcessor::new(sample_rate, redemption_time)
             .map_err(|e| anyhow::anyhow!("Failed to create VAD processor: {}", e))?;
@@ -752,6 +757,10 @@ impl AudioPipeline {
             ring_buffer,
             mixer,
             recording_sender_for_mixed: None,  // Will be set by manager
+            // Buffer VAD segments to ensure Whisper gets >= 3s of audio
+            transcription_buffer: Vec::with_capacity(48000), // Pre-allocate 3s at 16kHz
+            transcription_buffer_start_ts: 0.0,
+            transcription_buffer_last_activity: std::time::Instant::now(),
         })
     }
 
@@ -823,29 +832,32 @@ impl AudioPipeline {
                             // Previous 2x gain was causing excessive limiting/distortion
                             let mixed_with_gain = mixed_clean;
 
-                            // STEP 3: Send mixed audio through VAD for transcription
-                            // VAD segments are sent directly to the transcription engine
+                            // STEP 3: Send mixed audio through VAD, accumulate into buffer
+                            // VAD segments are buffered until >= 3 seconds to give Whisper
+                            // enough acoustic context for accurate transcription.
                             match self.vad_processor.process_audio(&mixed_with_gain) {
                                 Ok(speech_segments) => {
                                     for segment in speech_segments {
                                         let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
 
                                         if segment.samples.len() >= 800 {  // Minimum 50ms at 16kHz
-                                            info!("🎤 Sending VAD segment: {:.1}ms duration, {} samples",
-                                                  duration_ms, segment.samples.len());
+                                            // Record timestamp of first sample in this buffer
+                                            if self.transcription_buffer.is_empty() {
+                                                self.transcription_buffer_start_ts = segment.start_timestamp_ms / 1000.0;
+                                            }
 
-                                            let transcription_chunk = AudioChunk {
-                                                data: segment.samples,
-                                                sample_rate: 16000,
-                                                timestamp: segment.start_timestamp_ms / 1000.0,
-                                                chunk_id: self.chunk_id_counter,
-                                                device_type: DeviceType::Microphone,
-                                            };
+                                            // Append VAD speech samples to accumulation buffer
+                                            self.transcription_buffer.extend_from_slice(&segment.samples);
+                                            self.transcription_buffer_last_activity = std::time::Instant::now();
 
-                                            if let Err(e) = self.transcription_sender.send(transcription_chunk) {
-                                                warn!("Failed to send VAD segment for transcription: {}", e);
-                                            } else {
-                                                self.chunk_id_counter += 1;
+                                            perf_debug!("🎤 Buffered VAD segment: {:.1}ms ({} samples), buffer total: {} samples ({:.1}s)",
+                                                  duration_ms, segment.samples.len(),
+                                                  self.transcription_buffer.len(),
+                                                  self.transcription_buffer.len() as f64 / 16000.0);
+
+                                            // Flush buffer to Whisper when we have enough audio
+                                            if self.transcription_buffer.len() >= Self::MIN_TRANSCRIPTION_SAMPLES {
+                                                self.flush_transcription_buffer();
                                             }
                                         } else {
                                             debug!("⏭️ Dropping short VAD segment: {:.1}ms ({} samples < 800)",
@@ -877,6 +889,20 @@ impl AudioPipeline {
                     break;
                 }
                 Err(_) => {
+                    // Timeout (no audio for 50ms) — check if transcription buffer
+                    // has been idle long enough to flush a partial chunk to Whisper.
+                    // This ensures speech followed by a pause gets transcribed promptly
+                    // rather than waiting indefinitely for more audio to fill the buffer.
+                    if !self.transcription_buffer.is_empty()
+                        && self.transcription_buffer_last_activity.elapsed().as_secs_f64()
+                            >= Self::SILENCE_GAP_FLUSH_SECS
+                    {
+                        info!("⏱️ Silence gap ({:.1}s) exceeded — flushing partial transcription buffer ({} samples, {:.1}s)",
+                              self.transcription_buffer_last_activity.elapsed().as_secs_f64(),
+                              self.transcription_buffer.len(),
+                              self.transcription_buffer.len() as f64 / 16000.0);
+                        self.flush_transcription_buffer();
+                    }
                     continue;
                 }
             }
@@ -889,32 +915,64 @@ impl AudioPipeline {
         Ok(())
     }
 
+    /// Minimum samples before sending to Whisper (3 seconds at 16kHz).
+    /// Whisper performs poorly on chunks shorter than ~3 seconds.
+    const MIN_TRANSCRIPTION_SAMPLES: usize = 48000;
+
+    /// Maximum silence gap (seconds) before flushing a partial buffer.
+    /// If no new VAD speech arrives within this window, send what we have.
+    const SILENCE_GAP_FLUSH_SECS: f64 = 2.0;
+
+    /// Send accumulated transcription buffer to Whisper and reset.
+    /// Called when buffer >= MIN_TRANSCRIPTION_SAMPLES, on silence gap, or on recording stop.
+    fn flush_transcription_buffer(&mut self) {
+        if self.transcription_buffer.is_empty() {
+            return;
+        }
+
+        let buffer_samples = self.transcription_buffer.len();
+        let buffer_duration_ms = buffer_samples as f64 / 16.0; // 16kHz → ms
+
+        info!("🎤 Flushing transcription buffer: {:.1}ms ({} samples) to Whisper",
+              buffer_duration_ms, buffer_samples);
+
+        let chunk = AudioChunk {
+            data: std::mem::replace(
+                &mut self.transcription_buffer,
+                Vec::with_capacity(Self::MIN_TRANSCRIPTION_SAMPLES),
+            ),
+            sample_rate: 16000,
+            timestamp: self.transcription_buffer_start_ts,
+            chunk_id: self.chunk_id_counter,
+            device_type: DeviceType::Microphone,
+        };
+
+        if let Err(e) = self.transcription_sender.send(chunk) {
+            warn!("Failed to send buffered transcription chunk: {}", e);
+        } else {
+            self.chunk_id_counter += 1;
+        }
+
+        self.transcription_buffer_start_ts = 0.0;
+    }
+
     fn flush_remaining_audio(&mut self) -> Result<()> {
         info!("Flushing remaining audio from pipeline (processed {} chunks)", self.processed_chunks);
 
-        // Flush any remaining audio from VAD processor
+        // Flush any remaining audio from VAD processor into the transcription buffer
         match self.vad_processor.flush() {
             Ok(final_segments) => {
                 for segment in final_segments {
                     let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
 
                     if segment.samples.len() >= 800 {
-                        info!("🎤 Sending final VAD segment: {:.1}ms duration, {} samples",
+                        info!("🎤 Buffering final VAD segment: {:.1}ms duration, {} samples",
                               duration_ms, segment.samples.len());
 
-                        let transcription_chunk = AudioChunk {
-                            data: segment.samples,
-                            sample_rate: 16000,
-                            timestamp: segment.start_timestamp_ms / 1000.0,
-                            chunk_id: self.chunk_id_counter,
-                            device_type: DeviceType::Microphone,
-                        };
-
-                        if let Err(e) = self.transcription_sender.send(transcription_chunk) {
-                            warn!("Failed to send final VAD segment: {}", e);
-                        } else {
-                            self.chunk_id_counter += 1;
+                        if self.transcription_buffer.is_empty() {
+                            self.transcription_buffer_start_ts = segment.start_timestamp_ms / 1000.0;
                         }
+                        self.transcription_buffer.extend_from_slice(&segment.samples);
                     } else {
                         info!("⏭️ Skipping short final segment: {:.1}ms ({} samples < 800)",
                               duration_ms, segment.samples.len());
@@ -924,6 +982,14 @@ impl AudioPipeline {
             Err(e) => {
                 warn!("Failed to flush VAD processor: {}", e);
             }
+        }
+
+        // Flush whatever remains in the transcription buffer (even if < 3s)
+        if !self.transcription_buffer.is_empty() {
+            info!("📤 Flushing final transcription buffer: {} samples ({:.1}s)",
+                  self.transcription_buffer.len(),
+                  self.transcription_buffer.len() as f64 / 16000.0);
+            self.flush_transcription_buffer();
         }
 
         Ok(())
