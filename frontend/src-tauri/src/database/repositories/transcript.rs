@@ -82,6 +82,23 @@ impl TranscriptsRepository {
         Ok(meeting_id)
     }
 
+    /// Updates the text of a single transcript segment by its ID.
+    pub async fn update_transcript_text(
+        pool: &SqlitePool,
+        transcript_id: &str,
+        new_text: &str,
+    ) -> Result<bool, SqlxError> {
+        let result = sqlx::query(
+            "UPDATE transcripts SET transcript = ? WHERE id = ?",
+        )
+        .bind(new_text)
+        .bind(transcript_id)
+        .execute(pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Searches for a query string within the transcripts.
     /// It returns a list of matching transcripts with context.
     pub async fn search_transcripts(
@@ -92,13 +109,19 @@ impl TranscriptsRepository {
             return Ok(Vec::new());
         }
 
-        let search_query = format!("%{}%", query.to_lowercase());
+        // Escape LIKE special characters so %, _ in user input are matched literally
+        let escaped = query
+            .to_lowercase()
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let search_query = format!("%{}%", escaped);
 
         let rows = sqlx::query_as::<_, (String, String, String, String)>(
             "SELECT m.id, m.title, t.transcript, t.timestamp
              FROM meetings m
              JOIN transcripts t ON m.id = t.meeting_id
-             WHERE LOWER(t.transcript) LIKE ?
+             WHERE LOWER(t.transcript) LIKE ? ESCAPE '\\'
              ORDER BY t.timestamp DESC
              LIMIT 50",
         )
@@ -123,26 +146,35 @@ impl TranscriptsRepository {
     }
 
     /// Helper function to extract a snippet of text around the first match of a query.
+    /// Uses char-based indexing to avoid panicking on multi-byte UTF-8 boundaries.
     fn get_match_context(transcript: &str, query: &str) -> String {
-        let transcript_lower = transcript.to_lowercase();
         let query_lower = query.to_lowercase();
+        let chars: Vec<char> = transcript.chars().collect();
+        let lower_chars: Vec<char> = transcript.to_lowercase().chars().collect();
+        let query_chars: Vec<char> = query_lower.chars().collect();
 
-        match transcript_lower.find(&query_lower) {
-            Some(match_index) => {
-                let start_index = match_index.saturating_sub(100);
-                let end_index = (match_index + query.len() + 100).min(transcript.len());
+        // Find the match position in char indices (not byte offsets)
+        let match_pos = lower_chars
+            .windows(query_chars.len())
+            .position(|w| w == query_chars.as_slice());
+
+        match match_pos {
+            Some(pos) => {
+                let context_chars = 100;
+                let start = pos.saturating_sub(context_chars);
+                let end = (pos + query_chars.len() + context_chars).min(chars.len());
 
                 let mut context = String::new();
-                if start_index > 0 {
+                if start > 0 {
                     context.push_str("...");
                 }
-                context.push_str(&transcript[start_index..end_index]);
-                if end_index < transcript.len() {
+                context.extend(&chars[start..end]);
+                if end < chars.len() {
                     context.push_str("...");
                 }
                 context
             }
-            None => transcript.chars().take(200).collect(), // Fallback to the start of the transcript
+            None => chars.iter().take(200).collect(),
         }
     }
 }
