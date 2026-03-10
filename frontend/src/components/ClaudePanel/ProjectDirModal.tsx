@@ -28,6 +28,11 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
     }
   }, [defaultDir]);
 
+  const isKeyValid = keyInput.trim().startsWith('sk-ant-') && keyInput.trim().length > 20;
+  const keyAlreadySet = !!(apiKey && apiKey.startsWith('sk-ant-') && apiKey.length > 20);
+  const hasDirSelected = selectedDir.trim().length > 0;
+  const canConfirm = (isKeyValid || keyAlreadySet) && hasDirSelected;
+
   const handleBrowse = async () => {
     try {
       const result = await invoke<string | null>('select_recording_folder');
@@ -41,14 +46,10 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
   };
 
   const handleConfirm = () => {
-    if (!isKeyValid) return;
-    setApiKey(keyInput.trim());
+    if (!isKeyValid && !keyAlreadySet) return;
+    if (!keyAlreadySet) setApiKey(keyInput.trim());
     onConfirm(selectedDir);
   };
-
-  const isKeyValid = keyInput.trim().startsWith('sk-ant-') && keyInput.trim().length > 20;
-  const hasDirSelected = selectedDir.trim().length > 0;
-  const canConfirm = isKeyValid && hasDirSelected;
 
   // B026: Close on Escape key
   useEffect(() => {
@@ -75,31 +76,33 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
             Set up the AI assistant for <strong>{meetingTitle}</strong>.
           </p>
 
-          {/* API Key input */}
-          <div className="space-y-2">
-            <label className="flex items-center gap-1.5 text-sm font-medium text-foreground">
-              <Key className="w-3.5 h-3.5" />
-              Anthropic API Key
-            </label>
-            <input
-              type="password"
-              value={keyInput}
-              onChange={(e) => setKeyInput(e.target.value)}
-              placeholder="sk-ant-..."
-              className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            {keyInput && !isKeyValid && (
-              <p className="text-xs text-amber-600">API key should start with &quot;sk-ant-&quot;</p>
-            )}
-            <a
-              href="https://console.anthropic.com/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline"
-            >
-              Get an API key <ExternalLink className="w-3 h-3" />
-            </a>
-          </div>
+          {/* API Key input — hidden when key is already saved */}
+          {!keyAlreadySet && (
+            <div className="space-y-2">
+              <label className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+                <Key className="w-3.5 h-3.5" />
+                Anthropic API Key
+              </label>
+              <input
+                type="password"
+                value={keyInput}
+                onChange={(e) => setKeyInput(e.target.value)}
+                placeholder="sk-ant-..."
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              {keyInput && !isKeyValid && (
+                <p className="text-xs text-amber-600">API key should start with &quot;sk-ant-&quot;</p>
+              )}
+              <a
+                href="https://console.anthropic.com/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline"
+              >
+                Get an API key <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+          )}
 
           {/* Project directory selection */}
           <div className="space-y-2">

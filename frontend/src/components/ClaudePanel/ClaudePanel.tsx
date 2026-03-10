@@ -138,11 +138,12 @@ export function ClaudePanel() {
   const [isParsingFile, setIsParsingFile] = useState(false);
 
   // F054: Auto-show project dir modal when panel opens during recording without projectDir
+  // Wait for apiKey to load (non-null) to avoid making the user re-enter it
   useEffect(() => {
-    if (isPanelOpen && recordingState.isRecording && !projectDir && meetingTitle && !showProjectModal) {
+    if (isPanelOpen && recordingState.isRecording && !projectDir && meetingTitle && !showProjectModal && apiKey) {
       setShowProjectModal(true);
     }
-  }, [isPanelOpen, recordingState.isRecording, projectDir, meetingTitle, showProjectModal]);
+  }, [isPanelOpen, recordingState.isRecording, projectDir, meetingTitle, showProjectModal, apiKey]);
 
   // F044: Handle file selection (from button or OS drop)
   const handleFileUpload = async (file: File) => {
