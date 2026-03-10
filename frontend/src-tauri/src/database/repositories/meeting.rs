@@ -181,17 +181,18 @@ impl MeetingsRepository {
 
         let now = Utc::now().naive_utc();
 
-        let rows_affected =
-            sqlx::query("UPDATE meetings SET title = ?, updated_at = ? WHERE id = ?")
-                .bind(new_title)
-                .bind(now)
-                .bind(meeting_id)
-                .execute(&mut *transaction)
-                .await?;
-        if rows_affected.rows_affected() == 0 {
-            transaction.rollback().await?;
-            return Ok(false);
-        }
+        // Upsert: create the meeting if it doesn't exist yet (e.g. during live recording)
+        sqlx::query(
+            "INSERT INTO meetings (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET title = excluded.title, updated_at = excluded.updated_at"
+        )
+            .bind(meeting_id)
+            .bind(new_title)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *transaction)
+            .await?;
+
         transaction.commit().await?;
         Ok(true)
     }

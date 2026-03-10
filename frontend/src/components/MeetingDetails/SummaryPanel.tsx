@@ -91,13 +91,13 @@ export function SummaryPanel({
     <div className="flex-1 min-w-0 flex flex-col bg-background overflow-hidden">
       {/* Title area */}
       <div className="p-4 border-b border-border">
-        {/* <EditableTitle
+        <EditableTitle
           title={meetingTitle}
           isEditing={isEditingTitle}
           onStartEditing={onStartEditTitle}
           onFinishEditing={onFinishEditTitle}
           onChange={onTitleChange}
-        /> */}
+        />
 
         {/* Button groups - only show when summary exists */}
         {aiSummary && !isSummaryLoading && (

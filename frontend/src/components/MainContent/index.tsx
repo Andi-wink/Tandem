@@ -10,13 +10,14 @@ interface MainContentProps {
 
 const MainContent: React.FC<MainContentProps> = ({ children }) => {
   const { isCollapsed } = useSidebar();
-  const { isPanelOpen } = useClaude();
+  const { isPanelOpen, panelWidth } = useClaude();
 
   return (
     <main
       className={`flex-1 transition-all duration-300 ${
         isCollapsed ? 'ml-16' : 'ml-64'
-      } ${isPanelOpen ? 'mr-[420px]' : ''}`}
+      }`}
+      style={{ marginRight: isPanelOpen ? panelWidth : 0 }}
     >
       <div className="pl-8">
         {children}

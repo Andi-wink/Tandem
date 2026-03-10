@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { X, Send, Trash2, AlertCircle, Square, ChevronUp, Check, Shield, Paperclip, Mic, FolderOpen } from 'lucide-react';
 import { toast } from 'sonner';
@@ -17,6 +17,7 @@ import { useVoiceCommand, VoiceCommandResult } from '@/hooks/useVoiceCommand';
 import { TEXTAREA_MAX_HEIGHT_PX } from '@/lib/constants';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useTranscripts } from '@/contexts/TranscriptContext';
+import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { parseDocument, isSupportedDocument } from '@/services/claudeService';
 import type { ContextBasketItem } from '@/contexts/ContextBasketContext';
 
@@ -47,18 +48,89 @@ export function ClaudePanel() {
     toggleItemAnonymization,
     clearEntityMap,
     piiAvailable,
+    updateMeetingTitle,
+    panelWidth,
+    setPanelWidth,
   } = useClaude();
 
   const [inputText, setInputText] = useState('');
+  const [isResizing, setIsResizing] = useState(false);
   const [showProjectModal, setShowProjectModal] = useState(false);
   const [pendingFirstMessage, setPendingFirstMessage] = useState<string | null>(null);
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [editingTitleValue, setEditingTitleValue] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const titleInputRef = useRef<HTMLInputElement>(null);
   const sendMessageRef = useRef(sendMessage);
   sendMessageRef.current = sendMessage;
 
   const hasApiKey = !!apiKey;
   const isDragActive = useDragActive();
   const { clearSelection } = useSelection();
+  const dragListenersRef = useRef<{ move: (e: MouseEvent) => void; up: () => void } | null>(null);
+
+  // ── Resize drag handler ──────────────────────────────────────────────────
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const newWidth = window.innerWidth - moveEvent.clientX;
+      setPanelWidth(newWidth); // clamping happens inside setPanelWidth
+    };
+
+    const onMouseUp = () => {
+      setIsResizing(false);
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      dragListenersRef.current = null;
+    };
+
+    dragListenersRef.current = { move: onMouseMove, up: onMouseUp };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, [setPanelWidth]);
+
+  // Clean up drag listeners on unmount (if mid-drag when panel closes)
+  useEffect(() => {
+    return () => {
+      if (dragListenersRef.current) {
+        document.removeEventListener('mousemove', dragListenersRef.current.move);
+        document.removeEventListener('mouseup', dragListenersRef.current.up);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        dragListenersRef.current = null;
+      }
+    };
+  }, []);
+  const { setCurrentMeeting, setMeetings, meetings: sidebarMeetings } = useSidebar();
+
+  // Title editing handlers
+  const handleTitleDoubleClick = () => {
+    setEditingTitleValue(meetingTitle || '');
+    setIsEditingTitle(true);
+    setTimeout(() => titleInputRef.current?.select(), 0);
+  };
+
+  const handleTitleSave = async () => {
+    setIsEditingTitle(false);
+    const newTitle = editingTitleValue.trim();
+    if (!newTitle || newTitle === meetingTitle || !meetingId) return;
+    updateMeetingTitle(newTitle);
+    try {
+      await invoke('api_save_meeting_title', { meetingId, title: newTitle });
+      const updated = sidebarMeetings.map(m => m.id === meetingId ? { ...m, title: newTitle } : m);
+      setMeetings(updated);
+      setCurrentMeeting({ id: meetingId, title: newTitle });
+    } catch (err) {
+      console.error('Failed to save meeting title:', err);
+      toast.error('Failed to save meeting title');
+    }
+  };
   const { isOver: isDropOver, dropHandlers: overlayDropHandlers } = useDropZone(addToBasket, clearSelection);
   const recordingState = useRecordingState();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -392,10 +464,19 @@ export function ClaudePanel() {
       )}
 
       <div
-        className={`fixed right-0 top-0 bottom-0 w-[420px] bg-background border-l border-border shadow-lg z-40 flex flex-col transition-transform duration-200 ${isPanelOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}
+        className={`fixed right-0 top-0 bottom-0 bg-background border-l border-border shadow-lg z-40 flex flex-col ${isResizing ? '' : 'transition-transform duration-200'} ${isPanelOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}
+        style={{ width: panelWidth }}
         onDragOver={(e) => { if (e.dataTransfer?.types.includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } }}
         onDrop={(e) => { if (e.dataTransfer?.files?.length) { e.preventDefault(); handleFileDrop(e); } }}
       >
+        {/* Resize drag handle — left edge */}
+        <div
+          onMouseDown={handleResizeStart}
+          className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-50 group hover:bg-blue-500/30 active:bg-blue-500/50 transition-colors"
+          title="Drag to resize"
+        >
+          <div className="absolute left-0 top-0 bottom-0 w-3 -translate-x-1" />
+        </div>
         {/* Full-panel drop overlay — shown while an internal drag is active.
             Always visible with a subtle tint so user knows where to drop. */}
         {isDragActive && isPanelOpen && (
@@ -422,15 +503,36 @@ export function ClaudePanel() {
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-muted flex-shrink-0">
           <div className="flex-1 min-w-0">
-            <div className="font-semibold text-sm truncate">{meetingTitle || 'AI Assistant'}</div>
+            {isEditingTitle ? (
+              <input
+                ref={titleInputRef}
+                value={editingTitleValue}
+                onChange={(e) => setEditingTitleValue(e.target.value)}
+                onBlur={handleTitleSave}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { e.preventDefault(); handleTitleSave(); }
+                  if (e.key === 'Escape') { setIsEditingTitle(false); }
+                }}
+                className="font-semibold text-sm w-full bg-background border border-border rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                autoFocus
+              />
+            ) : (
+              <div
+                className="font-semibold text-sm truncate cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1"
+                onDoubleClick={handleTitleDoubleClick}
+                title="Double-click to rename"
+              >
+                {meetingTitle || 'AI Assistant'}
+              </div>
+            )}
             {projectDir && (
               <button
                 onClick={() => invoke('show_in_folder', { path: projectDir }).catch(() => toast.error('Failed to open folder'))}
-                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-blue-500 dark:hover:text-blue-400 truncate transition-colors group"
-                title="Open in file explorer"
+                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-blue-500 dark:hover:text-blue-400 max-w-full overflow-hidden transition-colors group"
+                title={projectDir}
               >
                 <FolderOpen className="w-3 h-3 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
-                <span className="truncate">{projectDir}</span>
+                <span className="truncate min-w-0">{projectDir}</span>
               </button>
             )}
           </div>

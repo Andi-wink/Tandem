@@ -204,7 +204,12 @@ export default function PageContent({
           onTitleChange={meetingData.handleTitleChange}
           isEditingTitle={meetingData.isEditingTitle}
           onStartEditTitle={() => meetingData.setIsEditingTitle(true)}
-          onFinishEditTitle={() => meetingData.setIsEditingTitle(false)}
+          onFinishEditTitle={() => {
+            meetingData.setIsEditingTitle(false);
+            if (meetingData.isTitleDirty) {
+              meetingData.handleSaveMeetingTitle();
+            }
+          }}
           isTitleDirty={meetingData.isTitleDirty}
           summaryRef={meetingData.blockNoteSummaryRef}
           isSaving={meetingData.isSaving}

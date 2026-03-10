@@ -79,17 +79,25 @@ interface ClaudeContextValue extends ClaudeState {
   cancelStream: () => void;
   setApiKey: (key: string) => void;
   setModel: (model: string) => void;
+  updateMeetingTitle: (newTitle: string) => void;
   // F005: PII Anonymization
   toggleAnonymization: () => void;
   toggleItemAnonymization: (itemId: string) => void;
   clearEntityMap: () => void;
   piiAvailable: boolean | null;
+  // Panel resize
+  panelWidth: number;
+  setPanelWidth: (width: number) => void;
 }
 
 const ClaudeContext = createContext<ClaudeContextValue | null>(null);
 
 const MODEL_STORAGE_KEY = 'tandem_claude_model';
+const PANEL_WIDTH_STORAGE_KEY = 'tandem_claude_panel_width';
 const DEFAULT_MODEL = 'claude-opus-4-6';
+const DEFAULT_PANEL_WIDTH = 420;
+const MIN_PANEL_WIDTH = 320;
+const MAX_PANEL_WIDTH = 700;
 
 // ─── Provider ───────────────────────────────────────────────────────────────
 
@@ -99,6 +107,26 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
 
   // R009: Basket state now lives in ContextBasketContext
   const { contextBasket, addToBasket, removeFromBasket, clearBasket, updateItem } = useContextBasket();
+
+  // Panel width (resizable)
+  const [panelWidth, setPanelWidthRaw] = useState(DEFAULT_PANEL_WIDTH);
+
+  // Hydrate persisted panel width after mount
+  useEffect(() => {
+    const stored = localStorage.getItem(PANEL_WIDTH_STORAGE_KEY);
+    if (stored) {
+      const w = parseInt(stored, 10);
+      if (!isNaN(w) && w >= MIN_PANEL_WIDTH && w <= MAX_PANEL_WIDTH) {
+        setPanelWidthRaw(w);
+      }
+    }
+  }, []);
+
+  const setPanelWidth = useCallback((width: number) => {
+    const clamped = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, width));
+    setPanelWidthRaw(clamped);
+    localStorage.setItem(PANEL_WIDTH_STORAGE_KEY, String(clamped));
+  }, []);
   // Keep a ref for basket so sendMessage can read it without stale closures
   const basketRef = useRef(contextBasket);
   basketRef.current = contextBasket;
@@ -398,6 +426,10 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     setState(prev => ({ ...prev, selectedModel: model }));
   }, []);
 
+  const updateMeetingTitle = useCallback((newTitle: string) => {
+    setState(prev => ({ ...prev, meetingTitle: newTitle }));
+  }, []);
+
   // ── F005: PII Anonymization controls ──────────────────────────────────────
 
   const toggleAnonymization = useCallback(() => {
@@ -565,6 +597,10 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         });
       },
     );
+    // Abort any previous stream before starting new one
+    if (abortRef.current) {
+      abortRef.current.abort();
+    }
     abortRef.current = controller;
   }, [handleStreamEvent, clearBasket]);
 
@@ -624,10 +660,14 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     cancelStream,
     setApiKey,
     setModel,
+    updateMeetingTitle,
     toggleAnonymization,
     toggleItemAnonymization,
     clearEntityMap: clearEntityMapAction,
-  }), [state, contextBasket, addToBasket, removeFromBasket, clearBasket, openPanel, closePanel, sendMessage, clearSessionAction, cancelStream, setApiKey, setModel, toggleAnonymization, toggleItemAnonymization, clearEntityMapAction]);
+    // Panel resize
+    panelWidth,
+    setPanelWidth,
+  }), [state, contextBasket, addToBasket, removeFromBasket, clearBasket, openPanel, closePanel, sendMessage, clearSessionAction, cancelStream, setApiKey, setModel, updateMeetingTitle, toggleAnonymization, toggleItemAnonymization, clearEntityMapAction, panelWidth, setPanelWidth]);
 
   return (
     <ClaudeContext.Provider value={value}>

@@ -59,7 +59,7 @@ export const EditableTitle: React.FC<EditableTitleProps> = ({
     <div className="group flex items-center space-x-2 flex-1">
       <h1
         className="text-2xl font-bold cursor-pointer hover:bg-muted rounded px-1 flex-1 whitespace-pre-wrap"
-        onClick={onStartEditing}
+        onDoubleClick={onStartEditing}
       >
         {title}
       </h1>

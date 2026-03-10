@@ -41,7 +41,7 @@ export default function Home() {
   const { status, isStopping, isProcessing, isSaving } = recordingState;
 
   // Claude panel
-  const { isPanelOpen, openPanel, closePanel } = useClaude();
+  const { isPanelOpen, openPanel, closePanel, panelWidth } = useClaude();
 
   // Hooks
   const { hasMicrophone } = usePermissionCheck();
@@ -249,7 +249,7 @@ export default function Home() {
         {(hasMicrophone || isRecording) &&
           status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
           status !== RecordingStatus.SAVING && (
-            <div className="fixed bottom-12 left-0 right-0 z-10 transition-[right] duration-200" style={{ right: isPanelOpen ? '420px' : '0' }}>
+            <div className="fixed bottom-12 left-0 right-0 z-10 transition-[right] duration-200" style={{ right: isPanelOpen ? `${panelWidth}px` : '0' }}>
               <div
                 className="flex justify-center pl-8 transition-[margin] duration-300"
                 style={{
