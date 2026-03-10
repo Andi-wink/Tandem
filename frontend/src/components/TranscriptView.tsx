@@ -310,10 +310,10 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts, isR
                   // Streaming transcript - show in bubble (full width)
                   <div className="bg-muted border border-border rounded-lg px-3 py-2">
                     <div className="relative">
-                      <p className="text-base text-foreground leading-relaxed" style={{ visibility: 'hidden' }}>
+                      <p className="text-base text-foreground leading-relaxed select-none" style={{ visibility: 'hidden' }}>
                         {sizerText}
                       </p>
-                      <p className="text-base text-foreground leading-relaxed absolute top-0 left-0">
+                      <p className="text-base text-foreground leading-relaxed select-text absolute top-0 left-0">
                         {displayText}
                       </p>
                     </div>
@@ -321,10 +321,10 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts, isR
                 ) : (
                   // Regular transcript - simple text
                   <div className="relative">
-                    <p className="text-base text-foreground leading-relaxed" style={{ visibility: 'hidden' }}>
+                    <p className="text-base text-foreground leading-relaxed select-none" style={{ visibility: 'hidden' }}>
                       {sizerText}
                     </p>
-                    <p className="text-base text-foreground leading-relaxed absolute top-0 left-0">
+                    <p className="text-base text-foreground leading-relaxed select-text absolute top-0 left-0">
                       {displayText}
                     </p>
                   </div>

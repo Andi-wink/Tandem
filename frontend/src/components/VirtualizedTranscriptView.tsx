@@ -178,10 +178,10 @@ const TranscriptSegment = memo(function TranscriptSegment({
                 <div className="flex-1">
                     {isStreaming ? (
                         <div className="bg-muted border border-border rounded-lg px-3 py-2">
-                            <p className="text-base text-foreground leading-relaxed">{displayText}</p>
+                            <p className="text-base text-foreground leading-relaxed select-text">{displayText}</p>
                         </div>
                     ) : (
-                        <p className="text-base text-foreground leading-relaxed">{displayText}</p>
+                        <p className="text-base text-foreground leading-relaxed select-text">{displayText}</p>
                     )}
                 </div>
             </div>

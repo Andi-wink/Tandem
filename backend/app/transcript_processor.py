@@ -289,7 +289,7 @@ class TranscriptProcessor:
             if hasattr(client, '_client'):
                 await client._client.aclose()
 
-    def cleanup(self):
+    async def cleanup(self):
         """Clean up resources used by the TranscriptProcessor."""
         logger.info("Cleaning up TranscriptProcessor resources")
         try:
@@ -300,22 +300,12 @@ class TranscriptProcessor:
             # Cancel any active Ollama client sessions
             if hasattr(self, 'active_clients') and self.active_clients:
                 logger.info(f"Terminating {len(self.active_clients)} active Ollama client sessions")
-
-                async def _close_clients():
-                    tasks = []
-                    for client in self.active_clients:
-                        if hasattr(client, '_client'):
-                            tasks.append(client._client.aclose())
-                    if tasks:
-                        await asyncio.gather(*tasks, return_exceptions=True)
-
-                try:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(_close_clients())
-                except RuntimeError:
-                    # No running loop (sync shutdown) — run directly
-                    asyncio.run(_close_clients())
-
+                tasks = []
+                for client in self.active_clients:
+                    if hasattr(client, '_client'):
+                        tasks.append(client._client.aclose())
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
                 self.active_clients.clear()
                 logger.info("All Ollama client sessions terminated")
         except Exception as e:

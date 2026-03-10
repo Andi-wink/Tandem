@@ -48,7 +48,7 @@ async def lifespan(_app: FastAPI):
     # Shutdown
     logger.info("API shutting down, cleaning up resources")
     try:
-        processor.cleanup()
+        await processor.cleanup()
         logger.info("Successfully cleaned up resources")
     except Exception as e:
         logger.error(f"Error during cleanup: {str(e)}", exc_info=True)
@@ -181,12 +181,12 @@ class SummaryProcessor:
             logger.error(f"Error processing transcript: {str(e)}", exc_info=True)
             raise
 
-    def cleanup(self):
+    async def cleanup(self):
         """Cleanup resources"""
         try:
             logger.info("Cleaning up resources")
             if hasattr(self, 'transcript_processor'):
-                self.transcript_processor.cleanup()
+                await self.transcript_processor.cleanup()
             logger.info("Cleanup completed successfully")
         except Exception as e:
             logger.error(f"Error during cleanup: {str(e)}", exc_info=True)

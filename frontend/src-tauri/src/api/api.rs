@@ -1301,8 +1301,10 @@ pub async fn show_in_folder(path: String) -> Result<(), String> {
     use std::process::Command;
 
     let result = if cfg!(target_os = "windows") {
+        // Explorer requires /select, and the path as a single argument with backslashes
+        let win_path = path.replace('/', "\\");
         Command::new("explorer")
-            .args(&["/select,", &path])
+            .arg(format!("/select,{}", win_path))
             .spawn()
     } else if cfg!(target_os = "macos") {
         Command::new("open").args(&["-R", &path]).spawn()

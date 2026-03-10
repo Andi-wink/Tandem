@@ -26,6 +26,15 @@ export function generateStaticParams() {
   ];
 }
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 const NotePage = ({ params }: PageProps) => {
   // This would normally come from your database
   const sampleData: Record<string, Note> = {
@@ -173,13 +182,13 @@ Quarterly product review session with stakeholders.
       <div className="prose prose-blue max-w-none">
         <div dangerouslySetInnerHTML={{ __html: note.content.split('\n').map(line => {
           if (line.startsWith('# ')) {
-            return `<h1>${line.slice(2)}</h1>`;
+            return `<h1>${escapeHtml(line.slice(2))}</h1>`;
           } else if (line.startsWith('## ')) {
-            return `<h2>${line.slice(3)}</h2>`;
+            return `<h2>${escapeHtml(line.slice(3))}</h2>`;
           } else if (line.startsWith('- ')) {
-            return `<li>${line.slice(2)}</li>`;
+            return `<li>${escapeHtml(line.slice(2))}</li>`;
           }
-          return line;
+          return escapeHtml(line);
         }).join('\n') }} />
       </div>
     </div>

@@ -83,6 +83,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
   // Initialize IndexedDB and listen for recording-started/stopped events
   useEffect(() => {
+    let mounted = true;
     let unlistenRecordingStarted: (() => void) | undefined;
     let unlistenRecordingStopped: (() => void) | undefined;
 
@@ -92,7 +93,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         await indexedDBService.init();
 
         // Listen for recording-started event
-        unlistenRecordingStarted = await recordingService.onRecordingStarted(async () => {
+        const startedUnlisten = await recordingService.onRecordingStarted(async () => {
           try {
             // Generate unique meeting ID
             const meetingId = `meeting-${Date.now()}`;
@@ -141,9 +142,11 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             console.error('Failed to initialize meeting in IndexedDB:', error);
           }
         });
+        if (!mounted) { startedUnlisten(); return; }
+        unlistenRecordingStarted = startedUnlisten;
 
         // Listen for recording-stopped event
-        unlistenRecordingStopped = await recordingService.onRecordingStopped(async (payload) => {
+        const stoppedUnlisten = await recordingService.onRecordingStopped(async (payload) => {
           try {
             if (currentMeetingId) {
               // Update folder path in IndexedDB
@@ -158,6 +161,8 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             console.error('Failed to update meeting metadata on stop:', error);
           }
         });
+        if (!mounted) { stoppedUnlisten(); return; }
+        unlistenRecordingStopped = stoppedUnlisten;
       } catch (error) {
         console.error('Failed to setup recording listeners:', error);
       }
@@ -166,6 +171,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     setupRecordingListeners();
 
     return () => {
+      mounted = false;
       if (unlistenRecordingStarted) {
         unlistenRecordingStarted();
         console.log('🧹 Recording started listener cleaned up');
@@ -179,6 +185,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
   // Main transcript buffering logic with sequence_id ordering
   useEffect(() => {
+    let mounted = true;
     let unlistenFn: (() => void) | undefined;
     let transcriptCounter = 0;
     let transcriptBuffer = new Map<number, Transcript>();
@@ -285,7 +292,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     const setupListener = async () => {
       try {
         console.log('🔥 Setting up MAIN transcript listener during component initialization...');
-        unlistenFn = await transcriptService.onTranscriptUpdate((update) => {
+        const unlisten = await transcriptService.onTranscriptUpdate((update) => {
           const now = Date.now();
           console.log('🎯 MAIN LISTENER: Received transcript update:', {
             sequence_id: update.sequence_id,
@@ -335,6 +342,8 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
           // Process buffer with minimal delay for immediate UI updates (serial workers = sequential order)
           processingTimer = setTimeout(processBufferedTranscripts, 10);
         });
+        if (!mounted) { unlisten(); return; }
+        unlistenFn = unlisten;
         console.log('✅ MAIN transcript listener setup complete');
       } catch (error) {
         console.error('❌ Failed to setup MAIN transcript listener:', error);
@@ -346,6 +355,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     console.log('Started enhanced listener setup');
 
     return () => {
+      mounted = false;
       console.log('🧹 CLEANUP: Cleaning up MAIN transcript listener...');
       if (processingTimer) {
         clearTimeout(processingTimer);
