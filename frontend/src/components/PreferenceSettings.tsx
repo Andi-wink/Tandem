@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from "react"
 import { Switch } from "./ui/switch"
-import { FolderOpen, Eye, EyeOff } from "lucide-react"
+import { FolderOpen, Eye, EyeOff, FileCode2 } from "lucide-react"
 import { invoke } from "@tauri-apps/api/core"
 import Analytics from "@/lib/analytics"
 import AnalyticsConsentSwitch from "./AnalyticsConsentSwitch"
@@ -15,7 +15,9 @@ export function PreferenceSettings() {
     storageLocations,
     isLoadingPreferences,
     loadPreferences,
-    updateNotificationSettings
+    updateNotificationSettings,
+    handoffSettings,
+    updateHandoffSettings,
   } = useConfig();
   const { apiKey, setApiKey } = useClaude();
   const [apiKeyInput, setApiKeyInput] = useState(apiKey ?? '');
@@ -284,6 +286,71 @@ export function PreferenceSettings() {
               console.anthropic.com
             </a>
           </p>
+        </div>
+      </div>
+
+      {/* F048: Handoff Pipeline Settings */}
+      <div className="bg-background rounded-lg border border-border p-6 shadow-sm">
+        <h3 className="text-lg font-semibold text-foreground mb-1">Handoff Pipeline</h3>
+        <p className="text-sm text-muted-foreground mb-4">
+          Configure where task handoff files are saved for Claude Code to pick up.
+        </p>
+
+        {/* Project Directory */}
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-foreground mb-1">
+            Project Directory
+          </label>
+          <p className="text-xs text-muted-foreground mb-2">
+            When set, /handoff will also write a HANDOFF.md with extracted tasks to this directory.
+          </p>
+          <div className="flex gap-2">
+            <div className="flex-1 px-3 py-2 text-sm bg-muted border border-border rounded-md font-mono text-xs truncate">
+              {handoffSettings.projectDir || 'Not set — handoff saves to meeting folder only'}
+            </div>
+            <button
+              onClick={async () => {
+                try {
+                  const result = await invoke<string | null>('select_recording_folder');
+                  if (result) {
+                    updateHandoffSettings({ projectDir: result });
+                  }
+                } catch (err) {
+                  console.error('Failed to open folder picker:', err);
+                }
+              }}
+              className="flex items-center gap-2 px-3 py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors"
+            >
+              <FolderOpen className="w-4 h-4" />
+              Browse
+            </button>
+            {handoffSettings.projectDir && (
+              <button
+                onClick={() => updateHandoffSettings({ projectDir: null })}
+                className="px-3 py-2 text-sm text-red-600 border border-border rounded-md hover:bg-red-50 transition-colors"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* CLAUDE.md injection toggle */}
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <FileCode2 className="w-4 h-4 text-muted-foreground" />
+              <span className="text-sm font-medium text-foreground">Add CLAUDE.md instructions</span>
+            </div>
+            <p className="text-xs text-muted-foreground ml-6">
+              Append task-processing instructions to your project&apos;s CLAUDE.md so Claude Code knows how to find and work on meeting tasks.
+            </p>
+          </div>
+          <Switch
+            checked={handoffSettings.injectClaudeMd}
+            onCheckedChange={(checked) => updateHandoffSettings({ injectClaudeMd: checked })}
+            disabled={!handoffSettings.projectDir}
+          />
         </div>
       </div>
     </div>
