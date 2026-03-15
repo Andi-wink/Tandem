@@ -2,10 +2,11 @@
 
 /**
  * F020: Meeting Handoff Export Hook
+ * F048: Enhanced with structured task extraction via Anthropic API
  *
  * Orchestrates the handoff pipeline: gathers data from all contexts,
- * manages the PII dialog, optionally anonymizes text, generates HANDOFF.md,
- * and writes it to the meeting folder.
+ * manages the PII dialog, optionally anonymizes text, generates HANDOFF.md
+ * with embedded YAML task section, and writes it to the meeting folder.
  *
  * Exposes `window.triggerHandoff` so both the auto-trigger (useRecordingStop)
  * and manual trigger (/handoff command) can invoke it.
@@ -19,8 +20,11 @@ import { useScreenshots } from '@/contexts/ScreenshotContext';
 import { useClipboard } from '@/contexts/ClipboardContext';
 import { useClaude } from '@/contexts/ClaudeContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { useConfig } from '@/contexts/ConfigContext';
 import { anonymizeTexts, checkAnonymizationHealth } from '@/services/anonymizationService';
 import { buildTimeline, generateHandoffMarkdown, HandoffData, TimelineItem } from '@/lib/handoffExport';
+import { extractTasks } from '@/services/taskExtractionService';
+import { injectClaudeMdSection } from '@/lib/claudeMdInjector';
 
 declare global {
   interface Window {
@@ -43,8 +47,9 @@ export function useHandoffExport(): UseHandoffExportReturn {
   const { transcriptsRef } = useTranscripts();
   const { screenshots } = useScreenshots();
   const { clipboardItems } = useClipboard();
-  const { conversation, meetingId, anonymizationEnabled, entityMap } = useClaude();
+  const { conversation, meetingId, anonymizationEnabled, entityMap, apiKey } = useClaude();
   const { recordingDuration } = useRecordingState();
+  const { handoffSettings } = useConfig();
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [showHandoffDialog, setShowHandoffDialog] = useState(false);
@@ -67,6 +72,7 @@ export function useHandoffExport(): UseHandoffExportReturn {
     recordingDuration: typeof recordingDuration;
     meetingId: typeof meetingId;
     entityMap: typeof entityMap;
+    apiKey: typeof apiKey;
   } | null>(null);
 
   // ─── Trigger ─────────────────────────────────────────────────────────────
@@ -84,6 +90,7 @@ export function useHandoffExport(): UseHandoffExportReturn {
       recordingDuration,
       meetingId,
       entityMap: entityMap ? { ...entityMap } : entityMap,
+      apiKey,
     };
 
     // Check PII health
@@ -107,7 +114,7 @@ export function useHandoffExport(): UseHandoffExportReturn {
     return new Promise<void>((resolve) => {
       dialogResolveRef.current = resolve;
     });
-  }, [anonymizationEnabled, transcriptsRef, screenshots, clipboardItems, conversation, recordingDuration, meetingId, entityMap]);
+  }, [anonymizationEnabled, transcriptsRef, screenshots, clipboardItems, conversation, recordingDuration, meetingId, entityMap, apiKey]);
 
   // ─── Register window function ────────────────────────────────────────────
 
@@ -139,7 +146,8 @@ export function useHandoffExport(): UseHandoffExportReturn {
 
       const { transcripts, screenshots: snappedScreenshots, clipboardItems: snappedClipboard,
               conversation: snappedConversation, recordingDuration: snappedDuration,
-              meetingId: snappedMeetingId, entityMap: snappedEntityMap } = snap;
+              meetingId: snappedMeetingId, entityMap: snappedEntityMap,
+              apiKey: snappedApiKey } = snap;
 
       // Build unified timeline
       let timeline = buildTimeline(transcripts, snappedScreenshots, snappedClipboard, snappedConversation);
@@ -181,6 +189,34 @@ export function useHandoffExport(): UseHandoffExportReturn {
         }
       }
 
+      // F048: Extract structured tasks via Anthropic API
+      let tasks;
+      if (snappedApiKey) {
+        try {
+          const transcriptText = timeline
+            .filter(item => item.type === 'transcript')
+            .map(item => item.text)
+            .join('\n');
+
+          const screenshotDescs = snappedScreenshots
+            .map(s => `Screenshot at ${s.recording_elapsed_secs ?? 0}s: ${s.file_path}`)
+            .filter(Boolean);
+
+          const clipboardTexts = snappedClipboard
+            .filter(c => c.content_type === 'text' && c.text)
+            .map(c => c.text!);
+
+          tasks = await extractTasks(
+            transcriptText,
+            snappedApiKey,
+            screenshotDescs.length > 0 ? screenshotDescs : undefined,
+            clipboardTexts.length > 0 ? clipboardTexts : undefined,
+          );
+        } catch (err) {
+          console.warn('Task extraction failed, handoff will proceed without tasks:', err);
+        }
+      }
+
       // Generate markdown
       const data: HandoffData = {
         meetingName: meetingNameRef.current || 'Meeting',
@@ -188,22 +224,65 @@ export function useHandoffExport(): UseHandoffExportReturn {
         durationSeconds: snappedDuration ?? null,
         timeline,
         anonymized,
+        tasks,
       };
 
       const markdown = generateHandoffMarkdown(data);
 
-      // Write file
+      // Write file to meeting folder
       const filePath = `${folderPathRef.current}/HANDOFF.md`;
       await invoke('save_transcript', { filePath, content: markdown });
 
-      toast.success('Handoff file saved', {
-        description: filePath,
-        action: {
-          label: 'Show File',
-          onClick: () => { invoke('show_in_folder', { path: filePath }); },
-        },
-        duration: 10000,
-      });
+      // F048: Also write to project directory if configured
+      if (handoffSettings.projectDir) {
+        try {
+          const projectFilePath = `${handoffSettings.projectDir}/.tandem/HANDOFF.md`;
+          await invoke('save_transcript', { filePath: projectFilePath, content: markdown });
+
+          // Inject CLAUDE.md section if enabled
+          if (handoffSettings.injectClaudeMd) {
+            try {
+              const injected = await injectClaudeMdSection(handoffSettings.projectDir);
+              if (injected) {
+                toast.success('Handoff saved + CLAUDE.md updated', {
+                  description: `Tasks ready in ${projectFilePath}`,
+                });
+              } else {
+                toast.success('Handoff saved to project', {
+                  description: projectFilePath,
+                });
+              }
+            } catch {
+              toast.success('Handoff saved to project', {
+                description: `${projectFilePath} (CLAUDE.md update skipped)`,
+              });
+            }
+          } else {
+            toast.success('Handoff saved to project', {
+              description: projectFilePath,
+            });
+          }
+        } catch (err) {
+          console.warn('Failed to write handoff to project directory:', err);
+          toast.success('Handoff file saved', {
+            description: filePath,
+            action: {
+              label: 'Show File',
+              onClick: () => { invoke('show_in_folder', { path: filePath }); },
+            },
+            duration: 10000,
+          });
+        }
+      } else {
+        toast.success('Handoff file saved', {
+          description: filePath,
+          action: {
+            label: 'Show File',
+            onClick: () => { invoke('show_in_folder', { path: filePath }); },
+          },
+          duration: 10000,
+        });
+      }
     } catch (err) {
       console.error('Failed to generate handoff:', err);
       toast.error('Failed to save handoff file', {
@@ -216,7 +295,7 @@ export function useHandoffExport(): UseHandoffExportReturn {
       dialogResolveRef.current?.();
       dialogResolveRef.current = null;
     }
-  }, [anonymizeChecked, piiAvailable]);
+  }, [anonymizeChecked, piiAvailable, handoffSettings]);
 
   return {
     triggerHandoff,

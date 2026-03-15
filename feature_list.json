@@ -1997,6 +1997,41 @@
       "dependencies": [
         "F007",
         "F018"
+      ]
+    },
+    {
+      "id": "F048",
+      "category": "integration",
+      "name": "Meeting Tasks to Claude Code Pipeline",
+      "description": "Enhanced /handoff command that uses Anthropic API to extract structured tasks from meeting transcripts and embeds them as a YAML block in HANDOFF.md. Tasks are classified by autonomy (auto/review) and category (research/email/code/document/followup). CLAUDE.md template teaches Claude Code how to find and process tasks. Settings UI for project directory and CLAUDE.md injection.",
+      "priority": "high",
+      "status": "in-progress",
+      "branch": "feature/claude-code-pipeline",
+      "worktree": "Tandem-f048",
+      "commit": null,
+      "steps": [
+        "Piece 1: Backend POST /api/extract-tasks endpoint using Anthropic API for structured task extraction",
+        "Piece 1: Frontend ExtractedTask type (frontend/src/types/handoff.ts) and YAML task block in generateHandoffMarkdown()",
+        "Piece 1: Wire useHandoffExport to call task extraction API and pass results to markdown generator",
+        "Piece 4: Settings UI — project directory picker + CLAUDE.md toggle in PreferenceSettings",
+        "Piece 4: Persist handoff settings in ConfigContext + Rust SQLite",
+        "Piece 3: CLAUDE.md template injection — auto-append meeting tasks section to project CLAUDE.md"
+      ],
+      "modified_files": [
+        "backend/app/main.py",
+        "backend/app/task_extractor.py",
+        "frontend/src/types/handoff.ts",
+        "frontend/src/lib/handoffExport.ts",
+        "frontend/src/hooks/useHandoffExport.ts",
+        "frontend/src/app/settings/PreferenceSettings.tsx",
+        "frontend/src/contexts/ConfigContext.tsx"
+      ],
+      "future_enhancements": [
+        "Periodic auto-handoff during recording (usePeriodicHandoff hook, silentHandoff function, configurable interval 2/5/10 min)",
+        "Individual pending/{task-id}.md files per task with completed/ folder for Claude Code to process",
+        "Task deduplication across periodic handoff cycles (match by ID, update context on re-extraction)",
+        "Configurable LLM provider for task extraction (Ollama/Anthropic/Groq)",
+        "Watcher bridge script for fully automated dispatch (requires API key, not Max subscription)"
       ],
       "passes": false
     }

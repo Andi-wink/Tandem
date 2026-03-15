@@ -40,6 +40,11 @@ export interface NotificationSettings {
   };
 }
 
+export interface HandoffSettings {
+  projectDir: string | null;
+  injectClaudeMd: boolean;
+}
+
 interface ConfigContextType {
   // Model configuration
   modelConfig: ModelConfig;
@@ -85,6 +90,10 @@ interface ConfigContextType {
   isLoadingPreferences: boolean;
   loadPreferences: () => Promise<void>;
   updateNotificationSettings: (settings: NotificationSettings) => Promise<void>;
+
+  // F048: Handoff pipeline settings
+  handoffSettings: HandoffSettings;
+  updateHandoffSettings: (settings: Partial<HandoffSettings>) => void;
 }
 
 const ConfigContext = createContext<ConfigContextType | undefined>(undefined);
@@ -150,6 +159,27 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     }
     return false;
   });
+
+  // F048: Handoff pipeline settings (localStorage-backed)
+  const [handoffSettings, setHandoffSettings] = useState<HandoffSettings>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('handoffSettings');
+      if (saved) {
+        try { return JSON.parse(saved); } catch { /* fall through */ }
+      }
+    }
+    return { projectDir: null, injectClaudeMd: true };
+  });
+
+  const updateHandoffSettings = useCallback((partial: Partial<HandoffSettings>) => {
+    setHandoffSettings(prev => {
+      const next = { ...prev, ...partial };
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('handoffSettings', JSON.stringify(next));
+      }
+      return next;
+    });
+  }, []);
 
   // Preference settings state (lazy loaded)
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings | null>(null);
@@ -465,6 +495,8 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     isLoadingPreferences,
     loadPreferences,
     updateNotificationSettings,
+    handoffSettings,
+    updateHandoffSettings,
   }), [
     modelConfig,
     isAutoSummary,
@@ -484,6 +516,8 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     isLoadingPreferences,
     loadPreferences,
     updateNotificationSettings,
+    handoffSettings,
+    updateHandoffSettings,
   ]);
 
   return (

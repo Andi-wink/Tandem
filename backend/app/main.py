@@ -16,6 +16,7 @@ import time
 import claude_agent
 import anonymizer
 import document_parser
+import task_extractor
 
 # Load environment variables
 load_dotenv()
@@ -891,6 +892,48 @@ async def parse_document(file: UploadFile):
     except Exception as e:
         logger.error("Error parsing document %s: %s", file.filename, e)
         raise HTTPException(status_code=500, detail=str(e))
+# F048: Task Extraction
+# ---------------------------------------------------------------------------
+
+class ExtractTasksRequest(BaseModel):
+    transcript: str
+    api_key: str = Field(repr=False)
+    screenshots: Optional[List[str]] = None
+    clipboard: Optional[List[str]] = None
+    model: str = "claude-sonnet-4-20250514"
+
+class ExtractedTask(BaseModel):
+    id: str
+    description: str
+    autonomy: str  # "auto" or "review"
+    category: str  # "research", "email", "code", "document", "followup"
+    context: str
+    priority: str  # "high", "medium", "low"
+
+class ExtractTasksResponse(BaseModel):
+    tasks: List[ExtractedTask]
+
+
+@app.post("/api/extract-tasks", response_model=ExtractTasksResponse)
+async def extract_tasks_endpoint(req: ExtractTasksRequest):
+    """Extract structured tasks from a meeting transcript using Anthropic API.
+
+    Returns tasks classified by autonomy (auto/review) and category,
+    ready to be embedded as YAML in a HANDOFF.md file.
+    """
+    try:
+        tasks = await task_extractor.extract_tasks(
+            transcript=req.transcript,
+            api_key=req.api_key,
+            screenshots=req.screenshots,
+            clipboard=req.clipboard,
+            model=req.model,
+        )
+        logger.info("Extracted %d tasks from transcript", len(tasks))
+        return ExtractTasksResponse(tasks=tasks)
+    except Exception as e:
+        logger.error("Task extraction failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Task extraction failed: {str(e)}")
 
 
 # ---------------------------------------------------------------------------

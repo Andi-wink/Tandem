@@ -242,6 +242,13 @@ async fn save_transcript(file_path: String, content: String) -> Result<(), Strin
     Ok(())
 }
 
+/// F048: Read a text file and return its contents.
+#[tauri::command]
+async fn read_text_file(file_path: String) -> Result<String, String> {
+    std::fs::read_to_string(&file_path)
+        .map_err(|e| format!("Failed to read file {}: {}", file_path, e))
+}
+
 // Audio level monitoring commands
 #[tauri::command]
 async fn start_audio_level_monitoring<R: Runtime>(
@@ -645,6 +652,7 @@ pub fn run() {
             get_transcription_status,
             read_audio_file,
             save_transcript,
+            read_text_file,
             analytics::commands::init_analytics,
             analytics::commands::disable_analytics,
             analytics::commands::track_event,
