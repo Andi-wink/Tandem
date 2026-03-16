@@ -8,7 +8,7 @@ import { ProcessRequest, SummaryResponse } from '@/types/summary';
 import { listen } from '@tauri-apps/api/event';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { toast } from 'sonner';
+import { motion, AnimatePresence } from 'framer-motion';
 import { logger } from '@/lib/logger';
 import { MIN_RECORDING_DURATION_MS } from '@/lib/constants';
 import Analytics from '@/lib/analytics';
@@ -68,7 +68,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         logger.log('Tauri is initialized and ready, is_recording result:', result);
       } catch (error) {
         console.error('Tauri initialization error:', error);
-        toast.error('Failed to initialize recording', { description: 'Please check the console for details.' });
+        alert('Failed to initialize recording. Please check the console for details.');
       }
     };
     checkTauri();
@@ -203,7 +203,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       logger.log('Recording paused successfully');
     } catch (error) {
       console.error('Failed to pause recording:', error);
-      toast.error('Failed to pause recording', { description: 'Please check the console for details.' });
+      alert('Failed to pause recording. Please check the console for details.');
     } finally {
       setIsPausing(false);
     }
@@ -221,7 +221,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       logger.log('Recording resumed successfully');
     } catch (error) {
       console.error('Failed to resume recording:', error);
-      toast.error('Failed to resume recording', { description: 'Please check the console for details.' });
+      alert('Failed to resume recording. Please check the console for details.');
     } finally {
       setIsResuming(false);
     }
@@ -332,41 +332,81 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   return (
     <TooltipProvider>
       <div className="flex flex-col space-y-2">
-        <div className="flex items-center space-x-2 bg-card rounded-full shadow-lg px-4 py-2">
-          {isProcessing && !isParentProcessing ? (
-            <div className="flex items-center space-x-2">
-              <Loader2 className="h-5 w-5 animate-spin text-foreground" />
-              <span className="text-sm text-muted-foreground">Processing recording...</span>
-            </div>
-          ) : (
-            <>
+        <div className={`flex items-center space-x-2 rounded-full px-4 py-2 transition-[background-color,box-shadow] duration-300 ${
+          isRecording
+            ? isPaused
+              ? 'bg-card shadow-lg'
+              : 'bg-card shadow-xl'
+            : 'bg-card shadow-lg'
+        }`}>
+          <AnimatePresence mode="wait">
+            {isProcessing && !isParentProcessing ? (
+              <motion.div
+                key="processing"
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{ duration: 0.15 }}
+                className="flex items-center space-x-2"
+              >
+                <Loader2 className="h-5 w-5 animate-spin text-foreground" />
+                <span className="text-sm text-muted-foreground">Processing recording...</span>
+              </motion.div>
+            ) : (
+              <motion.div
+                key="controls"
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{ duration: 0.15 }}
+                className="flex items-center"
+              >
+                <AnimatePresence mode="wait">
                   {!isRecording ? (
                     // Start recording button
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <button
-                          onClick={() => {
-                            Analytics.trackButtonClick('start_recording', 'recording_controls');
-                            handleStartRecording();
-                          }}
-                          disabled={isStarting || isProcessing || isRecordingDisabled || isValidatingModel}
-                          className={`w-12 h-12 flex items-center justify-center ${isStarting || isProcessing || isValidatingModel ? 'bg-muted-foreground' : 'bg-recording hover:bg-recording-hover'
-                            } rounded-full text-recording-foreground transition-colors relative`}
-                        >
-                          {isValidatingModel ? (
-                            <Loader2 className="h-5 w-5 animate-spin text-recording-foreground" />
-                          ) : (
-                            <Mic size={20} />
-                          )}
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>Start recording</p>
-                      </TooltipContent>
-                    </Tooltip>
+                    <motion.div
+                      key="start"
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.9 }}
+                      transition={{ duration: 0.2 }}
+                    >
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            onClick={() => {
+                              Analytics.trackButtonClick('start_recording', 'recording_controls');
+                              handleStartRecording();
+                            }}
+                            disabled={isStarting || isProcessing || isRecordingDisabled || isValidatingModel}
+                            className={`w-12 h-12 flex items-center justify-center ${
+                              isStarting || isProcessing || isValidatingModel
+                                ? 'bg-muted-foreground'
+                                : 'bg-recording hover:bg-recording-hover hover:brightness-110'
+                            } rounded-full text-recording-foreground transition-[background-color,transform] duration-150 relative`}
+                          >
+                            {isValidatingModel ? (
+                              <Loader2 className="h-5 w-5 animate-spin text-recording-foreground" />
+                            ) : (
+                              <Mic size={20} />
+                            )}
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>Start recording</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </motion.div>
                   ) : (
                     // Recording controls (pause/resume + stop)
-                    <>
+                    <motion.div
+                      key="recording"
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.9 }}
+                      transition={{ duration: 0.2 }}
+                      className="flex items-center space-x-2"
+                    >
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <button
@@ -380,10 +420,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                               }
                             }}
                             disabled={isPausing || isResuming || isStopping}
-                            className={`w-10 h-10 flex items-center justify-center ${isPausing || isResuming || isStopping
-                              ? 'bg-muted border-2 border-border text-muted-foreground'
-                              : 'bg-background border-2 border-border text-muted-foreground hover:border-muted-foreground hover:bg-muted'
-                              } rounded-full transition-colors relative`}
+                            className={`w-9 h-9 flex items-center justify-center ${
+                              isPausing || isResuming || isStopping
+                                ? 'bg-muted border border-border text-muted-foreground'
+                                : 'bg-background border border-border text-muted-foreground hover:text-foreground hover:bg-muted active:scale-95'
+                            } rounded-full transition-[background-color,border-color,color,transform] duration-150 relative`}
                           >
                             {isPaused ? <Play size={16} /> : <Pause size={16} />}
                             {(isPausing || isResuming) && (
@@ -406,8 +447,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                               handleStopRecording();
                             }}
                             disabled={isStopping || isPausing || isResuming}
-                            className={`w-10 h-10 flex items-center justify-center ${isStopping || isPausing || isResuming ? 'bg-muted-foreground' : 'bg-recording hover:bg-recording-hover'
-                              } rounded-full text-recording-foreground transition-colors relative`}
+                            className={`w-10 h-10 flex items-center justify-center ${
+                              isStopping || isPausing || isResuming
+                                ? 'bg-muted-foreground'
+                                : 'bg-recording hover:bg-recording-hover active:scale-95'
+                            } rounded-full text-recording-foreground transition-[background-color,transform] duration-150 relative`}
                           >
                             <Square size={16} />
                             {isStopping && (
@@ -421,24 +465,26 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                           <p>Stop recording</p>
                         </TooltipContent>
                       </Tooltip>
-                    </>
+                    </motion.div>
                   )}
+                </AnimatePresence>
 
-                  <div className="flex items-center space-x-1 mx-4">
-                    {barHeights.map((height, index) => (
-                      <div
-                        key={index}
-                        className={`w-1 rounded-full transition-all duration-200 ${isPaused ? 'bg-paused' : 'bg-recording'
-                          }`}
-                        style={{
-                          height: isRecording && !isPaused ? height : '4px',
-                          opacity: isPaused ? 0.6 : 1,
-                        }}
-                      />
-                    ))}
-                  </div>
-            </>
-          )}
+                <div className="flex items-center gap-[3px] mx-3">
+                  {barHeights.map((height, index) => (
+                    <div
+                      key={index}
+                      className={`w-1 rounded-full transition-[height,opacity] duration-150 ${isPaused ? 'bg-muted-foreground' : 'bg-recording'}`}
+                      style={{
+                        height: isRecording && !isPaused ? height : '4px',
+                        opacity: isPaused ? 0.4 : 0.8,
+                        transitionDelay: `${index * 30}ms`,
+                      }}
+                    />
+                  ))}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* Show validation status only */}

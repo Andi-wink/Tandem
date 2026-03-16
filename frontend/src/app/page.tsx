@@ -26,11 +26,12 @@ import { useRouter } from 'next/navigation';
 import { useClaude } from '@/contexts/ClaudeContext';
 import { Bot } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { motion, AnimatePresence } from 'framer-motion';
 
 export default function Home() {
   // Local page state (not moved to contexts)
   const [isRecording, setIsRecordingState] = useState(false);
-  const [barHeights, setBarHeights] = useState(['58%', '76%', '58%']);
+  const [barHeights, setBarHeights] = useState(['10px', '14px', '18px', '14px', '10px']);
   const [showRecoveryDialog, setShowRecoveryDialog] = useState(false);
 
   // Use contexts for state management
@@ -195,14 +196,14 @@ export default function Home() {
   useEffect(() => {
     if (recordingState.isRecording) {
       const interval = setInterval(() => {
-        setBarHeights(prev => {
-          const newHeights = [...prev];
-          newHeights[0] = Math.random() * 20 + 10 + 'px';
-          newHeights[1] = Math.random() * 20 + 10 + 'px';
-          newHeights[2] = Math.random() * 20 + 10 + 'px';
-          return newHeights;
-        });
-      }, 300);
+        setBarHeights([
+          Math.random() * 16 + 6 + 'px',
+          Math.random() * 20 + 8 + 'px',
+          Math.random() * 24 + 10 + 'px',
+          Math.random() * 20 + 8 + 'px',
+          Math.random() * 16 + 6 + 'px',
+        ]);
+      }, 250);
 
       return () => clearInterval(interval);
     }
@@ -299,28 +300,37 @@ export default function Home() {
         />
 
         {/* AI Assistant toggle button */}
-        {!isPanelOpen && (
-          <button
-            onClick={async () => {
-              // Get meeting folder as default project dir
-              let projectDir = '';
-              try {
-                const folder = await invoke<string | null>('get_meeting_folder_path');
-                projectDir = folder || '';
-              } catch { /* use empty string */ }
-              openPanel(
-                'live-recording',
-                meetingTitle || 'Live Recording',
-                projectDir,
-              );
-            }}
-            className="fixed right-4 top-4 z-30 bg-card border border-border rounded-full p-2 shadow-md hover:shadow-lg hover:bg-muted transition-all"
-            title="Open AI Assistant"
-            aria-label="Open AI Assistant"
-          >
-            <Bot className="w-5 h-5 text-muted-foreground" />
-          </button>
-        )}
+        <AnimatePresence>
+          {!isPanelOpen && (
+            <motion.button
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              transition={{ duration: 0.15 }}
+              onClick={async () => {
+                // Get meeting folder as default project dir
+                let projectDir = '';
+                try {
+                  const folder = await invoke<string | null>('get_meeting_folder_path');
+                  projectDir = folder || '';
+                } catch { /* use empty string */ }
+                openPanel(
+                  'live-recording',
+                  meetingTitle || 'Live Recording',
+                  projectDir,
+                );
+              }}
+              className="fixed right-4 top-4 z-30 bg-card border border-border rounded-full p-2.5 shadow-sm hover:shadow-md hover:bg-muted transition-[background-color,box-shadow] duration-150 group"
+              title="Open AI Assistant"
+              aria-label="Open AI Assistant"
+            >
+              <Bot className="w-5 h-5 text-muted-foreground group-hover:text-foreground transition-colors" />
+              {recordingState.isRecording && (
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-recording rounded-full animate-pulse" />
+              )}
+            </motion.button>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );

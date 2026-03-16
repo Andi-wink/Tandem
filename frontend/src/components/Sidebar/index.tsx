@@ -430,10 +430,10 @@ const Sidebar: React.FC = () => {
             <TooltipTrigger asChild>
               <button
                 onClick={() => router.push('/')}
-                className={`p-2 rounded-lg transition-colors duration-150 ${isHomePage ? 'bg-muted' : 'hover:bg-muted'
+                className={`p-2 rounded-lg transition-all duration-150 ${isHomePage ? 'bg-muted shadow-sm' : 'hover:bg-muted'
                   }`}
               >
-                <Home className="w-5 h-5 text-muted-foreground" />
+                <Home className={`w-5 h-5 ${isHomePage ? 'text-foreground' : 'text-muted-foreground'}`} />
               </button>
             </TooltipTrigger>
             <TooltipContent side="right">
@@ -446,12 +446,12 @@ const Sidebar: React.FC = () => {
               <button
                 onClick={handleRecordingToggle}
                 disabled={isRecording}
-                className={`p-2 ${isRecording ? 'bg-recording cursor-not-allowed' : 'bg-recording hover:bg-recording-hover'} rounded-full transition-colors duration-150 shadow-sm`}
+                className={`p-2 ${isRecording ? 'bg-recording/60 cursor-not-allowed' : 'bg-recording hover:bg-recording-hover hover:shadow-[0_0_12px_hsl(var(--recording)/0.3)]'} rounded-full transition-all duration-150 shadow-sm`}
               >
                 {isRecording ? (
-                  <Square className="w-5 h-5 text-white" />
+                  <Square className="w-5 h-5 text-recording-foreground" />
                 ) : (
-                  <Mic className="w-5 h-5 text-white" />
+                  <Mic className="w-5 h-5 text-recording-foreground" />
                 )}
               </button>
             </TooltipTrigger>
@@ -467,10 +467,10 @@ const Sidebar: React.FC = () => {
                   if (isCollapsed) toggleCollapse();
                   toggleFolder('meetings');
                 }}
-                className={`p-2 rounded-lg transition-colors duration-150 ${isMeetingPage ? 'bg-muted' : 'hover:bg-muted'
+                className={`p-2 rounded-lg transition-all duration-150 ${isMeetingPage ? 'bg-muted shadow-sm' : 'hover:bg-muted'
                   }`}
               >
-                <NotebookPen className="w-5 h-5 text-muted-foreground" />
+                <NotebookPen className={`w-5 h-5 ${isMeetingPage ? 'text-foreground' : 'text-muted-foreground'}`} />
               </button>
             </TooltipTrigger>
             <TooltipContent side="right">
@@ -482,10 +482,10 @@ const Sidebar: React.FC = () => {
             <TooltipTrigger asChild>
               <button
                 onClick={() => router.push('/settings')}
-                className={`p-2 rounded-lg transition-colors duration-150 ${isSettingsPage ? 'bg-muted' : 'hover:bg-muted'
+                className={`p-2 rounded-lg transition-all duration-150 ${isSettingsPage ? 'bg-muted shadow-sm' : 'hover:bg-muted'
                   }`}
               >
-                <Settings className="w-5 h-5 text-muted-foreground" />
+                <Settings className={`w-5 h-5 ${isSettingsPage ? 'text-foreground' : 'text-muted-foreground'}`} />
               </button>
             </TooltipTrigger>
             <TooltipContent side="right">
@@ -523,7 +523,7 @@ const Sidebar: React.FC = () => {
         <div
           className={`flex items-center transition-all duration-150 group ${item.type === 'folder' && depth === 0
             ? 'p-3 text-lg font-semibold h-10 mx-3 mt-3 rounded-lg'
-            : `px-3 py-2 my-0.5 rounded-md text-sm ${isActive ? 'bg-brand-muted text-brand-muted-foreground font-medium' :
+            : `px-3 py-2 my-0.5 rounded-lg text-sm ${isActive ? 'bg-brand-muted text-brand-muted-foreground font-medium border-l-2 border-brand shadow-sm' :
               hasTranscriptMatch ? 'bg-warning-muted' : 'hover:bg-muted'
             } cursor-pointer`
             }`}
@@ -567,7 +567,7 @@ const Sidebar: React.FC = () => {
                   </div>
                 ) : (
                   <div className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full mr-2 bg-brand-muted">
-                    <Plus className="w-3.5 h-3.5 text-brand-muted-foreground" />
+                    <Plus className="w-3.5 h-3.5 text-brand" />
                   </div>
                 )}
                 <span className="flex-1 break-words">{item.title}</span>

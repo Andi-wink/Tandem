@@ -94,32 +94,32 @@ export function ConversationView({ messages, isStreaming, onAnswer }: Conversati
 
   if (messages.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm p-4">
-        <div className="text-center">
-          <p>No conversation yet.</p>
-          <p className="text-xs mt-1">Add context items and send a message to start.</p>
+      <div className="flex-1 flex items-center justify-center text-muted-foreground p-6">
+        <div className="text-center space-y-2">
+          <p className="text-sm">No conversation yet</p>
+          <p className="text-xs text-muted-foreground/60">Send a message or type / for commands</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-3 space-y-3">
+    <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 py-4 space-y-5">
       {messages.map(msg => (
         <div key={msg.id} className={`${msg.role === 'user' ? 'flex justify-end' : ''}`}>
           {msg.role === 'user' ? (
             <div className="max-w-[85%]">
               {msg.contextSummary && (
-                <div className="text-xs text-brand mb-0.5 text-right">{msg.contextSummary}</div>
+                <div className="text-xs text-brand mb-1 text-right">{msg.contextSummary}</div>
               )}
-              <div className="bg-muted rounded-lg px-3 py-2 text-sm">
+              <div className="bg-muted rounded-2xl px-4 py-2.5 text-sm leading-relaxed">
                 {msg.text}
               </div>
             </div>
           ) : (
-            <div className="max-w-[95%]">
+            <div className="max-w-full">
               {msg.text && (
-                <div className="text-sm break-words prose prose-sm max-w-none">
+                <div className="text-sm break-words prose prose-sm max-w-none prose-p:leading-relaxed prose-p:mb-3 prose-headings:mb-2 prose-headings:mt-4 prose-li:my-0.5 prose-ul:my-2 prose-ol:my-2 dark:prose-invert">
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     components={{

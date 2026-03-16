@@ -1,15 +1,12 @@
 import { Loader2 } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface StatusOverlaysProps {
-  // Status flags
-  isProcessing: boolean;      // Processing transcription after recording stops
-  isSaving: boolean;          // Saving transcript to database
-
-  // Layout
-  sidebarCollapsed: boolean;  // For responsive margin calculation
+  isProcessing: boolean;
+  isSaving: boolean;
+  sidebarCollapsed: boolean;
 }
 
-// Internal reusable component for individual status overlays
 interface StatusOverlayProps {
   show: boolean;
   message: string;
@@ -17,28 +14,35 @@ interface StatusOverlayProps {
 }
 
 function StatusOverlay({ show, message, sidebarCollapsed }: StatusOverlayProps) {
-  if (!show) return null;
-
   return (
-    <div className="fixed bottom-4 left-0 right-0 z-10">
-      <div
-        className="flex justify-center pl-8 transition-[margin] duration-300"
-        style={{
-          marginLeft: sidebarCollapsed ? '4rem' : '16rem'
-        }}
-      >
-        <div className="w-2/3 max-w-[750px] flex justify-center">
-          <div className="bg-card rounded-lg shadow-lg px-4 py-2 flex items-center space-x-2">
-            <Loader2 className="h-4 w-4 animate-spin text-foreground" />
-            <span className="text-sm text-foreground">{message}</span>
+    <AnimatePresence>
+      {show && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 10 }}
+          transition={{ duration: 0.2 }}
+          className="fixed bottom-4 left-0 right-0 z-10"
+        >
+          <div
+            className="flex justify-center pl-8 transition-[margin] duration-300"
+            style={{
+              marginLeft: sidebarCollapsed ? '4rem' : '16rem'
+            }}
+          >
+            <div className="w-2/3 max-w-[750px] flex justify-center">
+              <div className="bg-card rounded-lg shadow-lg px-4 py-2 flex items-center space-x-2">
+                <Loader2 className="h-4 w-4 animate-spin text-foreground" />
+                <span className="text-sm text-foreground">{message}</span>
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
-    </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 
-// Main exported component - renders multiple status overlays
 export function StatusOverlays({
   isProcessing,
   isSaving,
@@ -46,14 +50,11 @@ export function StatusOverlays({
 }: StatusOverlaysProps) {
   return (
     <>
-      {/* Processing status overlay - shown after recording stops while finalizing transcription */}
       <StatusOverlay
         show={isProcessing}
         message="Finalizing transcription..."
         sidebarCollapsed={sidebarCollapsed}
       />
-
-      {/* Saving status overlay - shown while saving transcript to database */}
       <StatusOverlay
         show={isSaving}
         message="Saving transcript..."
