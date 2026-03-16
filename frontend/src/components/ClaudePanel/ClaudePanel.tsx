@@ -1,8 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X, Send, Trash2, AlertCircle, Square, ChevronUp, Check, Shield, Paperclip, Mic, FolderOpen, Code } from 'lucide-react';
+import { X, Send, AlertCircle, Square, Check, Shield, Paperclip, Mic, FolderOpen, Code, SlidersHorizontal, ChevronDown, Plus } from 'lucide-react';
 import { toast } from 'sonner';
-import { Button } from '@/components/ui/button';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { useClaude, MODEL_OPTIONS } from '@/contexts/ClaudeContext';
 import { ContextBasket } from './ContextBasket';
@@ -513,12 +512,12 @@ export function ClaudePanel() {
           {...overlayDropHandlers}
           className={`fixed right-0 top-0 bottom-0 z-50 flex items-center justify-center transition-all duration-150 ${
             isDropOver
-              ? 'w-48 bg-blue-500/20 dark:bg-blue-500/15 border-l-2 border-blue-400'
-              : 'w-14 bg-blue-500/10 dark:bg-blue-500/5 border-l-2 border-dashed border-blue-400/50'
+              ? 'w-48 bg-brand/20 dark:bg-brand/15 border-l-2 border-brand'
+              : 'w-14 bg-brand/10 dark:bg-brand/5 border-l-2 border-dashed border-brand/50'
           }`}
         >
           <div className="flex flex-col items-center gap-1 pointer-events-none">
-            <span className={`text-[10px] font-medium transition-colors ${isDropOver ? 'text-blue-400' : 'text-blue-400/70'}`}>
+            <span className={`text-[10px] font-medium transition-colors ${isDropOver ? 'text-brand' : 'text-brand/70'}`}>
               {isDropOver ? 'Drop to add to AI' : 'AI'}
             </span>
           </div>
@@ -534,7 +533,7 @@ export function ClaudePanel() {
         {/* Resize drag handle — left edge */}
         <div
           onMouseDown={handleResizeStart}
-          className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-50 group hover:bg-blue-500/30 active:bg-blue-500/50 transition-colors"
+          className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize z-50 group hover:bg-brand/30 active:bg-brand/50 transition-colors"
           title="Drag to resize"
         >
           <div className="absolute left-0 top-0 bottom-0 w-3 -translate-x-1" />
@@ -546,15 +545,15 @@ export function ClaudePanel() {
             {...overlayDropHandlers}
             className={`absolute inset-0 z-50 transition-colors ${
               isDropOver
-                ? 'bg-blue-500/20 dark:bg-blue-400/10 ring-2 ring-blue-400 ring-inset'
-                : 'bg-blue-500/5 dark:bg-blue-400/5 ring-1 ring-blue-400/30 ring-inset'
+                ? 'bg-brand/20 dark:bg-brand/10 ring-2 ring-brand ring-inset'
+                : 'bg-brand/5 dark:bg-brand/5 ring-1 ring-brand/30 ring-inset'
             }`}
           >
             <div className="flex items-center justify-center h-full pointer-events-none">
               <span className={`text-sm font-medium px-3 py-1.5 rounded-full shadow-sm transition-colors ${
                 isDropOver
-                  ? 'text-blue-500 bg-white/90 dark:bg-slate-800/90 dark:text-blue-300'
-                  : 'text-blue-400/60 bg-white/50 dark:bg-slate-800/50 dark:text-blue-400/50'
+                  ? 'text-brand bg-white/90 dark:bg-card/90'
+                  : 'text-brand/60 bg-white/50 dark:bg-card/50'
               }`}>
                 {isDropOver ? 'Drop to add to context' : 'Drop items here'}
               </span>
@@ -563,8 +562,8 @@ export function ClaudePanel() {
         )}
 
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-muted flex-shrink-0">
-          <div className="flex-1 min-w-0">
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border flex-shrink-0">
+          <div className="flex items-center gap-1 min-w-0 flex-1">
             {isEditingTitle ? (
               <input
                 ref={titleInputRef}
@@ -575,42 +574,45 @@ export function ClaudePanel() {
                   if (e.key === 'Enter') { e.preventDefault(); handleTitleSave(); }
                   if (e.key === 'Escape') { setIsEditingTitle(false); }
                 }}
-                className="font-semibold text-sm w-full bg-background border border-border rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="font-medium text-sm w-full bg-background border border-border rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand"
                 autoFocus
               />
             ) : (
-              <div
-                className="font-semibold text-sm truncate cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1"
+              <button
+                className="flex items-center gap-1 min-w-0 hover:bg-muted rounded-md px-1.5 py-0.5 -mx-1.5 transition-colors group"
                 onDoubleClick={handleTitleDoubleClick}
-                title="Double-click to rename"
+                onClick={handleTitleDoubleClick}
+                title="Click to rename"
               >
-                {meetingTitle || 'AI Assistant'}
-              </div>
+                <span className="font-medium text-sm truncate">
+                  {meetingTitle || 'AI Assistant'}
+                </span>
+                <ChevronDown className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-0.5 flex-shrink-0">
+            {sessionId && (
+              <button
+                onClick={clearSession}
+                className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                title="New session"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
             )}
             {projectDir && (
               <button
                 onClick={() => invoke('show_in_folder', { path: projectDir }).catch(() => toast.error('Failed to open folder'))}
-                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-blue-500 dark:hover:text-blue-400 max-w-full overflow-hidden transition-colors group"
+                className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
                 title={projectDir}
               >
-                <FolderOpen className="w-3 h-3 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
-                <span className="truncate min-w-0">{projectDir}</span>
-              </button>
-            )}
-          </div>
-          <div className="flex items-center gap-1 flex-shrink-0">
-            {sessionId && (
-              <button
-                onClick={clearSession}
-                className="p-1 text-muted-foreground hover:text-red-500"
-                title="Clear session"
-              >
-                <Trash2 className="w-4 h-4" />
+                <FolderOpen className="w-4 h-4" />
               </button>
             )}
             <button
               onClick={closePanel}
-              className="p-1 text-muted-foreground hover:text-foreground"
+              className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
             >
               <X className="w-4 h-4" />
             </button>
@@ -619,9 +621,9 @@ export function ClaudePanel() {
 
         {/* API key not set warning */}
         {!hasApiKey && (
-          <div className="px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800/30 flex items-start gap-2 flex-shrink-0">
-            <AlertCircle className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
-            <div className="text-xs text-amber-700 dark:text-amber-300">
+          <div className="px-3 py-2 bg-warning-muted border-b border-warning/20 flex items-start gap-2 flex-shrink-0">
+            <AlertCircle className="w-4 h-4 text-warning mt-0.5 flex-shrink-0" />
+            <div className="text-xs text-warning-foreground">
               Anthropic API key not set. It will be requested when you send your first message.
             </div>
           </div>
@@ -629,9 +631,9 @@ export function ClaudePanel() {
 
         {/* F005: PII service unavailable warning */}
         {anonymizationEnabled && piiAvailable === false && (
-          <div className="px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800/30 flex items-start gap-2 flex-shrink-0">
-            <Shield className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
-            <div className="text-xs text-amber-700 dark:text-amber-300">
+          <div className="px-3 py-2 bg-warning-muted border-b border-warning/20 flex items-start gap-2 flex-shrink-0">
+            <Shield className="w-4 h-4 text-warning mt-0.5 flex-shrink-0" />
+            <div className="text-xs text-warning-foreground">
               PII anonymization is enabled but the backend service is unavailable. Context will be sent without anonymization.
             </div>
           </div>
@@ -666,7 +668,7 @@ export function ClaudePanel() {
         />
 
         {/* Input */}
-        <div className="border-t border-border p-3 flex-shrink-0">
+        <div className="p-3 flex-shrink-0">
           {/* F047: Voice command listening indicator */}
           {isListening && (
             <div className="flex items-center justify-between mb-2 px-2 py-1.5 rounded-md bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800/30 text-xs animate-pulse">
@@ -682,7 +684,7 @@ export function ClaudePanel() {
               </div>
               <button
                 onClick={cancelListening}
-                className="text-muted-foreground hover:text-red-500 ml-2 flex-shrink-0"
+                className="text-muted-foreground hover:text-destructive ml-2 flex-shrink-0"
                 title="Cancel (Esc)"
               >
                 <X className="w-3.5 h-3.5" />
@@ -692,19 +694,19 @@ export function ClaudePanel() {
 
           {/* F018: Active command capture indicator */}
           {activeCommand && (
-            <div className="flex items-center justify-between mb-2 px-2 py-1.5 rounded-md bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/30 text-xs">
+            <div className="flex items-center justify-between mb-2 px-2 py-1.5 rounded-md bg-brand-muted border border-brand/20 text-xs">
               <div className="flex items-center gap-2">
                 {recordingState.isRecording && (
                   <span className="relative flex h-2 w-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500" />
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-recording opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-recording" />
                   </span>
                 )}
-                <span className="font-mono font-medium text-blue-700 dark:text-blue-300">
+                <span className="font-mono font-medium text-brand-muted-foreground">
                   /{activeCommand.name}
                 </span>
                 {recordingState.isRecording ? (
-                  <span className="text-blue-600 dark:text-blue-400">
+                  <span className="text-brand">
                     Capturing live transcript ({capturedSegmentCount} segment{capturedSegmentCount !== 1 ? 's' : ''})
                   </span>
                 ) : (
@@ -715,7 +717,7 @@ export function ClaudePanel() {
               </div>
               <button
                 onClick={() => { cancelCommand(); setInputText(''); }}
-                className="text-muted-foreground hover:text-red-500 ml-2"
+                className="text-muted-foreground hover:text-destructive ml-2"
                 title="Cancel command"
               >
                 <X className="w-3.5 h-3.5" />
@@ -725,60 +727,29 @@ export function ClaudePanel() {
 
           {/* F054: @code tag detected indicator */}
           {/@code\b/i.test(inputText) && !activeCommand && (
-            <div className="flex items-center gap-2 mb-2 px-2 py-1.5 rounded-md bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800/30 text-xs">
-              <Code className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
-              <span className="font-medium text-emerald-700 dark:text-emerald-300">
+            <div className="flex items-center gap-2 mb-2 px-2 py-1.5 rounded-md bg-success-muted border border-success/20 text-xs">
+              <Code className="w-3.5 h-3.5 text-success flex-shrink-0" />
+              <span className="font-medium text-success-foreground">
                 @code — task will be queued for Claude Code
               </span>
             </div>
           )}
 
-          <div className="relative flex items-end gap-2">
-            <Popover>
-              <PopoverTrigger asChild>
-                <button
-                  className="flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground pb-2 flex-shrink-0"
-                  title="Select model"
-                >
-                  <ChevronUp className="w-3 h-3" />
-                  <span className="max-w-[60px] truncate">{MODEL_OPTIONS.find(m => m.id === selectedModel)?.label ?? 'Model'}</span>
-                </button>
-              </PopoverTrigger>
-              <PopoverContent align="start" side="top" className="w-48 p-1">
-                {MODEL_OPTIONS.map(m => (
-                  <button
-                    key={m.id}
-                    onClick={() => setModel(m.id)}
-                    className="flex items-center justify-between w-full px-2 py-1.5 text-xs rounded hover:bg-muted"
-                  >
-                    <span>{m.label}</span>
-                    {m.id === selectedModel && <Check className="w-3 h-3 text-blue-500" />}
-                  </button>
-                ))}
-              </PopoverContent>
-            </Popover>
-            {/* F005: PII Anonymization toggle */}
-            <button
-              onClick={toggleAnonymization}
-              className={`flex items-center gap-0.5 text-[10px] pb-2 flex-shrink-0 transition-colors ${
-                anonymizationEnabled && piiAvailable !== false
-                  ? 'text-emerald-500 hover:text-emerald-600'
-                  : anonymizationEnabled && piiAvailable === false
-                    ? 'text-amber-500 hover:text-amber-600'
-                    : 'text-muted-foreground/50 hover:text-muted-foreground'
-              }`}
-              title={
-                anonymizationEnabled && piiAvailable === false
-                  ? 'PII anonymization ON but service unavailable'
-                  : anonymizationEnabled
-                    ? 'PII anonymization ON — click to disable'
-                    : 'PII anonymization OFF — click to enable'
-              }
-            >
-              <Shield className="w-3 h-3" />
-              <span>PII</span>
-            </button>
-            {/* F044: Document attachment button */}
+          {/* Streaming indicator — above input */}
+          {isStreaming && (
+            <div className="text-xs text-muted-foreground mb-2 flex items-center gap-1.5 px-1">
+              AI is thinking
+              <span className="inline-flex gap-0.5">
+                <span className="w-1 h-1 rounded-full bg-muted-foreground animate-[thinking-dot_1.4s_ease-in-out_infinite]" />
+                <span className="w-1 h-1 rounded-full bg-muted-foreground animate-[thinking-dot_1.4s_ease-in-out_0.2s_infinite]" />
+                <span className="w-1 h-1 rounded-full bg-muted-foreground animate-[thinking-dot_1.4s_ease-in-out_0.4s_infinite]" />
+              </span>
+            </div>
+          )}
+
+          {/* Input container — textarea with icons inside, like Cloudflare */}
+          <div className="relative rounded-xl border border-border focus-within:border-brand/50 transition-colors">
+            {/* F044: Hidden file input */}
             <input
               ref={fileInputRef}
               type="file"
@@ -786,15 +757,8 @@ export function ClaudePanel() {
               className="hidden"
               onChange={(e) => { if (e.target.files?.[0]) handleFileUpload(e.target.files[0]); }}
             />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isParsingFile}
-              className="flex items-center gap-0.5 text-[10px] pb-2 flex-shrink-0 text-muted-foreground/50 hover:text-muted-foreground transition-colors disabled:animate-pulse"
-              title={isParsingFile ? 'Parsing document...' : 'Attach document (PDF, DOCX, TXT, MD, CSV)'}
-            >
-              <Paperclip className="w-3 h-3" />
-            </button>
-            <div className="relative flex-1">
+
+            <div className="relative">
               {/* F018: Slash command autocomplete dropdown */}
               {showAutocomplete && (
                 <SlashCommandAutocomplete
@@ -812,35 +776,99 @@ export function ClaudePanel() {
                 value={inputText}
                 onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
-                placeholder={activeCommand ? `Type additional context for /${activeCommand.name}...` : 'Ask anything... (type / for commands)'}
-                rows={1}
-                className="w-full resize-none border border-border rounded-lg px-3 py-2 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder={activeCommand ? `Type additional context for /${activeCommand.name}...` : 'What can we help you with?'}
+                rows={2}
+                className="w-full resize-none rounded-xl px-3 pt-3 pb-10 text-sm bg-transparent text-foreground focus:outline-none placeholder:text-muted-foreground/60"
+                style={{ maxHeight: TEXTAREA_MAX_HEIGHT_PX }}
               />
             </div>
-            {isStreaming && (
-              <Button
-                size="sm"
-                variant="destructive"
-                onClick={cancelStream}
-                className="flex-shrink-0"
-                title="Stop"
+
+            {/* Bottom toolbar — inside the input container */}
+            <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-2 pb-2">
+              {/* Left: attachment */}
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isParsingFile}
+                className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:animate-pulse"
+                title={isParsingFile ? 'Parsing document...' : 'Attach document (PDF, DOCX, TXT, MD, CSV)'}
               >
-                <Square className="w-3.5 h-3.5 fill-current" />
-              </Button>
-            )}
-            <Button
-              size="sm"
-              onClick={handleSend}
-              disabled={!inputText.trim()}
-              className="flex-shrink-0"
-              title={isStreaming ? 'Stop and send' : 'Send'}
-            >
-              <Send className="w-4 h-4" />
-            </Button>
+                <Paperclip className="w-4 h-4" />
+              </button>
+
+              {/* Right: settings + send */}
+              <div className="flex items-center gap-1">
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <button
+                      className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                      title="Settings"
+                    >
+                      <SlidersHorizontal className="w-4 h-4" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent align="end" side="top" className="w-56 p-2 space-y-2">
+                    {/* Model selection */}
+                    <div>
+                      <div className="text-xs font-medium text-muted-foreground px-1 mb-1">Model</div>
+                      {MODEL_OPTIONS.map(m => (
+                        <button
+                          key={m.id}
+                          onClick={() => setModel(m.id)}
+                          className={`flex items-center justify-between w-full px-2 py-1.5 text-xs rounded-md transition-colors ${
+                            m.id === selectedModel ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                          }`}
+                        >
+                          <span>{m.label}</span>
+                          {m.id === selectedModel && <Check className="w-3 h-3 text-brand" />}
+                        </button>
+                      ))}
+                    </div>
+                    {/* Divider */}
+                    <div className="border-t border-border" />
+                    {/* F005: PII Anonymization toggle */}
+                    <button
+                      onClick={toggleAnonymization}
+                      className="flex items-center justify-between w-full px-2 py-1.5 text-xs rounded-md hover:bg-muted transition-colors"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Shield className="w-3.5 h-3.5" />
+                        <span>PII Anonymization</span>
+                      </div>
+                      <div className={`w-7 h-4 rounded-full relative transition-colors ${
+                        anonymizationEnabled ? 'bg-success' : 'bg-muted-foreground/30'
+                      }`}>
+                        <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-[left] duration-150 ${
+                          anonymizationEnabled ? 'left-3.5' : 'left-0.5'
+                        }`} />
+                      </div>
+                    </button>
+                    {anonymizationEnabled && piiAvailable === false && (
+                      <div className="text-[10px] text-warning px-2">Service unavailable</div>
+                    )}
+                  </PopoverContent>
+                </Popover>
+
+                {isStreaming ? (
+                  <button
+                    onClick={cancelStream}
+                    className="p-1.5 rounded-md bg-muted text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                    title="Stop generating"
+                  >
+                    <Square className="w-4 h-4 fill-current" />
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleSend}
+                    disabled={!inputText.trim()}
+                    className="p-1.5 rounded-md bg-brand text-brand-foreground hover:bg-brand-hover disabled:opacity-30 disabled:cursor-default transition-colors"
+                    title="Send message"
+                  >
+                    <Send className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
-          {isStreaming && (
-            <div className="text-xs text-muted-foreground mt-1 animate-pulse">AI is thinking...</div>
-          )}
         </div>
       </div>
 
