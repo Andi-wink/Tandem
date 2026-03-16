@@ -63,7 +63,7 @@ export function HandoffDialog({
             />
             <div className="flex-1 space-y-1">
               <div className="flex items-center gap-2 text-sm font-medium">
-                <Shield className={`h-4 w-4 ${anonymizeChecked && canAnonymize ? 'text-emerald-500' : 'text-muted-foreground'}`} />
+                <Shield className={`h-4 w-4 ${anonymizeChecked && canAnonymize ? 'text-success' : 'text-muted-foreground'}`} />
                 Anonymize PII before exporting
               </div>
               <p className="text-xs text-muted-foreground">

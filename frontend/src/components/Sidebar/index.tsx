@@ -446,7 +446,7 @@ const Sidebar: React.FC = () => {
               <button
                 onClick={handleRecordingToggle}
                 disabled={isRecording}
-                className={`p-2 ${isRecording ? 'bg-red-500 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600'} rounded-full transition-colors duration-150 shadow-sm`}
+                className={`p-2 ${isRecording ? 'bg-recording cursor-not-allowed' : 'bg-recording hover:bg-recording-hover'} rounded-full transition-colors duration-150 shadow-sm`}
               >
                 {isRecording ? (
                   <Square className="w-5 h-5 text-white" />
@@ -523,8 +523,8 @@ const Sidebar: React.FC = () => {
         <div
           className={`flex items-center transition-all duration-150 group ${item.type === 'folder' && depth === 0
             ? 'p-3 text-lg font-semibold h-10 mx-3 mt-3 rounded-lg'
-            : `px-3 py-2 my-0.5 rounded-md text-sm ${isActive ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium' :
-              hasTranscriptMatch ? 'bg-yellow-50 dark:bg-yellow-900/20' : 'hover:bg-muted'
+            : `px-3 py-2 my-0.5 rounded-md text-sm ${isActive ? 'bg-brand-muted text-brand-muted-foreground font-medium' :
+              hasTranscriptMatch ? 'bg-warning-muted' : 'hover:bg-muted'
             } cursor-pointer`
             }`}
           style={item.type === 'folder' && depth === 0 ? {} : { paddingLeft }}
@@ -555,7 +555,7 @@ const Sidebar: React.FC = () => {
                 )}
               </div>
               {searchQuery && item.id === 'meetings' && isSearching && (
-                <span className="ml-2 text-xs text-blue-500 animate-pulse">Searching...</span>
+                <span className="ml-2 text-xs text-brand animate-pulse">Searching...</span>
               )}
             </>
           ) : (
@@ -566,8 +566,8 @@ const Sidebar: React.FC = () => {
                     <File className="w-3.5 h-3.5 text-muted-foreground" />
                   </div>
                 ) : (
-                  <div className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full mr-2 bg-blue-100 dark:bg-blue-900/30">
-                    <Plus className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                  <div className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full mr-2 bg-brand-muted">
+                    <Plus className="w-3.5 h-3.5 text-brand-muted-foreground" />
                   </div>
                 )}
                 <span className="flex-1 break-words">{item.title}</span>
@@ -578,7 +578,7 @@ const Sidebar: React.FC = () => {
                         e.stopPropagation();
                         handleEditStart(item.id, item.title);
                       }}
-                      className="hover:text-blue-600 dark:hover:text-blue-400 p-1 rounded-md hover:bg-blue-50 dark:hover:bg-blue-900/20 flex-shrink-0"
+                      className="hover:text-brand p-1 rounded-md hover:bg-brand-muted flex-shrink-0"
                       aria-label="Edit meeting title"
                     >
                       <Pencil className="w-4 h-4" />
@@ -588,7 +588,7 @@ const Sidebar: React.FC = () => {
                         e.stopPropagation();
                         setDeleteModalState({ isOpen: true, itemId: item.id });
                       }}
-                      className="hover:text-red-600 dark:hover:text-red-400 p-1 rounded-md hover:bg-red-50 dark:hover:bg-red-900/20 flex-shrink-0"
+                      className="hover:text-destructive p-1 rounded-md hover:bg-destructive/10 flex-shrink-0"
                       aria-label="Delete meeting"
                     >
                       <Trash2 className="w-4 h-4" />
@@ -599,8 +599,8 @@ const Sidebar: React.FC = () => {
 
               {/* Show transcript match snippet if available */}
               {hasTranscriptMatch && (
-                <div className="mt-1 ml-8 text-xs text-muted-foreground bg-yellow-50 dark:bg-yellow-900/20 p-1.5 rounded border border-yellow-100 dark:border-yellow-800/30 line-clamp-2">
-                  <span className="font-medium text-yellow-600 dark:text-yellow-400">Match:</span> {matchingResult.matchContext}
+                <div className="mt-1 ml-8 text-xs text-muted-foreground bg-warning-muted p-1.5 rounded border border-warning/20 line-clamp-2">
+                  <span className="font-medium text-warning">Match:</span> {matchingResult.matchContext}
                 </div>
               )}
             </div>
@@ -702,7 +702,7 @@ const Sidebar: React.FC = () => {
                       <NotebookPen className="w-4 h-4 mr-2 text-muted-foreground" />
                       <span className="text-foreground">{item.title}</span>
                       {searchQuery && item.id === 'meetings' && isSearching && (
-                        <span className="ml-2 text-xs text-blue-500 animate-pulse">Searching...</span>
+                        <span className="ml-2 text-xs text-brand animate-pulse">Searching...</span>
                       )}
                     </div>
                   </div>
@@ -732,7 +732,7 @@ const Sidebar: React.FC = () => {
             <button
               onClick={handleRecordingToggle}
               disabled={isRecording}
-              className={`w-full flex items-center justify-center px-3 py-2 text-sm font-medium text-white ${isRecording ? 'bg-red-300 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600'} rounded-lg transition-colors shadow-sm`}
+              className={`w-full flex items-center justify-center px-3 py-2 text-sm font-medium text-recording-foreground ${isRecording ? 'bg-recording/60 cursor-not-allowed' : 'bg-recording hover:bg-recording-hover'} rounded-lg transition-colors shadow-sm`}
             >
               {isRecording ? (
                 <>
@@ -798,7 +798,7 @@ const Sidebar: React.FC = () => {
                       handleEditCancel();
                     }
                   }}
-                  className="w-full px-3 py-2 border border-border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full px-3 py-2 border border-border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-brand focus:border-transparent"
                   placeholder="Enter meeting title"
                   autoFocus
                 />
@@ -814,7 +814,7 @@ const Sidebar: React.FC = () => {
             </button>
             <button
               onClick={handleEditConfirm}
-              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
+              className="px-4 py-2 text-sm font-medium text-brand-foreground bg-brand hover:bg-brand-hover rounded-md transition-colors"
             >
               Save
             </button>

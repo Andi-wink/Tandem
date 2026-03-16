@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
-import { ChevronRight, ChevronDown, Download, ExternalLink, Image, Copy, Check, X } from 'lucide-react';
+import React, { useState, useMemo, memo } from 'react';
+import { ChevronRight, ChevronDown, Download, ExternalLink, Image, Copy, Check } from 'lucide-react';
+import { Lightbox } from './Lightbox';
 import { ClaudeToolCall } from '@/contexts/ClaudeContext';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { toast } from 'sonner';
 
 /**
  * DiagramBlock — renders Excalidraw diagram results in the AI chat panel.
@@ -87,7 +89,7 @@ export function isDiagramToolCall(call: ClaudeToolCall): boolean {
   return false;
 }
 
-export function DiagramBlock({ call }: { call: ClaudeToolCall }) {
+function DiagramBlockInner({ call }: { call: ClaudeToolCall }) {
   const [collapsed, setCollapsed] = useState(false);
   const [copied, setCopied] = useState(false);
   const [imgError, setImgError] = useState(false);
@@ -96,11 +98,14 @@ export function DiagramBlock({ call }: { call: ClaudeToolCall }) {
   const output = call.output || '';
   const input = call.input || '';
 
-  const pngPath = extractPngPath(output);
-  const excalidrawPath = extractExcalidrawPath(input) || extractExcalidrawPath(output);
+  const pngPath = useMemo(() => extractPngPath(output), [output]);
+  const excalidrawPath = useMemo(
+    () => extractExcalidrawPath(input) || extractExcalidrawPath(output),
+    [input, output],
+  );
 
   // Convert local file path to Tauri asset URL for rendering
-  const pngSrc = pngPath ? convertFileSrc(pngPath) : null;
+  const pngSrc = useMemo(() => (pngPath ? convertFileSrc(pngPath) : null), [pngPath]);
 
   const Chevron = collapsed ? ChevronRight : ChevronDown;
 
@@ -127,7 +132,7 @@ export function DiagramBlock({ call }: { call: ClaudeToolCall }) {
           className="w-full flex items-center gap-1.5 px-3 py-2 bg-muted hover:bg-accent text-left"
         >
           <Chevron className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
-          <Image className="w-3.5 h-3.5 text-blue-500 flex-shrink-0" />
+          <Image className="w-3.5 h-3.5 text-brand flex-shrink-0" />
           <span className="text-xs font-medium text-foreground truncate">{title}</span>
           <span className="text-xs text-muted-foreground ml-auto flex-shrink-0">Excalidraw</span>
         </button>
@@ -136,7 +141,7 @@ export function DiagramBlock({ call }: { call: ClaudeToolCall }) {
           <div className="border-t border-border">
             {/* PNG Image */}
             {pngSrc && !imgError ? (
-              <div className="p-2 bg-white dark:bg-zinc-900">
+              <div className="p-2 bg-background">
                 <img
                   src={pngSrc}
                   alt={title}
@@ -158,33 +163,38 @@ export function DiagramBlock({ call }: { call: ClaudeToolCall }) {
             {/* Action buttons */}
             <div className="flex items-center gap-1 px-2 py-1.5 bg-muted border-t border-border">
               {pngPath && (
-                <a
-                  href={pngSrc || '#'}
-                  download={pngPath.split(/[/\\]/).pop()}
+                <button
+                  onClick={async () => {
+                    try {
+                      const dest = await invoke<string>('copy_to_downloads', { sourcePath: pngPath });
+                      toast.success(`Saved to Downloads: ${dest.split(/[/\\]/).pop()}`);
+                    } catch (err) {
+                      console.error('Download failed:', err);
+                      toast.error(`Download failed: ${err}`);
+                    }
+                  }}
                   className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded hover:bg-accent transition-colors"
                 >
                   <Download className="w-3 h-3" />
                   PNG
-                </a>
+                </button>
               )}
               {excalidrawPath && (
-                <a
-                  href={`https://excalidraw.com`}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <button
+                  onClick={() => invoke('open_external_url', { url: 'https://excalidraw.com' }).catch(console.error)}
                   className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded hover:bg-accent transition-colors"
                   title="Open excalidraw.com and import the .excalidraw file"
                 >
                   <ExternalLink className="w-3 h-3" />
                   Open in Excalidraw
-                </a>
+                </button>
               )}
               <button
                 onClick={handleCopyPath}
                 className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded hover:bg-accent transition-colors ml-auto"
                 title="Copy file path"
               >
-                {copied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+                {copied ? <Check className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
                 {copied ? 'Copied' : 'Path'}
               </button>
             </div>
@@ -194,28 +204,17 @@ export function DiagramBlock({ call }: { call: ClaudeToolCall }) {
 
       {/* Lightbox overlay for full-screen image viewing */}
       {showLightbox && pngSrc && (
-        <div
-          className="fixed inset-0 z-[100] bg-black/85 flex items-center justify-center cursor-zoom-out"
-          onClick={() => setShowLightbox(false)}
-        >
+        <Lightbox onClose={() => setShowLightbox(false)}>
           <img
             src={pngSrc}
             alt={title}
             className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           />
-          <button
-            onClick={() => setShowLightbox(false)}
-            className="absolute top-4 right-4 p-2 rounded-full bg-black/50 text-white hover:bg-black/70 transition-colors"
-            title="Close (Escape)"
-          >
-            <X className="w-5 h-5" />
-          </button>
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-white/60 text-xs">
-            Click outside to close
-          </div>
-        </div>
+        </Lightbox>
       )}
     </>
   );
 }
+
+export const DiagramBlock = memo(DiagramBlockInner);

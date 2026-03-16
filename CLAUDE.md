@@ -106,6 +106,38 @@ cd frontend/src-tauri && cargo check  # Rust compilation check
 - **Backend Docs**: http://localhost:5167/docs
 - **Frontend Dev**: http://localhost:3118
 
+### Claude Code Autonomous Loop (F054 Handoff)
+
+During a meeting, the user can say `@code <task>` to hand off work to Claude Code running in a terminal. The workflow:
+
+1. Tandem writes a task file to `.tandem/tasks/<timestamp>.md` with the task + transcript context
+2. Claude Code polls for new task files, executes them, then deletes the file
+3. `.tandem/live-transcript.md` provides rolling 30-min transcript as background context
+
+**Running locally (Windows):**
+```bash
+# Terminal 1: Start Claude Code in autonomous mode
+cd "D:\Dev projects\Tandem"
+claude --dangerously-skip-permissions
+
+# Then inside Claude Code, start the loop:
+/loop 1m Check .tandem/tasks/ for new .md files. If found, read the task, execute it, then delete the file. Use .tandem/live-transcript.md as background context only — do not start tasks from the transcript alone.
+```
+
+**Running in Docker (fully autonomous):**
+```bash
+# Build the Claude Code runner
+docker build -f Dockerfile.claude-code -t tandem-claude-code .
+
+# Run with project mounted + API key
+docker run -it --rm \
+  -v "$(pwd):/project" \
+  -e ANTHROPIC_API_KEY=your-key-here \
+  tandem-claude-code
+```
+
+See `Dockerfile.claude-code` and `docker-compose.claude-code.yml` for configuration. The Docker setup skips all permissions and runs the loop automatically on startup.
+
 ## High-Level Architecture
 
 ### Three-Tier System Architecture
@@ -303,7 +335,7 @@ The app uses multiple React contexts. Key ones:
 | **RecordingStateContext** | `contexts/RecordingStateContext.tsx` | Single source of truth for recording state (isRecording, isPaused, status) |
 | **TranscriptContext** | `contexts/TranscriptContext.tsx` | Live transcript segments from Whisper via Tauri `transcript-update` events |
 | **ClaudeContext** | `contexts/ClaudeContext.tsx` | AI panel: session, conversation, context basket, SSE streaming with RAF batching |
-| **ScreenshotContext** | `contexts/ScreenshotContext.tsx` | Screenshot capture events (Alt+Shift+S) |
+| **ScreenshotContext** | `contexts/ScreenshotContext.tsx` | Screenshot (Alt+Shift+S) and annotate (Alt+Shift+R) capture events |
 | **ClipboardContext** | `contexts/ClipboardContext.tsx` | Clipboard capture events (Alt+Shift+V) |
 | **ConfigContext** | `contexts/ConfigContext.tsx` | App config, transcript model settings |
 
@@ -534,3 +566,62 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat
 **Project Tracking**:
 - [feature_list.json](feature_list.json) - Feature status, steps, branches, worktrees
 - [bug_list.json](bug_list.json) - Known bugs and refactoring items with severity/fix details
+
+## Design Context
+
+### Users
+Consultants and freelancers on client-facing calls — discovery calls, sales conversations, advisory sessions. They need the interface to feel invisible during a live call: no distractions, no cognitive overhead. When not on a call, they review transcripts, generate summaries, and hand off tasks. Privacy is paramount — these are confidential client conversations.
+
+### Brand Personality
+**Calm, Capable, Private.** Tandem is the senior colleague who takes perfect notes without being asked. It doesn't demand attention. It earns trust through competence and discretion. The interface should communicate: "your conversation is safe here, and everything is handled."
+
+### Aesthetic Direction
+**Vercel / Stripe inspired** — ultra-polished, high contrast, dramatic. Bold typography hierarchy with generous whitespace. Dark-first (dark mode is default). Subtle gradients and depth rather than flat design. Premium feel without being flashy.
+
+- **Reference apps**: Vercel dashboard (dramatic dark mode, confident typography), Stripe docs (precision, whitespace, clarity), Linear (fast, keyboard-driven, monochrome + accent)
+- **Anti-references**: Slack (too busy, too colorful), Notion (too playful for professional context), generic SaaS dashboards with rounded cards everywhere
+
+### Color System
+- **Font**: Source Sans 3 (400/500/600/700) — professional, readable, good at small sizes
+- **Base palette**: Achromatic neutrals with tinted warmth (avoid pure gray — tint toward brand hue)
+- **Brand palette**: Define primary, secondary, and accent colors that give Tandem a recognizable identity. The current pure-gray palette needs a distinctive brand color (consider a confident teal, deep blue, or muted violet — something that says "trustworthy and modern" without being generic)
+- **Semantic colors**: Success (green), Error (red/destructive), Warning (amber), Info (blue) — these should be tinted to harmonize with the brand palette, not raw Tailwind defaults
+- **Dark mode**: Not inverted light mode. Use lighter surfaces for elevation/depth, desaturate accents slightly, never use pure black (#000), reduce font weight by one step
+- **Contrast**: WCAG AA minimum (4.5:1 body text, 3:1 large text/UI elements)
+
+### Typography
+- **Scale**: Already defined (display/h1/h2/body/small/caption) — enforce consistently
+- **Hierarchy**: Use weight and size together, not just size. Bold for emphasis, not color
+- **Measure**: Cap paragraph widths at ~65ch for readability
+- **Numbers**: Use tabular figures (`font-variant-numeric: tabular-nums`) for timestamps, durations, and data
+
+### Spacing & Layout
+- **Base unit**: 4px grid (4, 8, 12, 16, 24, 32, 48, 64, 96)
+- **Use semantic spacing tokens** rather than arbitrary Tailwind values
+- **Prefer `gap`** over margins for component spacing
+- **Three-panel layout**: Sidebar (collapsible) | Main content | AI panel (resizable). Each panel should have clear visual boundaries without heavy borders — use subtle background differences or elevation
+
+### Motion
+- **100/300/500 rule**: 100-150ms for hover/feedback, 200-300ms for state changes, 300-500ms for layout shifts
+- **framer-motion** is available — use for meaningful transitions (panel open/close, tab switches, recording state changes)
+- **Respect `prefers-reduced-motion`** — always provide a reduced/no-motion fallback
+- **No bounce/elastic effects** — they undermine the calm, professional tone
+
+### Interaction Patterns
+- **Focus rings**: Use `:focus-visible` (not `:focus`), 2px offset, ring color from design tokens
+- **Disabled states**: `opacity-50` + `pointer-events-none` (already in button.tsx — maintain this)
+- **Loading states**: Prefer skeleton/shimmer over spinners. Never block the UI during streaming
+- **Error states**: Three-part structure: what happened, why, what to do next. Never blame the user
+- **Empty states**: Show value proposition and clear next action, not just "nothing here"
+
+### Design Principles
+
+1. **Invisible when active** — During a live call, Tandem should disappear. No demanding animations, no attention-grabbing colors. The transcript flows, the AI panel waits. The user's focus stays on their conversation.
+
+2. **Confident, not loud** — Every element should feel intentional. Bold typography over bright colors. Generous whitespace over decorative elements. One accent color used sparingly beats a rainbow palette.
+
+3. **Privacy is visible** — The interface should communicate trust. PII anonymization indicators, local processing badges, encrypted storage signals. Privacy isn't just a feature — it's a design language.
+
+4. **Progressive disclosure** — Show only what's needed for the current task. Recording view is sparse. Review view is rich. Settings are layered. The AI panel slides in on demand, not permanently competing for space.
+
+5. **Semantic over arbitrary** — Use design tokens (`bg-background`, `text-muted-foreground`) over raw values (`bg-gray-100`, `text-gray-500`). Use the type scale (`text-body`, `text-small`) over arbitrary sizes. This ensures consistency and makes theming maintainable.

@@ -316,6 +316,7 @@ export default function Home() {
             }}
             className="fixed right-4 top-4 z-30 bg-card border border-border rounded-full p-2 shadow-md hover:shadow-lg hover:bg-muted transition-all"
             title="Open AI Assistant"
+            aria-label="Open AI Assistant"
           >
             <Bot className="w-5 h-5 text-muted-foreground" />
           </button>

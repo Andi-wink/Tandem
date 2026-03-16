@@ -10,8 +10,8 @@ describe('RecordingService', () => {
   let service: RecordingService;
 
   beforeEach(() => {
-    service = new RecordingService();
     vi.clearAllMocks();
+    service = new RecordingService();
   });
 
   describe('isRecording', () => {

@@ -2,7 +2,7 @@ import React from 'react';
 import { AlertTriangle, Mic, Speaker, RefreshCw } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { invoke } from '@tauri-apps/api/core';
-import { useIsLinux } from '@/hooks/usePlatform';
+import { usePlatform } from '@/hooks/usePlatform';
 
 interface PermissionWarningProps {
   hasMicrophone: boolean;
@@ -17,10 +17,11 @@ export function PermissionWarning({
   onRecheck,
   isRechecking = false
 }: PermissionWarningProps) {
-  const isLinux = useIsLinux();
+  const platform = usePlatform();
+  const isMacOS = platform === 'macos';
 
   // Don't show on Linux - permission handling is not needed
-  if (isLinux) {
+  if (platform === 'linux') {
     return null;
   }
 
@@ -28,8 +29,6 @@ export function PermissionWarning({
   if (hasMicrophone && hasSystemAudio) {
     return null;
   }
-
-  const isMacOS = navigator.userAgent.includes('Mac');
 
   const openMicrophoneSettings = async () => {
     if (isMacOS) {
@@ -55,9 +54,9 @@ export function PermissionWarning({
     <div className="max-w-md mb-4 space-y-3">
       {/* Combined Permission Warning - Show when either permission is missing */}
       {(!hasMicrophone || !hasSystemAudio) && (
-        <Alert variant="destructive" className="border-amber-400 bg-amber-50 dark:bg-amber-950 dark:border-amber-700">
-          <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-400" />
-          <AlertTitle className="text-amber-900 dark:text-amber-100 font-semibold">
+        <Alert variant="destructive" className="border-warning/40 bg-warning-muted dark:border-warning/30">
+          <AlertTriangle className="h-5 w-5 text-warning" />
+          <AlertTitle className="text-warning-foreground font-semibold">
             <div className="flex items-center gap-2">
               {!hasMicrophone && <Mic className="h-4 w-4" />}
               {!hasSystemAudio && <Speaker className="h-4 w-4" />}
@@ -69,7 +68,7 @@ export function PermissionWarning({
             {isMacOS && !hasMicrophone && (
               <button
                 onClick={openMicrophoneSettings}
-                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-md transition-colors"
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-warning-foreground bg-warning hover:bg-warning/90 rounded-md transition-colors"
               >
                 <Mic className="h-4 w-4" />
                 Open Microphone Settings
@@ -78,7 +77,7 @@ export function PermissionWarning({
             {isMacOS && !hasSystemAudio && (
               <button
                 onClick={openScreenRecordingSettings}
-                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-brand-foreground bg-brand hover:bg-brand-hover rounded-md transition-colors"
               >
                 <Speaker className="h-4 w-4" />
                 Open Screen Recording Settings
@@ -87,13 +86,13 @@ export function PermissionWarning({
             <button
               onClick={onRecheck}
               disabled={isRechecking}
-              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-amber-900 bg-amber-100 hover:bg-amber-200 dark:text-amber-100 dark:bg-amber-800 dark:hover:bg-amber-700 rounded-md transition-colors disabled:opacity-50"
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-warning-foreground bg-warning-muted hover:bg-warning/20 rounded-md transition-colors disabled:opacity-50"
             >
               <RefreshCw className={`h-4 w-4 ${isRechecking ? 'animate-spin' : ''}`} />
               Recheck
             </button>
           </div>
-          <AlertDescription className="text-amber-800 dark:text-amber-200 mt-2">
+          <AlertDescription className="text-warning-foreground mt-2">
             {/* Microphone Warning */}
             {!hasMicrophone && (
               <>

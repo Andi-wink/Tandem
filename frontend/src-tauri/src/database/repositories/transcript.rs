@@ -178,3 +178,207 @@ impl TranscriptsRepository {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::TranscriptSegment;
+    use crate::database::test_helpers::create_test_pool;
+
+    fn make_segment(id: &str, text: &str, ts: &str) -> TranscriptSegment {
+        TranscriptSegment {
+            id: id.into(),
+            text: text.into(),
+            timestamp: ts.into(),
+            audio_start_time: Some(0.0),
+            audio_end_time: Some(1.0),
+            duration: Some(1.0),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_save_transcript_creates_meeting_and_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let segments = vec![
+            make_segment("t-1", "Hello world", "12:00:00"),
+            make_segment("t-2", "Goodbye world", "12:01:00"),
+        ];
+
+        let meeting_id =
+            TranscriptsRepository::save_transcript(&pool, "Test Meeting", &segments, None)
+                .await
+                .unwrap();
+
+        assert!(meeting_id.starts_with("meeting-"));
+
+        // Verify segments exist
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM transcripts WHERE meeting_id = ?")
+                .bind(&meeting_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count.0, 2);
+    }
+
+    #[tokio::test]
+    async fn test_save_transcript_with_folder_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let segments = vec![make_segment("t-1", "Test", "12:00:00")];
+        let meeting_id = TranscriptsRepository::save_transcript(
+            &pool,
+            "Meeting",
+            &segments,
+            Some("/recordings/meeting1".into()),
+        )
+        .await
+        .unwrap();
+
+        let folder: Option<String> =
+            sqlx::query_scalar("SELECT folder_path FROM meetings WHERE id = ?")
+                .bind(&meeting_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(folder.as_deref(), Some("/recordings/meeting1"));
+    }
+
+    #[tokio::test]
+    async fn test_update_transcript_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let segments = vec![make_segment("t-1", "Original text", "12:00:00")];
+        let meeting_id =
+            TranscriptsRepository::save_transcript(&pool, "Meeting", &segments, None)
+                .await
+                .unwrap();
+
+        // Get the transcript ID
+        let tid: String =
+            sqlx::query_scalar("SELECT id FROM transcripts WHERE meeting_id = ?")
+                .bind(&meeting_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        let updated = TranscriptsRepository::update_transcript_text(&pool, &tid, "Updated text")
+            .await
+            .unwrap();
+        assert!(updated);
+
+        // Verify update
+        let text: String =
+            sqlx::query_scalar("SELECT transcript FROM transcripts WHERE id = ?")
+                .bind(&tid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(text, "Updated text");
+    }
+
+    #[tokio::test]
+    async fn test_update_transcript_text_nonexistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let updated =
+            TranscriptsRepository::update_transcript_text(&pool, "nonexistent", "New text")
+                .await
+                .unwrap();
+        assert!(!updated);
+    }
+
+    #[tokio::test]
+    async fn test_search_transcripts() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let segments = vec![
+            make_segment("t-1", "The quick brown fox jumps over the lazy dog", "12:00:00"),
+            make_segment("t-2", "A different sentence entirely", "12:01:00"),
+        ];
+        TranscriptsRepository::save_transcript(&pool, "Searchable", &segments, None)
+            .await
+            .unwrap();
+
+        let results = TranscriptsRepository::search_transcripts(&pool, "brown fox")
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].match_context.contains("brown fox"));
+    }
+
+    #[tokio::test]
+    async fn test_search_transcripts_empty_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let results = TranscriptsRepository::search_transcripts(&pool, "  ")
+            .await
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_search_transcripts_special_chars() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let segments = vec![make_segment(
+            "t-1",
+            "Price is 100% guaranteed",
+            "12:00:00",
+        )];
+        TranscriptsRepository::save_transcript(&pool, "Special", &segments, None)
+            .await
+            .unwrap();
+
+        // Search with % which is a LIKE wildcard — should be escaped
+        let results = TranscriptsRepository::search_transcripts(&pool, "100%")
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_search_transcripts_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let segments = vec![make_segment("t-1", "Hello World", "12:00:00")];
+        TranscriptsRepository::save_transcript(&pool, "Case", &segments, None)
+            .await
+            .unwrap();
+
+        let results = TranscriptsRepository::search_transcripts(&pool, "hello world")
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_match_context_with_match() {
+        let transcript = "This is a long text that contains the word 'important' somewhere in the middle of it";
+        let context = TranscriptsRepository::get_match_context(transcript, "important");
+        assert!(context.contains("important"));
+    }
+
+    #[tokio::test]
+    async fn test_get_match_context_no_match() {
+        let transcript = "Short text here";
+        let context = TranscriptsRepository::get_match_context(transcript, "nonexistent");
+        assert_eq!(context, "Short text here");
+    }
+
+    #[tokio::test]
+    async fn test_get_match_context_utf8() {
+        let transcript = "Hello 世界 this is a test with unicode characters 日本語";
+        let context = TranscriptsRepository::get_match_context(transcript, "世界");
+        assert!(context.contains("世界"));
+    }
+}

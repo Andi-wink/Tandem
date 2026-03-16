@@ -25,6 +25,7 @@ import { ScreenshotProvider } from '@/contexts/ScreenshotContext'
 import { ClipboardProvider } from '@/contexts/ClipboardContext'
 import { ClaudeProvider } from '@/contexts/ClaudeContext'
 import { ContextBasketProvider } from '@/contexts/ContextBasketContext'
+import { NotificationProvider } from '@/contexts/NotificationContext'
 import { SelectionProvider } from '@/contexts/SelectionContext'
 import { ClaudePanel } from '@/components/ClaudePanel'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
@@ -123,6 +124,7 @@ export default function RootLayout({
           [SidebarProvider],
           [TooltipProvider],
           [RecordingPostProcessingProvider],
+          [NotificationProvider],
           [ClipboardProvider],
           [ScreenshotProvider],
           [SelectionProvider],

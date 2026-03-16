@@ -329,6 +329,13 @@ def _build_system_prompt(meeting_title: str, project_dir: str) -> str:
     # Resolve the skills directory relative to this file
     skills_dir = str(Path(__file__).resolve().parent.parent / "skills" / "excalidraw")
 
+    # Use the project's .venv Python so playwright is available for rendering
+    venv_dir = Path(__file__).resolve().parent.parent.parent / ".venv"
+    if sys.platform == "win32":
+        venv_python = str(venv_dir / "Scripts" / "python.exe")
+    else:
+        venv_python = str(venv_dir / "bin" / "python")
+
     return (
         f"You are an AI co-pilot embedded in Tandem, a collaborative AI workspace for calls. "
         f'You are working in tandem with the user on: "{meeting_title}". '
@@ -337,14 +344,28 @@ def _build_system_prompt(meeting_title: str, project_dir: str) -> str:
         f"{platform_note}"
         f"Be concise and helpful.\n\n"
         f"## Diagram Creation Capability\n"
-        f"When the user asks for a diagram, flowchart, architecture sketch, or any visual:\n"
+        f"You have TWO diagram modes. Choose based on the user's request:\n\n"
+        f"### Quick Mode (DEFAULT) — Mermaid\n"
+        f"Use this for any diagram request UNLESS the user explicitly asks for Excalidraw or says 'detailed'.\n"
+        f"Output a Mermaid code block in your response text — the frontend renders it instantly in-browser.\n"
+        f"Example:\n"
+        f"```mermaid\n"
+        f"flowchart TD\n"
+        f"    A[Start] --> B[Process]\n"
+        f"    B --> C[End]\n"
+        f"```\n"
+        f"Supported Mermaid types: flowchart, sequenceDiagram, classDiagram, stateDiagram, erDiagram, gantt, pie, mindmap, timeline.\n"
+        f"NEVER install or use @mermaid-js/mermaid-cli or any CLI tool. Just write the code block.\n\n"
+        f"### Detailed Mode — Excalidraw\n"
+        f"Use ONLY when the user explicitly mentions 'excalidraw' (or misspellings like 'excolidraw', 'excali draw') "
+        f"OR when they specifically ask for a 'detailed' diagram.\n"
+        f"When using Excalidraw:\n"
         f"1. Read the skill prompt at {skills_dir}/SKILL_PROMPT.md for the full design methodology.\n"
         f"2. Read the color palette at {skills_dir}/references/color-palette.md.\n"
         f"3. Read element templates at {skills_dir}/references/element-templates.md.\n"
         f"4. Generate Excalidraw JSON section-by-section using the Write tool.\n"
-        f"5. Render with: python {skills_dir}/render_excalidraw.py <path-to-file.excalidraw>\n"
+        f'5. Render with: "{venv_python}" "{skills_dir}/render_excalidraw.py" <path-to-file.excalidraw>\n'
         f"6. Read the resulting PNG to visually validate. Fix issues and re-render (2-4 iterations).\n"
-        f"Supported diagram types: flowchart, sequenceDiagram, architecture, process, timeline, mindmap."
     )
 
 

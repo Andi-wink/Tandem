@@ -63,7 +63,7 @@ export interface TaskHandoffData {
   timestamp: Date;
 }
 
-export function generateTaskMarkdown(data: TaskHandoffData): string {
+export function generateTaskMarkdown(data: TaskHandoffData, projectDir?: string): string {
   const lines: string[] = [];
 
   // Header
@@ -75,6 +75,22 @@ export function generateTaskMarkdown(data: TaskHandoffData): string {
   lines.push('## Instructions');
   lines.push(data.taskDescription);
   lines.push('');
+
+  // Project file paths (so Claude Code knows where to find/save things)
+  if (projectDir) {
+    const sep = projectDir.includes('\\') ? '\\' : '/';
+    lines.push('## Project Files');
+    lines.push(`- **Project dir**: ${projectDir}`);
+    lines.push(`- **Screenshots**: ${projectDir}${sep}screenshots${sep}  (PNG files named screenshot_YYYYMMDD_HHmmss_*.png)`);
+    lines.push(`- **Clipboard**: ${projectDir}${sep}clipboard.json  (array of clipboard captures with timestamps)`);
+    lines.push(`- **Live transcript**: ${projectDir}${sep}.tandem${sep}live-transcript.md`);
+    lines.push(`- **Tasks dir**: ${projectDir}${sep}.tandem${sep}tasks${sep}`);
+    lines.push('');
+    lines.push('## File Conventions');
+    lines.push(`- Save any generated JSON/files to: ${projectDir}${sep}.tandem${sep}tasks${sep}`);
+    lines.push(`- n8n workflow files: save as \`workflow-{name}.json\` in tasks dir before deploying via MCP`);
+    lines.push('');
+  }
 
   // Recent transcript
   if (data.transcripts.length > 0) {
@@ -114,7 +130,7 @@ export async function writeTaskHandoff(projectDir: string, data: TaskHandoffData
   const tasksDir = `${projectDir}${sep}.tandem${sep}tasks`;
   const filename = `task-${Date.now()}.md`;
   const filePath = `${tasksDir}${sep}${filename}`;
-  const content = generateTaskMarkdown(data);
+  const content = generateTaskMarkdown(data, projectDir);
 
   await invoke('save_transcript', { filePath, content });
   return filePath;
@@ -134,16 +150,21 @@ Each file contains the task description, recent transcript context, and any atta
 
 ## Live Transcript (\`.tandem/live-transcript.md\`)
 Updated every 10 seconds during recording with a rolling 30-minute window.
-Look for spoken requests like "Tandem, start working on..." or "Claude Code, handle..."
-
-**To monitor:** Check for new requests, read surrounding context, and act on them.
-Track what you've already processed to avoid duplicates.
+This is read-only context — do NOT act on it unless a task file explicitly references it.
+Task files are the sole trigger for work; the live transcript provides background context only.
 
 ## Quick Start
 Run this in Claude Code to start polling:
 \`\`\`
-/loop 1m Check .tandem/tasks/ for new .md files. If found, read the task, execute it, then delete the file. Also check .tandem/live-transcript.md for spoken requests directed at you. Track what you've already processed.
+/loop 1m Check .tandem/tasks/ for new .md files. If found, read the task, execute it, then delete the file. Use .tandem/live-transcript.md as background context only — do not start tasks from the transcript alone.
 \`\`\`
+
+## Permissions
+To avoid permission prompts during /loop, start Claude Code with:
+\`\`\`
+claude --dangerously-skip-permissions
+\`\`\`
+Or pre-approve common commands in \`.claude/settings.local.json\`.
 `;
 
 /**
@@ -161,6 +182,7 @@ export async function ensureTandemClaudeMd(projectDir: string): Promise<void> {
 export function generateLiveTranscriptMarkdown(
   transcripts: Transcript[],
   meetingTitle: string,
+  projectDir?: string,
 ): string {
   const lines: string[] = [];
 
@@ -168,10 +190,25 @@ export function generateLiveTranscriptMarkdown(
   lines.push(`Updated: ${new Date().toISOString()}`);
   lines.push('');
 
+  // Project file paths — so Claude Code knows where to find context
+  if (projectDir) {
+    const sep = projectDir.includes('\\') ? '\\' : '/';
+    lines.push('## Project Files');
+    lines.push(`- **Project dir**: ${projectDir}`);
+    lines.push(`- **Screenshots**: ${projectDir}${sep}screenshots${sep}`);
+    lines.push(`- **Clipboard**: ${projectDir}${sep}clipboard.json`);
+    lines.push(`- **Tasks**: ${projectDir}${sep}.tandem${sep}tasks${sep}`);
+    lines.push('');
+  }
+
   for (const t of transcripts) {
-    if (!t.text.trim()) continue;
+    const text = t.text.trim();
+    if (!text) continue;
+    // Skip lines that contain @code/@claude mentions — those are handled via explicit task files
+    // and including them here would cause Claude Code to duplicate the work
+    if (/@(?:code|claude)\b/i.test(text)) continue;
     const ts = t.audio_start_time != null ? `[${formatTimestamp(t.audio_start_time)}]` : `[${t.timestamp}]`;
-    lines.push(`${ts} ${t.text.trim()}`);
+    lines.push(`${ts} ${text}`);
   }
 
   if (transcripts.length === 0) {
@@ -191,7 +228,7 @@ export async function writeLiveTranscript(
 ): Promise<void> {
   const sep = projectDir.includes('\\') ? '\\' : '/';
   const filePath = `${projectDir}${sep}.tandem${sep}live-transcript.md`;
-  const content = generateLiveTranscriptMarkdown(transcripts, meetingTitle);
+  const content = generateLiveTranscriptMarkdown(transcripts, meetingTitle, projectDir);
 
   await invoke('save_transcript', { filePath, content });
 }

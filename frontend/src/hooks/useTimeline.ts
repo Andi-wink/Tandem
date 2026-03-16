@@ -27,7 +27,7 @@ export function useTimeline(
         items.push({
           type: 'screenshot',
           id: ss.id,
-          recording_elapsed_secs: ss.recording_elapsed_secs ?? 0,
+          recording_elapsed_secs: ss.recording_elapsed_secs ?? Infinity,
           timestamp: ss.timestamp,
           data: ss,
         });
@@ -39,7 +39,7 @@ export function useTimeline(
         items.push({
           type: 'clipboard',
           id: clip.id,
-          recording_elapsed_secs: clip.recording_elapsed_secs ?? 0,
+          recording_elapsed_secs: clip.recording_elapsed_secs ?? Infinity,
           timestamp: clip.timestamp,
           data: clip,
         });

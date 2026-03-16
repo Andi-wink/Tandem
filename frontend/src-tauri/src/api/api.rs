@@ -1357,6 +1357,45 @@ pub async fn show_in_folder(path: String) -> Result<(), String> {
     }
 }
 
+/// Copy a file to the user's Downloads folder and return the destination path.
+/// Used by DiagramBlock to download PNGs that are outside the asset protocol scope.
+#[tauri::command]
+pub async fn copy_to_downloads(source_path: String) -> Result<String, String> {
+    let source = std::path::Path::new(&source_path);
+    if !source.exists() {
+        return Err(format!("File not found: {}", source_path));
+    }
+
+    let file_name = source.file_name()
+        .ok_or_else(|| "Invalid file path".to_string())?
+        .to_string_lossy()
+        .to_string();
+
+    let downloads = dirs::download_dir()
+        .ok_or_else(|| "Could not determine Downloads directory".to_string())?;
+
+    // Avoid overwriting: append counter if file exists
+    let mut dest = downloads.join(&file_name);
+    if dest.exists() {
+        let stem = source.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        let ext = source.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+        let mut i = 1u32;
+        loop {
+            let candidate = downloads.join(format!("{} ({}){}", stem, i, if ext.is_empty() { String::new() } else { format!(".{}", ext) }));
+            if !candidate.exists() {
+                dest = candidate;
+                break;
+            }
+            i += 1;
+        }
+    }
+
+    std::fs::copy(source, &dest)
+        .map_err(|e| format!("Failed to copy file: {}", e))?;
+
+    Ok(dest.to_string_lossy().to_string())
+}
+
 // ===== F054: HANDOFF HELPERS =====
 
 /// Returns the user's home directory path (for ~/tandem-tasks/)
@@ -1365,6 +1404,32 @@ pub async fn get_home_dir() -> Result<String, String> {
     dirs::home_dir()
         .map(|p| p.to_string_lossy().to_string())
         .ok_or_else(|| "Could not determine home directory".to_string())
+}
+
+/// Opens a folder directly in the system file explorer (browses inside the folder)
+/// Unlike show_in_folder which selects a path in its parent, this opens the directory itself.
+#[tauri::command]
+pub async fn open_folder(path: String) -> Result<(), String> {
+    use std::process::Command;
+
+    let path_ref = std::path::Path::new(&path);
+    if !path_ref.exists() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+
+    let result = if cfg!(target_os = "windows") {
+        let win_path = path.replace('/', "\\");
+        Command::new("explorer").arg(&win_path).spawn()
+    } else if cfg!(target_os = "macos") {
+        Command::new("open").arg(&path).spawn()
+    } else {
+        Command::new("xdg-open").arg(&path).spawn()
+    };
+
+    match result {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("Failed to open folder: {}", e)),
+    }
 }
 
 // ===== CUSTOM OPENAI API COMMANDS =====

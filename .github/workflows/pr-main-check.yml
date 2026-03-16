@@ -90,3 +90,47 @@ jobs:
       - name: Run backend tests
         working-directory: backend
         run: python -m pytest -v
+
+  # ── Rust: cargo check + database tests ────────────────────────────────────
+  rust-checks:
+    name: Rust (check + DB tests)
+    runs-on: ubuntu-latest
+    env:
+      WHISPER_NO_AVX: "ON"
+      WHISPER_NO_AVX2: "ON"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libx11-dev \
+            libxtst-dev \
+            libxrandr-dev \
+            cmake \
+            llvm-dev \
+            libclang-dev \
+            clang
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: frontend/src-tauri
+
+      - name: Cargo check (type validation)
+        working-directory: frontend/src-tauri
+        run: cargo check
+
+      - name: Run Rust database tests
+        working-directory: frontend/src-tauri
+        run: cargo test --lib database::repositories -- --nocapture

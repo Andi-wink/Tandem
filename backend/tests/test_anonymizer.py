@@ -127,14 +127,16 @@ class TestEntityRegistry:
         """Same meeting_id produces the same Faker seed, different IDs differ."""
         reg1 = EntityRegistry(meeting_id="meeting-aaa")
         reg2 = EntityRegistry(meeting_id="meeting-aaa")
-        reg3 = EntityRegistry(meeting_id="meeting-bbb")
 
         # Same seed -> same first generated name
         name1 = reg1._faker.name()
         name2 = reg2._faker.name()
-        name3 = reg3._faker.name()
         assert name1 == name2
-        assert name1 != name3  # unlikely but theoretically possible; good enough
+        # Different seeds produce different sequences — verify via surrogate
+        # (using get_surrogate avoids the vanishingly small Faker collision chance)
+        s_a = EntityRegistry(meeting_id="meeting-aaa").get_surrogate("Test Name", "PERSON")
+        s_b = EntityRegistry(meeting_id="meeting-bbb").get_surrogate("Test Name", "PERSON")
+        assert s_a != s_b, "Different meeting IDs should produce different surrogates"
 
     def test_get_surrogate_creates_mapping(self):
         """First call for a value creates a surrogate; second returns the same."""
@@ -433,8 +435,13 @@ class TestAnonymizeText:
         _, map2, _ = await anonymize_text(text2, "m-consist")
 
         # Both calls should produce the same surrogate for John Smith
-        if "John Smith" in map1 and "John Smith" in map2:
-            assert map1["John Smith"] == map2["John Smith"]
+        assert "John Smith" in map1, (
+            f"Expected spaCy to detect 'John Smith' in first text, got entities: {list(map1.keys())}"
+        )
+        assert "John Smith" in map2, (
+            f"Expected spaCy to detect 'John Smith' in second text, got entities: {list(map2.keys())}"
+        )
+        assert map1["John Smith"] == map2["John Smith"]
 
     @requires_presidio
     @pytest.mark.asyncio
@@ -502,10 +509,14 @@ class TestAnonymizeTexts:
         ]
         results, entity_map, entities = await anonymize_texts(texts, "m-batch")
         assert len(results) == 2
-        # If John Smith was detected, the surrogate should be consistent
-        if "John Smith" in entity_map:
-            for r in results:
-                assert "John Smith" not in r
+        # John Smith should be detected and replaced consistently
+        assert "John Smith" in entity_map, (
+            f"Expected spaCy to detect 'John Smith', got entities: {list(entity_map.keys())}"
+        )
+        for i, r in enumerate(results):
+            assert "John Smith" not in r, (
+                f"Result[{i}] still contains 'John Smith' after anonymization"
+            )
 
     @requires_presidio
     @pytest.mark.asyncio

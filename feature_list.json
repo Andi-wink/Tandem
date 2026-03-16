@@ -3,7 +3,7 @@
   "description": "AI co-pilot for every call — work in tandem with AI to capture, collaborate, and act. Fork of Meetily (Zackriya-Solutions/meeting-minutes) with screenshots, clipboard integration, PII sanitization, and real-time AI collaboration",
   "base_branch": "main",
   "working_branch": "main",
-  "last_updated": "2026-02-25",
+  "last_updated": "2026-03-11",
   "features": [
     {
       "id": "F001",
@@ -35,7 +35,7 @@
       "steps": [
         "Rust screenshot module (xcap capture, PNG/JPEG encoding, thumbnail generation)",
         "Tauri commands for fullscreen and region capture",
-        "Global hotkeys Alt+Shift+S (fullscreen) and Alt+Shift+R (region)",
+        "Global hotkeys Alt+Shift+S (region screenshot) and Alt+Shift+R (annotate screenshot)",
         "ScreenshotContext with event-driven state management",
         "RegionSelectOverlay with mouse-driven selection and preview",
         "ScreenshotThumbnail and ScreenshotLightbox components",
@@ -57,7 +57,7 @@
       "commit": "0c1362c",
       "steps": [
         "Rust pre_capture_screen() stores RgbaImage in static LazyLock",
-        "Full-res JPEG preview encoded as base64 data URI in Rust memory (bypasses asset protocol)",
+        "Full-res JPEG preview transferred as raw bytes via IPC, displayed as blob URL in frontend (bypasses asset protocol)",
         "crop_from_pre_captured() crops from memory, saves PNG, clears static",
         "AtomicBool guard with self-healing (clears stale state on next press)",
         "Alt+Shift+R hotkey registered via .with_shortcuts() on plugin builder (not gs.register())",
@@ -69,7 +69,7 @@
         "Cancel clears Rust memory via cancel_region_capture command",
         "cargo check and tsc --noEmit pass clean"
       ],
-      "notes": "Initial implementation in 9fcd0e9, two bug fixes: f1c43f0 (base64 data URI instead of asset protocol, self-healing AtomicBool), 0c1362c (plugin builder .with_shortcuts() binding, start_region_capture command for UI button). User verified working.",
+      "notes": "Initial implementation in 9fcd0e9, two bug fixes: f1c43f0 (self-healing AtomicBool), 0c1362c (plugin builder .with_shortcuts() binding, start_region_capture command for UI button). Later optimized from base64 data URI to raw bytes + blob URL for lower overhead. ae6f06a: fixed Alt+Shift+R not opening annotation screen (added annotate flag to event payload).",
       "passes": true
     },
     {
@@ -707,10 +707,10 @@
       "id": "F016",
       "category": "ui",
       "name": "Dark Mode",
-      "description": "Add a system/light/dark theme toggle. Currently the app is hardcoded to a white/gray-50 light theme with no dark variant. Tailwind CSS dark mode support needs to be enabled, a theme context added, and all components updated to use dark: variants.",
+      "description": "System/light/dark theme toggle using next-themes with Tailwind CSS 'class' strategy. ThemeProvider wraps the app in layout.tsx, ThemeToggle component in sidebar. All major components support dark: variants via shadcn/ui semantic colors (bg-background, text-foreground, border-border).",
       "priority": "medium",
-      "status": "planned",
-      "branch": null,
+      "status": "complete",
+      "branch": "main",
       "commit": null,
       "steps": [
         "Phase 1 — Tailwind config: enable darkMode: 'class' in tailwind.config.ts (currently not set); this allows toggling via a 'dark' class on <html>",
@@ -723,8 +723,8 @@
         "Phase 8 — Tauri window: ensure Tauri webview respects the theme (no white flash on load — set background-color in tauri.conf.json or via preload script)",
         "Phase 9 — Test: verify all pages (home, meeting-details, settings) render correctly in both themes; check contrast ratios meet WCAG AA"
       ],
-      "notes": "Tailwind dark mode with 'class' strategy is the standard approach. globals.css already has one prefers-color-scheme media query (in a Next.js error page reset), but no app-level dark theme exists. The shadcn/ui components (5 files) already support dark: variants via CSS variables — we should extend this pattern to the rest of the app. Consider using next-themes package for SSR-safe theme management.",
-      "passes": false
+      "notes": "Implemented with next-themes (SSR-safe). ThemeProvider in ComposeProviders.tsx, ThemeToggle component in sidebar. Uses shadcn/ui semantic color variables. All major components include dark: Tailwind variants per CLAUDE.md conventions.",
+      "passes": true
     },
     {
       "id": "F007-WU12",
@@ -1439,10 +1439,10 @@
       "branch": null,
       "commit": null,
       "steps": [
-        "Phase 1 \u2014 Hotkey listener: register global shortcut (e.g., Alt/Cmd+Shift+Space) via Tauri globalShortcut plugin to activate 'Director mode'.",
-        "Phase 2 \u2014 Audio routing: when hotkey is held, capture default microphone stream, flag the resulting audio chunks in the pipeline as 'Director Note'.",
-        "Phase 3 \u2014 Transcript injection: insert the transcribed text into the live transcript with a special visual style (e.g., distinct background color, distinct icon) and an explicit [Director's Note] label.",
-        "Phase 4 \u2014 AI context handling: ensure this note is heavily weighted in the summary generation prompt (since it's explicit user instruction) but optionally excluded from plain PDF/text exports if the user wants separate clean notes."
+        "Phase 1 — Hotkey listener: register global shortcut (e.g., Alt/Cmd+Shift+Space) via Tauri globalShortcut plugin to activate 'Director mode'.",
+        "Phase 2 — Audio routing: when hotkey is held, capture default microphone stream, flag the resulting audio chunks in the pipeline as 'Director Note'.",
+        "Phase 3 — Transcript injection: insert the transcribed text into the live transcript with a special visual style (e.g., distinct background color, distinct icon) and an explicit [Director's Note] label.",
+        "Phase 4 — AI context handling: ensure this note is heavily weighted in the summary generation prompt (since it's explicit user instruction) but optionally excluded from plain PDF/text exports if the user wants separate clean notes."
       ],
       "dependencies": [],
       "passes": false
@@ -1934,7 +1934,7 @@
           "id": "F053-B",
           "name": "Set temperature to 0.0 with automatic fallback",
           "description": "Use greedy decoding (temperature 0.0) for deterministic output. Whisper's built-in entropy_thold fallback retries with higher temperatures only when needed.",
-          "status": "planned",
+          "status": "complete",
           "files": [
             "frontend/src-tauri/src/whisper_engine/whisper_engine.rs",
             "frontend/src-tauri/src/audio/hardware_detector.rs"
@@ -1944,7 +1944,7 @@
           "id": "F053-C",
           "name": "Flip suppress_non_speech_tokens to false",
           "description": "whisper.cpp changed the default to false because true paradoxically causes end-of-segment hallucinations ('Thank you for watching', 'Amen', etc.).",
-          "status": "planned",
+          "status": "complete",
           "files": [
             "frontend/src-tauri/src/whisper_engine/whisper_engine.rs"
           ]
@@ -1974,13 +1974,12 @@
       "id": "F054",
       "category": "functional",
       "name": "@code Handoff + Live Transcript for Claude Code /loop",
-      "description": "Two-way bridge between Tandem meetings and Claude Code: (1) @code inline tag in AI panel writes task handoff files to ~/tandem-tasks/ that Claude Code picks up via /loop, (2) live transcript continuously written to {projectDir}/.tandem/live-transcript.md so Claude Code can detect spoken task requests. AI panel auto-opens on recording start to ensure projectDir is set.",
+      "description": "Two-way bridge between Tandem meetings and Claude Code: (1) @code inline tag in AI panel writes task handoff files to {projectDir}/.tandem/tasks/ that Claude Code picks up via /loop, (2) live transcript continuously written to {projectDir}/.tandem/live-transcript.md so Claude Code can detect spoken task requests. AI panel auto-opens on recording start to ensure projectDir is set.",
       "priority": "medium",
-      "status": "in-progress",
-      "branch": "feature/code-handoff-loop",
-      "worktree": "D:\\Dev projects\\Tandem-f054",
+      "status": "complete",
+      "branch": "main",
       "steps": [
-        "Phase 1 — Rust get_home_dir command for ~/tandem-tasks/ path resolution",
+        "Phase 1 — Rust get_home_dir command for path resolution",
         "Phase 2 — handoffService.ts: task markdown generation, live transcript generation, file writers via save_transcript Tauri command",
         "Phase 3 — @code detection in ClaudePanel.tsx handleSend(): regex detect, strip tag, fire-and-forget writeTaskHandoff, visual indicator chip",
         "Phase 4 — Auto-open AI panel on recording start in page.tsx so projectDir is always set",
@@ -2032,6 +2031,82 @@
         "Task deduplication across periodic handoff cycles (match by ID, update context on re-extraction)",
         "Configurable LLM provider for task extraction (Ollama/Anthropic/Groq)",
         "Watcher bridge script for fully automated dispatch (requires API key, not Max subscription)"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F055",
+      "category": "ui",
+      "name": "Sticky Transcript Segment Headers",
+      "description": "Sticky chunk time header in the transcript panel that shows the current 5-minute window (e.g., '00:00 – 05:00') and updates as the user scrolls. Works with both virtualized and simple rendering modes.",
+      "priority": "medium",
+      "status": "complete",
+      "branch": "main",
+      "commit": null,
+      "steps": [
+        "Add CHUNK_WINDOW_SECS constant matching useTimeline.ts (300s)",
+        "Add scroll handler that tracks first visible segment and computes chunk label",
+        "Render sticky header with position:sticky, backdrop blur, below recording status bar",
+        "Offset top position when recording (top-8) to sit below RecordingStatusBar",
+        "Only show when >= VIRTUALIZATION_THRESHOLD segments exist"
+      ],
+      "files": [
+        "frontend/src/components/VirtualizedTranscriptView.tsx"
+      ],
+      "passes": true
+    },
+    {
+      "id": "F056",
+      "category": "functional",
+      "name": "Custom Transcription Dictionary",
+      "description": "User-editable dictionary of commonly mistranscribed words/phrases (e.g. n8n, domain-specific jargon) to improve Whisper transcription accuracy. Two-pronged approach: (1) inject terms into Whisper initial_prompt to bias decoding, (2) post-transcription regex find-and-replace for deterministic corrections.",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Add Custom Dictionary tab/section in Settings page with CRUD for word entries (term + optional common mistranscriptions)",
+        "Store dictionary entries in Rust SQLite (new table: custom_dictionary with columns: id, term, aliases/patterns, created_at)",
+        "Before each Whisper transcription, build initial_prompt string from dictionary terms and pass to whisper-rs",
+        "After Whisper returns text, apply regex replacements from dictionary entries (case-insensitive pattern matching)",
+        "Add import/export for dictionary (JSON format) so users can share domain-specific dictionaries"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F056",
+      "category": "functional",
+      "name": "Claude Code Background Results Display in Meeting UI",
+      "description": "Claude Code pushes results, notifications, and links back into the Tandem meeting UI via webhook. Implemented with POST /api/notify → NotificationBus → SSE /api/notify/stream → frontend toasts + AI panel inline messages. CLAUDE.md in Client projects folder instructs Claude Code when/how to notify.",
+      "priority": "high",
+      "status": "complete",
+      "branch": "main",
+      "commit": null,
+      "steps": [
+        "Backend: NotificationBus pub/sub + POST /api/notify + GET /api/notify/stream (SSE) + GET /api/notify/health in main.py",
+        "Frontend: notificationService.ts with SSE auto-reconnect (exponential backoff 1s-30s)",
+        "Frontend: NotificationContext.tsx — toasts via Sonner, CustomEvent dispatch for AI panel",
+        "Frontend: ClaudeContext.tsx — tandem-notification event listener appends to conversation",
+        "Frontend: layout.tsx — NotificationProvider wired into ComposeProviders",
+        "Client projects CLAUDE.md — instructs Claude Code to POST notifications at milestones with --connect-timeout 1 || true fallback"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F057",
+      "category": "functional",
+      "name": "Start Claude Code Loop Button",
+      "description": "Add a button in the AI panel that launches Claude Code in a terminal with /loop pre-configured, pointed at the current project directory's .tandem/ folder. Eliminates manual terminal setup when starting a meeting.",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Add 'Start Loop' button to AI panel header (next to settings gear)",
+        "On click: launch terminal process via Tauri shell command in projectDir",
+        "Pre-copy /loop command to clipboard or pass as initial prompt",
+        "Show connection status indicator (loop running / not running)",
+        "Optional: detect if Claude Code is already running and warn"
       ],
       "passes": false
     }

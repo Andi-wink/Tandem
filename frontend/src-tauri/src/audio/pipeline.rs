@@ -832,10 +832,17 @@ impl AudioPipeline {
                             // Previous 2x gain was causing excessive limiting/distortion
                             let mixed_with_gain = mixed_clean;
 
+                            // Clamp to [-1.0, 1.0] before VAD — Silero requires normalized samples.
+                            // Mixed audio can exceed this range when mic (EBU R128 normalized)
+                            // and system audio are summed together.
+                            let vad_input: Vec<f32> = mixed_with_gain.iter()
+                                .map(|&s| s.clamp(-1.0, 1.0))
+                                .collect();
+
                             // STEP 3: Send mixed audio through VAD, accumulate into buffer
                             // VAD segments are buffered until >= 3 seconds to give Whisper
                             // enough acoustic context for accurate transcription.
-                            match self.vad_processor.process_audio(&mixed_with_gain) {
+                            match self.vad_processor.process_audio(&vad_input) {
                                 Ok(speech_segments) => {
                                     for segment in speech_segments {
                                         let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;

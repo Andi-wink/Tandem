@@ -3,11 +3,12 @@
 import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 import { useCallback, useEffect, useState, useRef } from 'react';
-import { Play, Pause, Square, Mic, AlertCircle, X } from 'lucide-react';
+import { Play, Pause, Square, Mic, AlertCircle, X, Loader2 } from 'lucide-react';
 import { ProcessRequest, SummaryResponse } from '@/types/summary';
 import { listen } from '@tauri-apps/api/event';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { toast } from 'sonner';
 import { logger } from '@/lib/logger';
 import { MIN_RECORDING_DURATION_MS } from '@/lib/constants';
 import Analytics from '@/lib/analytics';
@@ -67,7 +68,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         logger.log('Tauri is initialized and ready, is_recording result:', result);
       } catch (error) {
         console.error('Tauri initialization error:', error);
-        alert('Failed to initialize recording. Please check the console for details.');
+        toast.error('Failed to initialize recording', { description: 'Please check the console for details.' });
       }
     };
     checkTauri();
@@ -202,7 +203,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       logger.log('Recording paused successfully');
     } catch (error) {
       console.error('Failed to pause recording:', error);
-      alert('Failed to pause recording. Please check the console for details.');
+      toast.error('Failed to pause recording', { description: 'Please check the console for details.' });
     } finally {
       setIsPausing(false);
     }
@@ -220,7 +221,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       logger.log('Recording resumed successfully');
     } catch (error) {
       console.error('Failed to resume recording:', error);
-      alert('Failed to resume recording. Please check the console for details.');
+      toast.error('Failed to resume recording', { description: 'Please check the console for details.' });
     } finally {
       setIsResuming(false);
     }
@@ -334,7 +335,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         <div className="flex items-center space-x-2 bg-card rounded-full shadow-lg px-4 py-2">
           {isProcessing && !isParentProcessing ? (
             <div className="flex items-center space-x-2">
-              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-foreground"></div>
+              <Loader2 className="h-5 w-5 animate-spin text-foreground" />
               <span className="text-sm text-muted-foreground">Processing recording...</span>
             </div>
           ) : (
@@ -349,11 +350,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                             handleStartRecording();
                           }}
                           disabled={isStarting || isProcessing || isRecordingDisabled || isValidatingModel}
-                          className={`w-12 h-12 flex items-center justify-center ${isStarting || isProcessing || isValidatingModel ? 'bg-muted-foreground' : 'bg-red-500 hover:bg-red-600'
-                            } rounded-full text-white transition-colors relative`}
+                          className={`w-12 h-12 flex items-center justify-center ${isStarting || isProcessing || isValidatingModel ? 'bg-muted-foreground' : 'bg-recording hover:bg-recording-hover'
+                            } rounded-full text-recording-foreground transition-colors relative`}
                         >
                           {isValidatingModel ? (
-                            <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                            <Loader2 className="h-5 w-5 animate-spin text-recording-foreground" />
                           ) : (
                             <Mic size={20} />
                           )}
@@ -405,8 +406,8 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                               handleStopRecording();
                             }}
                             disabled={isStopping || isPausing || isResuming}
-                            className={`w-10 h-10 flex items-center justify-center ${isStopping || isPausing || isResuming ? 'bg-muted-foreground' : 'bg-red-500 hover:bg-red-600'
-                              } rounded-full text-white transition-colors relative`}
+                            className={`w-10 h-10 flex items-center justify-center ${isStopping || isPausing || isResuming ? 'bg-muted-foreground' : 'bg-recording hover:bg-recording-hover'
+                              } rounded-full text-recording-foreground transition-colors relative`}
                           >
                             <Square size={16} />
                             {isStopping && (
@@ -427,7 +428,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                     {barHeights.map((height, index) => (
                       <div
                         key={index}
-                        className={`w-1 rounded-full transition-all duration-200 ${isPaused ? 'bg-orange-500' : 'bg-red-500'
+                        className={`w-1 rounded-full transition-all duration-200 ${isPaused ? 'bg-paused' : 'bg-recording'
                           }`}
                         style={{
                           height: isRecording && !isPaused ? height : '4px',
@@ -449,19 +450,19 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
         {/* Device error alert */}
         {deviceError && (
-          <Alert variant="destructive" className="mt-4 border-red-300 dark:border-red-800/30 bg-red-50 dark:bg-red-900/20">
-            <AlertCircle className="h-5 w-5 text-red-600" />
+          <Alert variant="destructive" className="mt-4">
+            <AlertCircle className="h-5 w-5" />
             <button
               onClick={() => setDeviceError(null)}
-              className="absolute right-3 top-3 text-red-600 hover:text-red-800 transition-colors"
+              className="absolute right-3 top-3 text-destructive hover:text-destructive/80 transition-colors"
               aria-label="Close alert"
             >
               <X className="h-4 w-4" />
             </button>
-            <AlertTitle className="text-red-800 font-semibold mb-2">
+            <AlertTitle className="font-semibold mb-2">
               {deviceError.title}
             </AlertTitle>
-            <AlertDescription className="text-red-700">
+            <AlertDescription>
               {deviceError.message.split('\n').map((line, i) => (
                 <div key={i} className={i > 0 ? 'ml-2' : ''}>
                   {line}

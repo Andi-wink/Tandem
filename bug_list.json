@@ -1,12 +1,13 @@
 {
   "project": "Tandem",
   "description": "Comprehensive bug review across frontend (React/TypeScript), backend (Python/FastAPI), and Rust (Tauri audio system). Identified via static analysis of source code.",
-  "last_updated": "2026-03-10",
+  "last_updated": "2026-03-11",
   "summary": {
-    "total": 43,
+    "total": 48,
     "critical": 1,
     "critical_fixed": 2,
-    "high": 8,
+    "high": 9,
+    "high_fixed": 3,
     "medium": 25,
     "low": 7
   },
@@ -20,7 +21,10 @@
       "name": "conn.total_changes AttributeError on aiosqlite",
       "description": "aiosqlite connections do not have a total_changes attribute (only synchronous sqlite3.Connection does). Will raise AttributeError at runtime when create_process() or save_transcript() is called. Should use cursor.rowcount instead, which is already used correctly elsewhere in the codebase.",
       "file": "backend/app/db.py",
-      "lines": [191, 311],
+      "lines": [
+        191,
+        311
+      ],
       "fix": "Replace conn.total_changes with cursor.rowcount after the execute() call",
       "fix_notes": "Verified 2026-02-25: all instances now use cursor.rowcount correctly. No references to total_changes remain.",
       "passes": true
@@ -34,8 +38,15 @@
       "description": "Two independent AtomicBool flags track recording state: RECORDING_FLAG in lib.rs (line 66) and IS_RECORDING in recording_commands.rs (line 39). start_recording checks one flag then sets the other after success. If recording init partially fails between those two points, the flags diverge permanently. UI thinks recording is active while backend is idle (or vice versa). Only recovery is app restart.",
       "status": "open",
       "file": "frontend/src-tauri/src/lib.rs",
-      "lines": [66, 99, 100, 113],
-      "related_files": ["frontend/src-tauri/src/audio/recording_commands.rs"],
+      "lines": [
+        66,
+        99,
+        100,
+        113
+      ],
+      "related_files": [
+        "frontend/src-tauri/src/audio/recording_commands.rs"
+      ],
       "fix": "Remove static IS_RECORDING and always derive from RECORDING_MANAGER.as_ref().map(|m| m.is_recording()).unwrap_or(false)",
       "fix_notes": "Verified 2026-02-25: partially mitigated — frontend now polls backend state every 500ms via syncWithBackend(), reducing user-visible impact. But dual flags (IS_RECORDING AtomicBool + RecordingState.is_recording) still exist and can diverge on partial init failure.",
       "passes": false
@@ -49,7 +60,16 @@
       "description": "SAMPLE_COUNTER is a non-atomic u64 mutated from multiple audio threads (mic + system capture) with no synchronization. This is undefined behavior per Rust semantics. Two threads can read/write simultaneously causing lost updates, torn reads, or compiler-optimized incorrect results.",
       "status": "fixed",
       "file": "frontend/src-tauri/src/audio/pipeline.rs",
-      "lines": [51, 52, 53, 54, 55, 56, 57, 58],
+      "lines": [
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58
+      ],
       "fix": "Replace with static SAMPLE_COUNTER: AtomicU64 = AtomicU64::new(0) and use .fetch_add(1, Ordering::Relaxed)",
       "fix_notes": "Verified 2026-02-25: now uses AtomicU64 with Ordering::Relaxed. No unsafe static mut remains in active code.",
       "passes": true
@@ -61,11 +81,17 @@
       "severity": "high",
       "name": "Blocking synchronous sqlite3 in async functions",
       "description": "save_meeting() and save_meeting_transcript() are declared async but use synchronous sqlite3.connect() instead of aiosqlite.connect(). This blocks the event loop, defeating the purpose of async code and causing performance degradation under load.",
-      "status": "open",
+      "status": "fixed",
       "file": "backend/app/db.py",
-      "lines": [363, 387, 389, 410],
+      "lines": [
+        363,
+        387,
+        389,
+        410
+      ],
       "fix": "Replace sqlite3.connect() with async with aiosqlite.connect() and await all execute calls",
-      "passes": false
+      "fix_notes": "Verified 2026-03-10: Both save_meeting() and save_meeting_transcript() now use async with self._get_connection() as conn with await statements. No synchronous sqlite3.connect() calls remain.",
+      "passes": true
     },
     {
       "id": "B005",
@@ -74,11 +100,14 @@
       "severity": "high",
       "name": "Missing asyncio import causes NameError",
       "description": "main.py uses asyncio.CancelledError (line 689) but never imports asyncio. Will crash with NameError at runtime when an SSE connection is cancelled by the client.",
-      "status": "open",
+      "status": "fixed",
       "file": "backend/app/main.py",
-      "lines": [689],
+      "lines": [
+        689
+      ],
       "fix": "Add 'import asyncio' to the imports at the top of main.py",
-      "passes": false
+      "fix_notes": "Verified 2026-03-10: asyncio is imported at line 6 of main.py.",
+      "passes": true
     },
     {
       "id": "B006",
@@ -89,7 +118,9 @@
       "description": "The cleanup() method in transcript_processor.py is synchronous (not async) but calls asyncio.create_task() which requires a running event loop. Will fail with RuntimeError. Additionally the task is never awaited so Ollama clients are never properly closed.",
       "status": "fixed",
       "file": "backend/app/transcript_processor.py",
-      "lines": [305],
+      "lines": [
+        305
+      ],
       "fix": "Make cleanup() async or use loop.run_until_complete(), or call synchronous close methods instead",
       "fix_notes": "Fixed 2026-03-10: Made cleanup() async, replaced fire-and-forget create_task with direct await asyncio.gather(). Updated callers in main.py (SummaryProcessor.cleanup and lifespan) to await.",
       "passes": true
@@ -103,7 +134,24 @@
       "description": "RecordingState has 20+ .lock().unwrap() calls. If any thread panics while holding a mutex lock, the mutex becomes poisoned and ALL subsequent lock attempts will panic. This is especially dangerous in the error callback path (line 312-315) where a panicking callback poisons the error_callback mutex, preventing all future error recovery.",
       "status": "open",
       "file": "frontend/src-tauri/src/audio/recording_state.rs",
-      "lines": [154, 157, 165, 173, 186, 200, 202, 225, 240, 253, 258, 262, 271, 290, 312, 315],
+      "lines": [
+        154,
+        157,
+        165,
+        173,
+        186,
+        200,
+        202,
+        225,
+        240,
+        253,
+        258,
+        262,
+        271,
+        290,
+        312,
+        315
+      ],
       "fix": "Replace .lock().unwrap() with .lock().unwrap_or_else(|e| e.into_inner()) to recover from poisoned mutexes, or use parking_lot::Mutex which never poisons",
       "passes": false
     },
@@ -116,7 +164,11 @@
       "description": "The progress_task spawned at line 571 runs an infinite loop emitting events every 500ms. Only cancelled via .abort() after the transcription timeout. If transcription completes quickly, the progress task keeps running until the full timeout. Can emit stale events for 10+ minutes.",
       "status": "open",
       "file": "frontend/src-tauri/src/audio/recording_commands.rs",
-      "lines": [571, 590, 611],
+      "lines": [
+        571,
+        590,
+        611
+      ],
       "fix": "Add a cancellation token (e.g., tokio CancellationToken or watch channel) that is triggered when transcription completes, replacing the infinite loop",
       "passes": false
     },
@@ -127,11 +179,14 @@
       "severity": "high",
       "name": "Unstable useEffect dependency causes listener thrashing",
       "description": "The useEffect at line 58 depends on handleRecordingStop which is not memoized. This causes the Tauri event listener to be torn down and re-created on every render, potentially missing events during the teardown gap.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src/contexts/RecordingPostProcessingProvider.tsx",
-      "lines": [58],
+      "lines": [
+        58
+      ],
       "fix": "Memoize handleRecordingStop with useCallback, or use a ref to hold the latest function and keep a stable listener",
-      "passes": false
+      "fix_notes": "Verified 2026-03-10: handleRecordingStop is now properly memoized via useCallback in the useRecordingStop hook with correct dependency array.",
+      "passes": true
     },
     {
       "id": "B010",
@@ -142,7 +197,10 @@
       "description": "Uses .then(fn => fn()) pattern for Tauri unlisten cleanup. The cleanup function can execute before the listener promise resolves, meaning the listener is never unsubscribed and leaks memory.",
       "status": "open",
       "file": "frontend/src/app/layout.tsx",
-      "lines": [91, 92],
+      "lines": [
+        91,
+        92
+      ],
       "fix": "Store the unlisten promise and handle cleanup properly using an abort flag pattern or useRef",
       "passes": false
     },
@@ -155,7 +213,17 @@
       "description": "Column names are interpolated directly into SQL queries using f-strings in save_api_key, save_transcript_api_key, and related methods. Currently validated against a whitelist, but the pattern is fragile. Any future change that bypasses or extends the whitelist opens a SQL injection vulnerability.",
       "status": "open",
       "file": "backend/app/db.py",
-      "lines": [607, 610, 613, 641, 728, 731, 734, 765, 877],
+      "lines": [
+        607,
+        610,
+        613,
+        641,
+        728,
+        731,
+        734,
+        765,
+        877
+      ],
       "fix": "Use a mapping dict from validated provider names to fixed SQL statements, or use separate methods per provider",
       "passes": false
     },
@@ -168,7 +236,9 @@
       "description": "setupListeners() is async but not awaited. If the component unmounts before listeners are set up, the cleanup function runs but unsubscribers array is incomplete, leaking event listeners.",
       "status": "open",
       "file": "frontend/src/contexts/RecordingStateContext.tsx",
-      "lines": [210],
+      "lines": [
+        210
+      ],
       "fix": "Use an abort flag: set a cancelled boolean in cleanup, check it inside setupListeners before registering each listener",
       "passes": false
     },
@@ -181,7 +251,17 @@
       "description": "setStatus useCallback depends on state.status, state.isRecording, state.isPaused, causing a new callback reference on every state change. This triggers unnecessary re-renders in all consumers and creates timing windows where the callback captures stale values.",
       "status": "open",
       "file": "frontend/src/contexts/RecordingStateContext.tsx",
-      "lines": [73, 74, 75, 76, 77, 78, 79, 80, 81],
+      "lines": [
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81
+      ],
       "fix": "Use a ref for logging the previous status instead of depending on state values in the callback",
       "passes": false
     },
@@ -194,7 +274,9 @@
       "description": "The useEffect has [router] as dependency, but useRouter() can return a new reference on re-renders. This causes the Tauri event listener to be unregistered and re-registered unnecessarily.",
       "status": "open",
       "file": "frontend/src/hooks/useRecordingStop.ts",
-      "lines": [114],
+      "lines": [
+        114
+      ],
       "fix": "Use a routerRef pattern: store router in a ref and remove from dependency array",
       "passes": false
     },
@@ -207,7 +289,9 @@
       "description": "Cleanup variable is set via .then() callback but may still be undefined when component unmounts before setup completes. The cleanup function runs, finds undefined, and the event listener leaks.",
       "status": "open",
       "file": "frontend/src/contexts/ConfigContext.tsx",
-      "lines": [313],
+      "lines": [
+        313
+      ],
       "fix": "Use an abort flag checked inside the async setup, and store unlisten functions in a ref",
       "passes": false
     },
@@ -220,7 +304,9 @@
       "description": "useEffect at line 178 depends on [currentMeetingId] but uses recordingState.isRecording inside the sync logic. When recording state changes, the effect does not re-run, causing stale sync behavior.",
       "status": "open",
       "file": "frontend/src/contexts/TranscriptContext.tsx",
-      "lines": [178],
+      "lines": [
+        178
+      ],
       "fix": "Add recordingState.isRecording to the dependency array",
       "passes": false
     },
@@ -233,7 +319,11 @@
       "description": "Two rapid start_recording calls without an intervening stop_recording will overwrite TRANSCRIPT_LISTENER_ID with the second listener ID, leaking the first. The first listener continues receiving transcript-update events and storing transcripts, causing memory bloat.",
       "status": "open",
       "file": "frontend/src-tauri/src/audio/recording_commands.rs",
-      "lines": [291, 292, 544],
+      "lines": [
+        291,
+        292,
+        544
+      ],
       "fix": "Check for and unlisten any existing listener before setting a new one in start_recording",
       "passes": false
     },
@@ -246,7 +336,11 @@
       "description": "The transcript event listener is unregistered at line 540-548, but the recording manager (which may still emit transcript events during flush) is not cleaned up until line 819. Transcripts emitted during the 270+ lines of shutdown code between those points are dropped.",
       "status": "open",
       "file": "frontend/src-tauri/src/audio/recording_commands.rs",
-      "lines": [540, 548, 819],
+      "lines": [
+        540,
+        548,
+        819
+      ],
       "fix": "Move listener cleanup to after manager cleanup, or collect transcripts via a channel instead of events during shutdown",
       "passes": false
     },
@@ -259,7 +353,9 @@
       "description": "IS_RECORDING is set to false at line 854, after 600+ lines of cleanup including transcription wait, model unload, and analytics. During this time, commands like pause_recording and get_recording_state see IS_RECORDING=true but the manager may already be released, risking crashes.",
       "status": "open",
       "file": "frontend/src-tauri/src/audio/recording_commands.rs",
-      "lines": [854],
+      "lines": [
+        854
+      ],
       "fix": "Set IS_RECORDING to false early (after stopping streams) and use a separate CLEANUP_IN_PROGRESS flag to prevent new operations",
       "passes": false
     },
@@ -272,7 +368,14 @@
       "description": "In resume_recording(), the lock on pause_start is released after .take(), then a separate lock on total_pause_duration is acquired. Between these two locks, another thread can call pause/resume, potentially calculating the same pause_start twice and corrupting the total pause duration.",
       "status": "open",
       "file": "frontend/src-tauri/src/audio/recording_state.rs",
-      "lines": [199, 200, 201, 202, 203, 204],
+      "lines": [
+        199,
+        200,
+        201,
+        202,
+        203,
+        204
+      ],
       "fix": "Use a single mutex protecting both pause_start and total_pause_duration, or use a combined struct under one lock",
       "passes": false
     },
@@ -285,7 +388,11 @@
       "description": "The recording manager is moved out of the global static at line 512 but kept alive until line 827 (600+ lines of async operations including API calls and model unloading). During this time it holds file handles, audio buffers, and Arc-based resources unnecessarily.",
       "status": "open",
       "file": "frontend/src-tauri/src/audio/recording_commands.rs",
-      "lines": [512, 527, 827],
+      "lines": [
+        512,
+        527,
+        827
+      ],
       "fix": "Drop the manager immediately after save_recording_only completes, before starting model unload and analytics",
       "passes": false
     },
@@ -298,7 +405,10 @@
       "description": "create_process() uses a non-atomic read-then-write pattern (UPDATE then INSERT if 0 rows). Two concurrent requests for the same meeting_id can both see 0 rows from UPDATE, then both attempt INSERT, causing a PRIMARY KEY constraint violation.",
       "status": "open",
       "file": "backend/app/db.py",
-      "lines": [170, 209],
+      "lines": [
+        170,
+        209
+      ],
       "fix": "Use INSERT OR REPLACE (upsert) or add a unique constraint with conflict handling",
       "passes": false
     },
@@ -311,7 +421,13 @@
       "description": "The get_summary() endpoint uses JSONResponse directly for error responses (404, 400, 500) instead of raising HTTPException. This bypasses FastAPI's automatic error handling and response model validation, creating an inconsistent API contract.",
       "status": "open",
       "file": "backend/app/main.py",
-      "lines": [380, 392, 481, 485, 493],
+      "lines": [
+        380,
+        392,
+        481,
+        485,
+        493
+      ],
       "fix": "Replace JSONResponse error returns with raise HTTPException(status_code=..., detail=...)",
       "passes": false
     },
@@ -324,7 +440,12 @@
       "description": "save_api_key() and save_transcript_api_key() catch all exceptions with 'except Exception', masking validation errors (ValueError from whitelist check) with generic 500 responses instead of returning 400 Bad Request.",
       "status": "open",
       "file": "backend/app/db.py",
-      "lines": [584, 625, 703, 746],
+      "lines": [
+        584,
+        625,
+        703,
+        746
+      ],
       "fix": "Catch ValueError separately and re-raise as HTTPException(status_code=400) before the generic except block",
       "passes": false
     },
@@ -337,7 +458,10 @@
       "description": "sendMessageRef is created but sendMessage function is in the dependency array of a useEffect. The ref and the dependency array disagree about the sendMessage lifecycle, risking calls to a stale function reference.",
       "status": "open",
       "file": "frontend/src/components/ClaudePanel/ClaudePanel.tsx",
-      "lines": [43, 44],
+      "lines": [
+        43,
+        44
+      ],
       "fix": "Keep sendMessage in ref only and remove from useEffect dependency array, or remove the ref and use the dependency array properly",
       "passes": false
     },
@@ -350,7 +474,9 @@
       "description": "Faker.seed() is a class method that seeds ALL Faker instances globally. If multiple meetings are processed concurrently, they share the same seed state, producing non-deterministic surrogates.",
       "status": "open",
       "file": "backend/app/anonymizer.py",
-      "lines": [212],
+      "lines": [
+        212
+      ],
       "fix": "Create a per-instance Faker with its own random.Random seed instead of using the global class method",
       "passes": false
     },
@@ -363,7 +489,10 @@
       "description": "get_api_key() returns empty string '' when no key is found, but callers may not distinguish this from a valid empty key. Some callers may expect None for missing keys.",
       "status": "open",
       "file": "backend/app/db.py",
-      "lines": [627, 643],
+      "lines": [
+        627,
+        643
+      ],
       "fix": "Return None for missing keys and update callers to handle Optional[str]",
       "passes": false
     },
@@ -376,8 +505,14 @@
       "description": "Ref is kept in sync with state manually, which is error-prone. If a developer adds a new state update path without updating the ref, they silently diverge.",
       "status": "open",
       "file": "frontend/src/contexts/ScreenshotContext.tsx",
-      "lines": [52, 53, 54],
-      "related_files": ["frontend/src/contexts/ClipboardContext.tsx"],
+      "lines": [
+        52,
+        53,
+        54
+      ],
+      "related_files": [
+        "frontend/src/contexts/ClipboardContext.tsx"
+      ],
       "fix": "Use a custom hook that automatically syncs ref with state, or restructure to avoid needing both",
       "passes": false
     },
@@ -390,7 +525,10 @@
       "description": "The 5-minute save timeout logs a warning but continues cleanup anyway. The total shutdown sequence (including model unload and analytics) can take 10+ minutes, so the timeout message is misleading. Users may think save completed when it actually timed out.",
       "status": "open",
       "file": "frontend/src-tauri/src/audio/recording_commands.rs",
-      "lines": [819, 844],
+      "lines": [
+        819,
+        844
+      ],
       "fix": "Update the timeout message to indicate actual behavior, or make the timeout truly fail the save and report to the user",
       "passes": false
     },
@@ -404,7 +542,11 @@
       "name": "Rust snippet slicing is not UTF-8 safe",
       "description": "get_match_context() in transcript.rs slices by byte index via &transcript[start_index..end_index]. The find() returns a byte offset on the lowercased string while slicing the original. If the transcript contains multi-byte characters (accented names, emoji, non-English text), this will panic at runtime with 'byte index is not a char boundary'.",
       "file": "frontend/src-tauri/src/database/repositories/transcript.rs",
-      "lines": [130, 131, 137],
+      "lines": [
+        130,
+        131,
+        137
+      ],
       "fix": "Use char_indices() or snap start_index/end_index to the nearest char boundary before slicing. E.g. while !transcript.is_char_boundary(start_index) { start_index += 1; }",
       "passes": false
     },
@@ -418,7 +560,10 @@
       "name": "Add FTS5 full-text search index for transcripts",
       "description": "Search uses WHERE LOWER(t.transcript) LIKE '%query%' which forces a full table scan on every query. As meetings accumulate this gets progressively slower. SQLite has built-in FTS5 support that would make searches near-instant regardless of data volume.",
       "file": "frontend/src-tauri/src/database/repositories/transcript.rs",
-      "lines": [97, 101],
+      "lines": [
+        97,
+        101
+      ],
       "fix": "Create a virtual table 'CREATE VIRTUAL TABLE transcripts_fts USING fts5(transcript, content=transcripts, content_rowid=rowid)' with triggers to keep it in sync. Replace LIKE query with FTS5 MATCH query.",
       "passes": false
     },
@@ -432,8 +577,14 @@
       "name": "Dead Python search_transcripts code with duplicated snippet logic",
       "description": "backend/app/db.py search_transcripts() (line 769) and the /search-transcripts endpoint in main.py (line 642) are dead code — the frontend calls the Rust Tauri command api_search_transcripts instead. Within the Python code, the snippet extraction logic is also copy-pasted between the transcripts loop (lines 809-822) and transcript_chunks loop (lines 836-848).",
       "file": "backend/app/db.py",
-      "lines": [769, 809, 836],
-      "related_files": ["backend/app/main.py"],
+      "lines": [
+        769,
+        809,
+        836
+      ],
+      "related_files": [
+        "backend/app/main.py"
+      ],
       "fix": "Delete the Python search endpoint and DB method if confirmed unused. If kept, extract the duplicated snippet extraction into a helper function.",
       "passes": false
     },
@@ -447,7 +598,9 @@
       "name": "855-line Sidebar monolith component needs decomposition",
       "description": "frontend/src/components/Sidebar/index.tsx is 855 lines doing too much: search, navigation, item rendering, modals, collapsed state, recording controls, theme toggle, logos. The renderItem function alone is ~100 lines of deeply nested JSX. This makes the component hard to maintain and test.",
       "file": "frontend/src/components/Sidebar/index.tsx",
-      "lines": [1],
+      "lines": [
+        1
+      ],
       "fix": "Extract into focused components: SidebarItem (~100 lines), SearchBar (~30 lines), CollapsedSidebar (~50 lines, currently lines 476-527). Move search logic into a useSearch hook.",
       "passes": false
     },
@@ -460,7 +613,9 @@
       "name": "RAF not cancelled on unmount in ConversationView",
       "description": "The requestAnimationFrame call in the auto-scroll useEffect has no cleanup function. If the component unmounts while a RAF is pending, it will still execute and attempt to scroll a non-existent DOM node.",
       "file": "frontend/src/components/ClaudePanel/ConversationView.tsx",
-      "lines": [68],
+      "lines": [
+        68
+      ],
       "fix": "Return cancelAnimationFrame(rafId) from the useEffect cleanup",
       "passes": false
     },
@@ -473,7 +628,9 @@
       "name": "Async setup race in OnboardingContext",
       "description": "loadOnboardingStatus() and checkDatabaseStatus() are called in useEffect without awaiting them. If the component unmounts before these async operations complete, setState will be called on an unmounted component.",
       "file": "frontend/src/contexts/OnboardingContext.tsx",
-      "lines": [101],
+      "lines": [
+        101
+      ],
       "fix": "Wrap in async IIFE with a cancelled flag checked after each await",
       "passes": false
     },
@@ -486,7 +643,9 @@
       "name": "Blob URL leak on abort in ScreenshotContext",
       "description": "If the setup completes and assigns a blobUrl but the component unmounts before cleanup runs, the blob URL is never revoked. A race exists between blob URL creation and the abort check.",
       "file": "frontend/src/contexts/ScreenshotContext.tsx",
-      "lines": [62],
+      "lines": [
+        62
+      ],
       "fix": "Ensure blob URLs are always revoked in cleanup: if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current)",
       "passes": false
     },
@@ -499,7 +658,9 @@
       "name": "Async listener race in ClipboardContext",
       "description": "The setup() function is async but not awaited. If the component unmounts before setup() completes, the listeners may still be registered but cleanup finds undefined refs, leaking event listeners.",
       "file": "frontend/src/contexts/ClipboardContext.tsx",
-      "lines": [37],
+      "lines": [
+        37
+      ],
       "fix": "Use a mounted flag pattern: check flag after each await before registering listeners",
       "passes": false
     },
@@ -512,7 +673,9 @@
       "name": "API key save error silently swallowed",
       "description": "The fetch call to save the API key uses .catch(() => {}) which silently swallows errors. If the backend fails to save, the user is not notified and believes their key is saved.",
       "file": "frontend/src/contexts/ClaudeContext.tsx",
-      "lines": [415],
+      "lines": [
+        415
+      ],
       "fix": "Show a toast warning or retry on failure instead of silently swallowing",
       "passes": false
     },
@@ -525,7 +688,9 @@
       "name": "get_model_config returns None causing 500 error",
       "description": "If get_model_config() returns None (no config exists), the endpoint returns None directly which FastAPI cannot serialize, causing a 500 error instead of a proper empty response.",
       "file": "backend/app/main.py",
-      "lines": [581],
+      "lines": [
+        581
+      ],
       "fix": "Return an empty dict {} or a 404 response when model_config is None",
       "passes": false
     },
@@ -538,7 +703,9 @@
       "name": "SSE CancelledError re-raised prevents cleanup",
       "description": "In _sse_generator(), asyncio.CancelledError is caught and re-raised, which causes the StreamingResponse to close without draining buffered events. Cleanup code in stream_session() may not run.",
       "file": "backend/app/main.py",
-      "lines": [708],
+      "lines": [
+        708
+      ],
       "fix": "Don't re-raise CancelledError; break and let the generator exit cleanly so stream_session() finally block runs",
       "passes": false
     },
@@ -564,7 +731,9 @@
       "name": "SSE JSON not validated against schema",
       "description": "Parsed SSE JSON is cast to ClaudeFrontendEvent without runtime validation. If the backend sends malformed events with missing fields, the handler may crash or behave unexpectedly.",
       "file": "frontend/src/services/claudeService.ts",
-      "lines": [83],
+      "lines": [
+        83
+      ],
       "fix": "Add runtime validation (e.g., Zod schema) or at minimum check required fields before processing",
       "passes": false
     },
@@ -577,9 +746,87 @@
       "name": "Unused threading Lock import",
       "description": "Line 13 imports Lock from threading but it is never used. The SummaryProcessor docstring claims thread-safety but no locks are applied.",
       "file": "backend/app/main.py",
-      "lines": [13],
+      "lines": [
+        13
+      ],
       "fix": "Remove the unused import: from threading import Lock",
       "passes": false
+    },
+    {
+      "id": "B040",
+      "severity": "medium",
+      "category": "functional",
+      "title": "AI panel voice mode requires manual first message to initialize project context",
+      "description": "Ctrl+Space voice commands do not work until user manually sends a first text message to the AI panel to initialize the project/folder context. The AI panel should auto-initialize with meeting context when recording starts, so voice mode works immediately.",
+      "affected_files": [
+        "frontend/src/contexts/ClaudeContext.tsx",
+        "frontend/src/components/ClaudePanel/ClaudePanel.tsx"
+      ],
+      "fix": "Auto-initialize AI session with project context when recording starts or when first voice command is received, rather than requiring a manual text message.",
+      "status": "fixed",
+      "fix_notes": "Fixed 2026-03-11: Added useEffect in ClaudeProvider that watches isRecording and auto-populates projectDir, meetingId, meetingTitle via get_meeting_folder_path and get_recording_meeting_name (with 800ms retry).",
+      "added": "2026-03-11"
+    },
+    {
+      "id": "B041",
+      "severity": "low",
+      "category": "functional",
+      "title": "File location links open wrong directory (Documents instead of actual path)",
+      "description": "When clicking on file location links for screenshots or AI-generated files, the system opens the Documents folder instead of the actual file location. Reported for both screenshot file locations and @code command output files.",
+      "affected_files": [
+        "frontend/src/components/ClaudePanel/ClaudePanel.tsx",
+        "frontend/src-tauri/src/api/api.rs"
+      ],
+      "fix": "Ensure file path resolution uses the actual file path rather than a default Documents directory. Check Tauri shell.open or path resolution logic.",
+      "status": "fixed",
+      "fix_notes": "Fixed 2026-03-11: Added new open_folder Rust command that opens a directory directly (with existence check) instead of show_in_folder which selects a path in its parent. On Windows, explorer /select,{dir} opens the parent; explorer {dir} opens inside.",
+      "added": "2026-03-11"
+    },
+    {
+      "id": "B042",
+      "severity": "medium",
+      "category": "functional",
+      "title": "AI-generated links open inside Tandem app instead of web browser",
+      "description": "When the AI assistant provides clickable links (URLs) in its responses, clicking them opens the link inside the Tandem desktop app (Tauri webview) instead of opening in the users default web browser. Links should use Tauri shell.open() API to launch in the external browser.",
+      "affected_files": [
+        "frontend/src/components/ClaudePanel/ConversationView.tsx",
+        "frontend/src/components/ClaudePanel/ProjectDirModal.tsx",
+        "frontend/src/components/ClaudePanel/DiagramBlock.tsx"
+      ],
+      "fix": "Intercept link clicks in the AI panel markdown renderer. Use Tauri shell.open() or window.__TAURI__.shell.open() to open URLs in the default external browser instead of navigating within the webview.",
+      "status": "fixed",
+      "fix_notes": "Fixed 2026-03-11: Added MarkdownLink component to ConversationView.tsx that intercepts http(s) clicks and calls invoke('open_external_url'). Converted <a> tags in ProjectDirModal.tsx and DiagramBlock.tsx to <button> with invoke('open_external_url').",
+      "added": "2026-03-11"
+    },
+    {
+      "id": "B043",
+      "severity": "medium",
+      "category": "functional",
+      "title": "Ctrl+Space voice mode hotkey only works once per session",
+      "description": "After successfully completing one Ctrl+Space push-to-talk voice command, subsequent Ctrl+Space presses do not activate voice mode. Likely a state cleanup issue in useVoiceCommand.ts where isListeningRef, isHotkeyListeningRef, or the React state (isListening/isHotkeyListening) are not fully reset after executeCommand completes. The keydown guard at line 105 checks !isListeningRef.current which may still be true if the previous command execution had a race condition with the grace period timer.",
+      "affected_files": [
+        "frontend/src/hooks/useVoiceCommand.ts"
+      ],
+      "fix": "Changed keydown guard from !isListeningRef.current to !isHotkeyListeningRef.current, and added clearTimers() at the start of each new press. isListeningRef stays true during the 8s grace period (no-text case), blocking second presses — isHotkeyListeningRef is correctly reset to false in handleKeyUp so using it as the guard allows re-activation. clearTimers() cancels any pending grace period from the previous press.",
+      "status": "fixed",
+      "added": "2026-03-11",
+      "fixed": "2026-03-12"
+    },
+    {
+      "id": "B044",
+      "severity": "high",
+      "category": "rust",
+      "component": "transcription",
+      "title": "Whisper localWhisper transcription too slow for real-time — text only appears at end of recording",
+      "description": "When using localWhisper with large-v3-q5_0 model, transcription text only appears after the recording ends, not during. The model's Real-Time Factor (RTF) on CPU is ~3-8x (takes 9-24s per 3s chunk), so chunks queue up in the serial worker (NUM_WORKERS=1) and only finish processing after recording stops. CUDA detection (hardware_detector.rs:159-163) only checks env vars (CUDA_PATH/CUDA_HOME), not whether the CUDA runtime actually works — whisper.cpp likely silently falls back to CPU. User has CUDA 12.0 installed but incomplete (missing nvcc). Additionally, there is zero timing instrumentation around whisper state.full() — no way to measure actual RTF or confirm GPU vs CPU usage. Parakeet transcription works fine in real-time for comparison.",
+      "affected_files": [
+        "frontend/src-tauri/src/whisper_engine/whisper_engine.rs",
+        "frontend/src-tauri/src/audio/transcription/worker.rs",
+        "frontend/src-tauri/src/audio/hardware_detector.rs"
+      ],
+      "fix": "1) Add RTF timing around state.full() in whisper_engine.rs (~line 615-624) to measure processing speed. 2) Emit slow-transcription warning event to frontend from worker.rs when RTF > 1.5. 3) Add queue depth monitoring in worker dispatcher loop. 4) Surface model-unloaded errors to frontend instead of silently skipping chunks (worker.rs:136-140). 5) Consider recommending smaller models (small, medium-q5_0) for real-time use when GPU is unavailable.",
+      "status": "open",
+      "added": "2026-03-13"
     }
   ]
 }

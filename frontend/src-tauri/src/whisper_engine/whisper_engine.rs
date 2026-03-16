@@ -566,6 +566,12 @@ impl WhisperEngine {
         params.set_no_timestamps(true);     // Prevent timestamp-based segment skipping
         params.set_token_timestamps(true);  // Keep for any timestamp-aware features
 
+        // Domain vocabulary hint — biases recognition toward project-specific terms that
+        // Whisper commonly misrecognizes (e.g. "Claude Code" → "Claude Cowell", "n8n" → "innate")
+        params.set_initial_prompt(
+            "Claude Code, n8n, Tandem, Excalidraw, Meetily, Anthropic, API, JSON, webhook, workflow"
+        );
+
         // PERFORMANCE: Disable ALL whisper.cpp internal printing
         // This reduces C library log spam significantly
         params.set_print_special(false);      // Don't print special tokens
@@ -575,14 +581,22 @@ impl WhisperEngine {
 
         // Additional suppression to reduce C library verbosity
         params.set_suppress_blank(true);
-        params.set_suppress_non_speech_tokens(true);
-        params.set_temperature(adaptive_config.temperature);
-        params.set_max_initial_ts(1.0);
+        // F053-C: Changed to false. whisper.cpp changed the default to false because
+        // true paradoxically causes hallucinations at segment boundaries — the model
+        // outputs spurious speech ("Thank you for watching", "Amen") instead of silence.
+        params.set_suppress_non_speech_tokens(false);
+        // F053-B: Use greedy decoding (temperature 0.0) for deterministic, most-accurate output.
+        // Whisper's built-in entropy_thold fallback automatically retries with higher
+        // temperatures (0.2, 0.4, ...) only when decoding fails, so ~90% of transcriptions
+        // get the best result and only problematic segments trigger randomized fallback.
+        params.set_temperature(0.0);
+        // NOTE: max_initial_ts is inert when no_timestamps(true) is set above, because
+        // timestamp tokens are suppressed entirely. Kept at 0.5 as a safeguard in case
+        // timestamps are re-enabled in the future.
+        params.set_max_initial_ts(0.5);
         params.set_entropy_thold(2.4);
         params.set_logprob_thold(-1.0);
-        // BALANCED FIX: Lowered from 0.75 to 0.55 to allow quiet speech detection
-        // Previous value was too aggressive and rejected valid quiet speech
-        // 0.55 is balanced - prevents hallucinations while preserving quiet speech
+        // Lowered from 0.75 to 0.55 — 0.75 rejected valid quiet speech
         params.set_no_speech_thold(0.55);
         params.set_max_len(200);
         params.set_single_segment(false);
@@ -619,12 +633,16 @@ impl WhisperEngine {
                 Err(_) => continue,
             };
 
-            // Calculate confidence based on segment length and duration (simplified approach)
-            let segment_length = segment_text.len() as f32;
-            let segment_confidence = if segment_length > 0.0 {
-                (segment_length / 100.0).min(0.9) + 0.1 // 0.1 to 1.0 confidence based on text length
+            // Calculate confidence from actual Whisper token probabilities
+            let n_tokens = state.full_n_tokens(i).unwrap_or(0);
+            let segment_confidence = if n_tokens > 0 {
+                let mut prob_sum = 0.0f32;
+                for j in 0..n_tokens {
+                    prob_sum += state.full_get_token_prob(i, j).unwrap_or(0.0);
+                }
+                prob_sum / n_tokens as f32
             } else {
-                0.1
+                0.0
             };
             total_confidence += segment_confidence;
             segment_count += 1;
@@ -683,6 +701,11 @@ impl WhisperEngine {
         params.set_no_timestamps(true);     // Prevent timestamp-based segment skipping
         params.set_token_timestamps(true);  // Keep for any timestamp-aware features
 
+        // Domain vocabulary hint (same as transcribe_audio_with_confidence)
+        params.set_initial_prompt(
+            "Claude Code, n8n, Tandem, Excalidraw, Meetily, Anthropic, API, JSON, webhook, workflow"
+        );
+
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
@@ -690,14 +713,15 @@ impl WhisperEngine {
 
         // BALANCED settings - good quality with reasonable speed
         params.set_suppress_blank(true);
-        params.set_suppress_non_speech_tokens(true);
-        params.set_temperature(0.3);             // Lower than 0.4 for consistency, higher than 0.0 for quality
-        params.set_max_initial_ts(1.0);
+        // F053-C: false prevents hallucinations at segment boundaries (see comment above)
+        params.set_suppress_non_speech_tokens(false);
+        // F053-B: Greedy decoding; entropy_thold fallback handles failed segments automatically
+        params.set_temperature(0.0);
+        // NOTE: max_initial_ts is inert when no_timestamps(true) is set above
+        params.set_max_initial_ts(0.5);
         params.set_entropy_thold(2.4);
         params.set_logprob_thold(-1.0);
-        // BALANCED FIX: Lowered from 0.75 to 0.55 to allow quiet speech detection
-        // Previous value was too aggressive and rejected valid quiet speech
-        // 0.55 is balanced - prevents hallucinations while preserving quiet speech
+        // Lowered from 0.75 to 0.55 — 0.75 rejected valid quiet speech
         params.set_no_speech_thold(0.55);
 
         // Reasonable length limits

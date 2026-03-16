@@ -152,10 +152,14 @@ pub fn start_transcription_task<R: Runtime>(
                             .await
                             {
                                 Ok((transcript, confidence_opt, is_partial)) => {
-                                    // Provider-aware confidence threshold
+                                    // Confidence threshold: Whisper already has internal quality
+                                    // filtering (no_speech_thold, entropy_thold, logprob_thold),
+                                    // so an external threshold is redundant and risks silently
+                                    // dropping valid speech. Set to 0.0 to accept all Whisper output.
                                     let confidence_threshold = match &engine_clone {
-                                        TranscriptionEngine::Whisper(_) | TranscriptionEngine::Provider(_) => 0.3,
-                                        TranscriptionEngine::Parakeet(_) => 0.0, // Parakeet has no confidence, accept all
+                                        TranscriptionEngine::Whisper(_) => 0.0,
+                                        TranscriptionEngine::Provider(_) => 0.15,
+                                        TranscriptionEngine::Parakeet(_) => 0.0,
                                     };
 
                                     let confidence_str = match confidence_opt {

@@ -13,6 +13,7 @@ import json
 from threading import Lock
 from transcript_processor import TranscriptProcessor
 import time
+import uuid
 import claude_agent
 import anonymizer
 import document_parser
@@ -866,6 +867,113 @@ async def anonymize_health():
         "model": "en_core_web_sm" if anonymizer.is_available() else None,
         "language": anonymizer.ANALYSIS_LANGUAGE,
     }
+
+
+# ---------------------------------------------------------------------------
+# Webhook Notification System — push external events into Tandem
+# ---------------------------------------------------------------------------
+
+class IncomingNotification(BaseModel):
+    level: str = "info"  # info | success | warning | error
+    title: Optional[str] = None
+    body: str = ""
+    source: str = "unknown"
+    meeting_id: Optional[str] = None
+    show_in_panel: bool = False
+    data: Optional[dict] = None
+    duration_ms: Optional[int] = None
+
+
+class NotificationBus:
+    """In-memory fan-out pub/sub for SSE notification subscribers."""
+
+    def __init__(self) -> None:
+        self._subscribers: list[asyncio.Queue] = []
+
+    async def publish(self, event: dict) -> int:
+        dead: list[asyncio.Queue] = []
+        for q in self._subscribers:
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                dead.append(q)
+        for q in dead:
+            self._subscribers.remove(q)
+        return len(self._subscribers)
+
+    def subscribe(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue(maxsize=100)
+        self._subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        try:
+            self._subscribers.remove(q)
+        except ValueError:
+            pass
+
+    @property
+    def subscriber_count(self) -> int:
+        return len(self._subscribers)
+
+
+notification_bus = NotificationBus()
+
+
+@app.post("/api/notify")
+async def notify(req: IncomingNotification):
+    """Receive a notification and fan out to all SSE subscribers."""
+    event_id = str(uuid.uuid4())
+    event = {
+        "id": event_id,
+        "level": req.level,
+        "title": req.title,
+        "body": req.body,
+        "source": req.source,
+        "meeting_id": req.meeting_id,
+        "show_in_panel": req.show_in_panel,
+        "data": req.data,
+        "duration_ms": req.duration_ms,
+        "timestamp": time.time(),
+    }
+    subscribers = await notification_bus.publish(event)
+    logger.info("Notification published (id=%s, source=%s, subscribers=%d)", event_id, req.source, subscribers)
+    return {"status": "ok", "id": event_id, "subscribers": subscribers}
+
+
+@app.get("/api/notify/stream")
+async def notify_stream():
+    """SSE stream of notifications with 30-second keepalive heartbeat."""
+    q = notification_bus.subscribe()
+
+    async def event_generator():
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=30.0)
+                    yield f"data: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            notification_bus.unsubscribe(q)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/notify/health")
+async def notify_health():
+    """Check notification system status."""
+    return {"subscribers": notification_bus.subscriber_count}
 
 
 # ---------------------------------------------------------------------------

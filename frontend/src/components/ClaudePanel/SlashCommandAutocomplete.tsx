@@ -54,7 +54,7 @@ export function SlashCommandAutocomplete({
             }}
             className={`flex items-center gap-3 w-full px-3 py-2 text-left text-sm transition-colors ${
               isSelected
-                ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
+                ? 'bg-brand-muted text-brand-muted-foreground'
                 : 'hover:bg-muted text-foreground'
             }`}
           >

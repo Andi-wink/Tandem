@@ -2,10 +2,29 @@ import React, { useRef, useEffect, useState } from 'react';
 import { ChevronRight, ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { invoke } from '@tauri-apps/api/core';
 import { ClaudeMessage, ClaudeToolCall } from '@/contexts/ClaudeContext';
 import { TodoWriteBlock, parseTodoInput } from './TodoWriteBlock';
 import { AskUserQuestionBlock, parseQuestionInput } from './AskUserQuestionBlock';
 import { DiagramBlock, isDiagramToolCall } from './DiagramBlock';
+import { MermaidBlock } from './MermaidBlock';
+
+// B042: Custom link component that opens HTTP(S) links in the system browser instead of Tauri webview
+const MarkdownLink: React.FC<React.AnchorHTMLAttributes<HTMLAnchorElement>> = ({ href, children, ...props }) => (
+  <a
+    href={href}
+    onClick={(e) => {
+      if (href && (href.startsWith('http://') || href.startsWith('https://'))) {
+        e.preventDefault();
+        invoke('open_external_url', { url: href }).catch(console.error);
+      }
+    }}
+    className="text-brand hover:underline cursor-pointer"
+    {...props}
+  >
+    {children}
+  </a>
+);
 
 interface ConversationViewProps {
   messages: ClaudeMessage[];
@@ -91,7 +110,7 @@ export function ConversationView({ messages, isStreaming, onAnswer }: Conversati
           {msg.role === 'user' ? (
             <div className="max-w-[85%]">
               {msg.contextSummary && (
-                <div className="text-xs text-blue-500 mb-0.5 text-right">{msg.contextSummary}</div>
+                <div className="text-xs text-brand mb-0.5 text-right">{msg.contextSummary}</div>
               )}
               <div className="bg-muted rounded-lg px-3 py-2 text-sm">
                 {msg.text}
@@ -101,7 +120,27 @@ export function ConversationView({ messages, isStreaming, onAnswer }: Conversati
             <div className="max-w-[95%]">
               {msg.text && (
                 <div className="text-sm break-words prose prose-sm max-w-none">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      a: MarkdownLink,
+                      code({ className, children, ...props }) {
+                        const match = /language-(\w+)/.exec(className || '');
+                        if (match && match[1] === 'mermaid') {
+                          const code = String(children).replace(/\n$/, '');
+                          return <MermaidBlock code={code} />;
+                        }
+                        return <code className={className} {...props}>{children}</code>;
+                      },
+                      pre({ children }) {
+                        // If the child is a MermaidBlock (rendered by the code component),
+                        // unwrap the <pre> to avoid double-wrapping
+                        const child = React.Children.only(children) as React.ReactElement;
+                        if (child?.type === MermaidBlock) return <>{children}</>;
+                        return <pre>{children}</pre>;
+                      },
+                    }}
+                  >
                     {isStreaming && msg === messages[messages.length - 1]
                       ? msg.text + ' \u258B'
                       : msg.text}

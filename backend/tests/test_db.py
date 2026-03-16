@@ -41,9 +41,8 @@ class TestDatabaseManager:
         )
 
         meetings = await db.get_all_meetings()
-        assert len(meetings) >= 1
-        titles = [m["title"] for m in meetings]
-        assert "Test Meeting" in titles
+        assert len(meetings) == 1
+        assert meetings[0]["title"] == "Test Meeting"
 
     @pytest.mark.asyncio
     async def test_get_meeting_returns_none_for_missing(self, db):

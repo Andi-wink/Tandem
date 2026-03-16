@@ -267,6 +267,267 @@ impl MeetingsRepository {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::TranscriptSegment;
+    use crate::database::repositories::transcript::TranscriptsRepository;
+    use crate::database::test_helpers::create_test_pool;
+
+    #[tokio::test]
+    async fn test_get_meetings_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+        let meetings = MeetingsRepository::get_meetings(&pool).await.unwrap();
+        assert!(meetings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_update_meeting_title_creates_meeting() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let ok = MeetingsRepository::update_meeting_title(&pool, "m-1", "Test Meeting")
+            .await
+            .unwrap();
+        assert!(ok);
+
+        let meetings = MeetingsRepository::get_meetings(&pool).await.unwrap();
+        assert_eq!(meetings.len(), 1);
+        assert_eq!(meetings[0].id, "m-1");
+        assert_eq!(meetings[0].title, "Test Meeting");
+    }
+
+    #[tokio::test]
+    async fn test_update_meeting_title_upsert() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        MeetingsRepository::update_meeting_title(&pool, "m-1", "Original")
+            .await
+            .unwrap();
+        MeetingsRepository::update_meeting_title(&pool, "m-1", "Updated")
+            .await
+            .unwrap();
+
+        let meetings = MeetingsRepository::get_meetings(&pool).await.unwrap();
+        assert_eq!(meetings.len(), 1);
+        assert_eq!(meetings[0].title, "Updated");
+    }
+
+    #[tokio::test]
+    async fn test_update_meeting_title_empty_id_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let result = MeetingsRepository::update_meeting_title(&pool, "  ", "Test").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_get_meeting_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        MeetingsRepository::update_meeting_title(&pool, "m-1", "My Meeting")
+            .await
+            .unwrap();
+
+        let meta = MeetingsRepository::get_meeting_metadata(&pool, "m-1")
+            .await
+            .unwrap();
+        assert!(meta.is_some());
+        assert_eq!(meta.unwrap().title, "My Meeting");
+    }
+
+    #[tokio::test]
+    async fn test_get_meeting_metadata_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let meta = MeetingsRepository::get_meeting_metadata(&pool, "nonexistent")
+            .await
+            .unwrap();
+        assert!(meta.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_meeting_with_transcripts() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let segments = vec![TranscriptSegment {
+            id: "t-1".into(),
+            text: "Hello world".into(),
+            timestamp: "12:00:00".into(),
+            audio_start_time: Some(0.0),
+            audio_end_time: Some(2.5),
+            duration: Some(2.5),
+        }];
+        let meeting_id = TranscriptsRepository::save_transcript(&pool, "Test", &segments, None)
+            .await
+            .unwrap();
+
+        let details = MeetingsRepository::get_meeting(&pool, &meeting_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(details.title, "Test");
+        assert_eq!(details.transcripts.len(), 1);
+        assert_eq!(details.transcripts[0].text, "Hello world");
+    }
+
+    #[tokio::test]
+    async fn test_get_meeting_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let result = MeetingsRepository::get_meeting(&pool, "nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_delete_meeting_cascade() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let segments = vec![TranscriptSegment {
+            id: "t-1".into(),
+            text: "Segment 1".into(),
+            timestamp: "12:00:00".into(),
+            audio_start_time: None,
+            audio_end_time: None,
+            duration: None,
+        }];
+        let meeting_id =
+            TranscriptsRepository::save_transcript(&pool, "Meeting", &segments, None)
+                .await
+                .unwrap();
+
+        let deleted = MeetingsRepository::delete_meeting(&pool, &meeting_id)
+            .await
+            .unwrap();
+        assert!(deleted);
+
+        let meetings = MeetingsRepository::get_meetings(&pool).await.unwrap();
+        assert!(meetings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent_meeting() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let deleted = MeetingsRepository::delete_meeting(&pool, "nonexistent")
+            .await
+            .unwrap();
+        assert!(!deleted);
+    }
+
+    #[tokio::test]
+    async fn test_delete_meeting_empty_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let result = MeetingsRepository::delete_meeting(&pool, "").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_get_meeting_transcripts_paginated() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let segments: Vec<TranscriptSegment> = (0..5)
+            .map(|i| TranscriptSegment {
+                id: format!("t-{}", i),
+                text: format!("Segment {}", i),
+                timestamp: format!("12:00:0{}", i),
+                audio_start_time: Some(i as f64),
+                audio_end_time: Some(i as f64 + 1.0),
+                duration: Some(1.0),
+            })
+            .collect();
+        let meeting_id =
+            TranscriptsRepository::save_transcript(&pool, "Paginated", &segments, None)
+                .await
+                .unwrap();
+
+        let (page1, total) =
+            MeetingsRepository::get_meeting_transcripts_paginated(&pool, &meeting_id, 2, 0)
+                .await
+                .unwrap();
+        assert_eq!(total, 5);
+        assert_eq!(page1.len(), 2);
+
+        let (page2, _) =
+            MeetingsRepository::get_meeting_transcripts_paginated(&pool, &meeting_id, 2, 2)
+                .await
+                .unwrap();
+        assert_eq!(page2.len(), 2);
+
+        let (page3, _) =
+            MeetingsRepository::get_meeting_transcripts_paginated(&pool, &meeting_id, 2, 4)
+                .await
+                .unwrap();
+        assert_eq!(page3.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_update_meeting_title_and_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        MeetingsRepository::update_meeting_title(&pool, "m-1", "Old Title")
+            .await
+            .unwrap();
+
+        let ok = MeetingsRepository::update_meeting_title_and_folder(
+            &pool,
+            "m-1",
+            "New Title",
+            "/new/path",
+        )
+        .await
+        .unwrap();
+        assert!(ok);
+
+        let meta = MeetingsRepository::get_meeting_metadata(&pool, "m-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.title, "New Title");
+        assert_eq!(meta.folder_path.as_deref(), Some("/new/path"));
+    }
+
+    #[tokio::test]
+    async fn test_update_meeting_title_and_folder_nonexistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let ok = MeetingsRepository::update_meeting_title_and_folder(
+            &pool,
+            "nonexistent",
+            "Title",
+            "/path",
+        )
+        .await
+        .unwrap();
+        assert!(!ok);
+    }
+
+    #[tokio::test]
+    async fn test_update_meeting_name_nonexistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let ok = MeetingsRepository::update_meeting_name(&pool, "nonexistent", "Title")
+            .await
+            .unwrap();
+        assert!(!ok);
+    }
+}
+
 async fn delete_meeting_with_transaction(
     transaction: &mut SqliteConnection,
     meeting_id: &str,

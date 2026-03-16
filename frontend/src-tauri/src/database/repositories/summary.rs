@@ -219,3 +219,171 @@ impl SummaryProcessesRepository {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::repositories::meeting::MeetingsRepository;
+    use crate::database::test_helpers::create_test_pool;
+    use serde_json::json;
+
+    /// Helper: create a meeting and summary process for testing
+    async fn setup_meeting_with_process(pool: &SqlitePool) -> String {
+        let meeting_id = "test-meeting-1";
+        MeetingsRepository::update_meeting_title(pool, meeting_id, "Test Meeting")
+            .await
+            .unwrap();
+        SummaryProcessesRepository::create_or_reset_process(pool, meeting_id)
+            .await
+            .unwrap();
+        meeting_id.to_string()
+    }
+
+    #[tokio::test]
+    async fn test_create_or_reset_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        MeetingsRepository::update_meeting_title(&pool, "m-1", "Meeting")
+            .await
+            .unwrap();
+
+        SummaryProcessesRepository::create_or_reset_process(&pool, "m-1")
+            .await
+            .unwrap();
+
+        let process = SummaryProcessesRepository::get_summary_data(&pool, "m-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(process.status, "PENDING");
+        assert!(process.result.is_none());
+        assert!(process.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_update_process_completed() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+        let meeting_id = setup_meeting_with_process(&pool).await;
+
+        let result = json!({ "title": "Summary", "blocks": [] });
+        SummaryProcessesRepository::update_process_completed(
+            &pool,
+            &meeting_id,
+            result.clone(),
+            3,
+            1.5,
+        )
+        .await
+        .unwrap();
+
+        let process = SummaryProcessesRepository::get_summary_data(&pool, &meeting_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(process.status, "completed");
+        assert_eq!(process.chunk_count, 3);
+        assert!(process.error.is_none());
+        // Backup cleared on completion
+        assert!(process.result_backup.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_update_process_failed_restores_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+        let meeting_id = setup_meeting_with_process(&pool).await;
+
+        // First complete a summary
+        let original = json!({ "title": "Original Summary" });
+        SummaryProcessesRepository::update_process_completed(
+            &pool,
+            &meeting_id,
+            original.clone(),
+            2,
+            1.0,
+        )
+        .await
+        .unwrap();
+
+        // Reset (creates backup of current result)
+        SummaryProcessesRepository::create_or_reset_process(&pool, &meeting_id)
+            .await
+            .unwrap();
+
+        // Fail — should restore backup
+        SummaryProcessesRepository::update_process_failed(&pool, &meeting_id, "Out of tokens")
+            .await
+            .unwrap();
+
+        let process = SummaryProcessesRepository::get_summary_data(&pool, &meeting_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(process.status, "failed");
+        assert_eq!(process.error.as_deref(), Some("Out of tokens"));
+        // Backup should have been restored into result
+        assert!(process.result.is_some());
+        // Backup fields cleared after restore
+        assert!(process.result_backup.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_update_process_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+        let meeting_id = setup_meeting_with_process(&pool).await;
+
+        SummaryProcessesRepository::update_process_cancelled(&pool, &meeting_id)
+            .await
+            .unwrap();
+
+        let process = SummaryProcessesRepository::get_summary_data(&pool, &meeting_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(process.status, "cancelled");
+        assert_eq!(
+            process.error.as_deref(),
+            Some("Generation was cancelled by user")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_meeting_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+        let meeting_id = setup_meeting_with_process(&pool).await;
+
+        let summary = json!({ "blocks": [{ "type": "text", "text": "Summary content" }] });
+        let ok = SummaryProcessesRepository::update_meeting_summary(&pool, &meeting_id, &summary)
+            .await
+            .unwrap();
+        assert!(ok);
+    }
+
+    #[tokio::test]
+    async fn test_update_meeting_summary_nonexistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let summary = json!({ "title": "Orphan" });
+        let ok =
+            SummaryProcessesRepository::update_meeting_summary(&pool, "nonexistent", &summary)
+                .await
+                .unwrap();
+        assert!(!ok);
+    }
+
+    #[tokio::test]
+    async fn test_get_summary_data_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let data = SummaryProcessesRepository::get_summary_data(&pool, "nonexistent")
+            .await
+            .unwrap();
+        assert!(data.is_none());
+    }
+}

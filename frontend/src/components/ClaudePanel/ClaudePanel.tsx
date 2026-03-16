@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X, Send, Trash2, AlertCircle, Square, ChevronUp, Check, Shield, Paperclip, Mic, FolderOpen, Code } from 'lucide-react';
+import { X, Send, Trash2, AlertCircle, Square, ChevronUp, Check, Shield, Paperclip, Mic, FolderOpen, Code, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
@@ -50,6 +50,7 @@ export function ClaudePanel() {
     clearEntityMap,
     piiAvailable,
     updateMeetingTitle,
+    setProjectDir,
     panelWidth,
     setPanelWidth,
   } = useClaude();
@@ -320,10 +321,10 @@ export function ClaudePanel() {
       cancelCommand();
     }
 
-    // F054: Detect @code tag — strip it, queue a task file, DON'T send to AI
-    const hasCodeTag = /@code\b/i.test(messageToSend);
+    // F054: Detect @code / @claude tag — strip it, queue a task file, DON'T send to AI
+    const hasCodeTag = /@(?:code|claude)\b/i.test(messageToSend);
     if (hasCodeTag) {
-      const taskText = messageToSend.replace(/@code\b/gi, '').trim();
+      const taskText = messageToSend.replace(/@(?:code|claude)\b/gi, '').trim();
       if (!projectDir) {
         // Need projectDir first — show modal, save task text as pending
         setPendingFirstMessage(`@code ${taskText}`);
@@ -390,9 +391,9 @@ export function ClaudePanel() {
       setPendingFirstMessage(null);
       setInputText('');
 
-      // F054: If pending message was an @code task, write handoff instead of sending to AI
-      if (/^@code\b/i.test(msg)) {
-        const taskText = msg.replace(/@code\b/gi, '').trim();
+      // F054: If pending message was an @code/@claude task, write handoff instead of sending to AI
+      if (/^@(?:code|claude)\b/i.test(msg)) {
+        const taskText = msg.replace(/@(?:code|claude)\b/gi, '').trim();
         writeCodeHandoff(taskText);
         return;
       }
@@ -513,12 +514,12 @@ export function ClaudePanel() {
           {...overlayDropHandlers}
           className={`fixed right-0 top-0 bottom-0 z-50 flex items-center justify-center transition-all duration-150 ${
             isDropOver
-              ? 'w-48 bg-blue-500/20 dark:bg-blue-500/15 border-l-2 border-blue-400'
-              : 'w-14 bg-blue-500/10 dark:bg-blue-500/5 border-l-2 border-dashed border-blue-400/50'
+              ? 'w-48 bg-brand/20 border-l-2 border-brand'
+              : 'w-14 bg-brand/10 border-l-2 border-dashed border-brand/50'
           }`}
         >
           <div className="flex flex-col items-center gap-1 pointer-events-none">
-            <span className={`text-[10px] font-medium transition-colors ${isDropOver ? 'text-blue-400' : 'text-blue-400/70'}`}>
+            <span className={`text-[10px] font-medium transition-colors ${isDropOver ? 'text-brand' : 'text-brand/70'}`}>
               {isDropOver ? 'Drop to add to AI' : 'AI'}
             </span>
           </div>
@@ -534,7 +535,7 @@ export function ClaudePanel() {
         {/* Resize drag handle — left edge */}
         <div
           onMouseDown={handleResizeStart}
-          className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-50 group hover:bg-blue-500/30 active:bg-blue-500/50 transition-colors"
+          className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-50 group hover:bg-brand/30 active:bg-brand/50 transition-colors"
           title="Drag to resize"
         >
           <div className="absolute left-0 top-0 bottom-0 w-3 -translate-x-1" />
@@ -546,15 +547,15 @@ export function ClaudePanel() {
             {...overlayDropHandlers}
             className={`absolute inset-0 z-50 transition-colors ${
               isDropOver
-                ? 'bg-blue-500/20 dark:bg-blue-400/10 ring-2 ring-blue-400 ring-inset'
-                : 'bg-blue-500/5 dark:bg-blue-400/5 ring-1 ring-blue-400/30 ring-inset'
+                ? 'bg-brand/20 ring-2 ring-brand ring-inset'
+                : 'bg-brand/5 ring-1 ring-brand/30 ring-inset'
             }`}
           >
             <div className="flex items-center justify-center h-full pointer-events-none">
               <span className={`text-sm font-medium px-3 py-1.5 rounded-full shadow-sm transition-colors ${
                 isDropOver
-                  ? 'text-blue-500 bg-white/90 dark:bg-slate-800/90 dark:text-blue-300'
-                  : 'text-blue-400/60 bg-white/50 dark:bg-slate-800/50 dark:text-blue-400/50'
+                  ? 'text-brand bg-background/90'
+                  : 'text-brand/60 bg-background/50'
               }`}>
                 {isDropOver ? 'Drop to add to context' : 'Drop items here'}
               </span>
@@ -575,7 +576,7 @@ export function ClaudePanel() {
                   if (e.key === 'Enter') { e.preventDefault(); handleTitleSave(); }
                   if (e.key === 'Escape') { setIsEditingTitle(false); }
                 }}
-                className="font-semibold text-sm w-full bg-background border border-border rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="font-semibold text-sm w-full bg-background border border-border rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand"
                 autoFocus
               />
             ) : (
@@ -587,22 +588,51 @@ export function ClaudePanel() {
                 {meetingTitle || 'AI Assistant'}
               </div>
             )}
-            {projectDir && (
-              <button
-                onClick={() => invoke('show_in_folder', { path: projectDir }).catch(() => toast.error('Failed to open folder'))}
-                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-blue-500 dark:hover:text-blue-400 max-w-full overflow-hidden transition-colors group"
-                title={projectDir}
-              >
-                <FolderOpen className="w-3 h-3 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
-                <span className="truncate min-w-0">{projectDir}</span>
-              </button>
-            )}
+            <div className="flex items-center gap-1 max-w-full overflow-hidden">
+              {projectDir ? (
+                <>
+                  <button
+                    onClick={() => invoke('open_folder', { path: projectDir }).catch(() => toast.error('Failed to open folder'))}
+                    className="flex items-center gap-1 text-xs text-muted-foreground hover:text-brand overflow-hidden transition-colors group min-w-0"
+                    title={`Open ${projectDir}`}
+                  >
+                    <FolderOpen className="w-3 h-3 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+                    <span className="truncate min-w-0">{projectDir}</span>
+                  </button>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const result = await invoke<string | null>('select_recording_folder');
+                        if (result) setProjectDir(result);
+                      } catch { toast.error('Failed to open folder picker'); }
+                    }}
+                    className="p-0.5 text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
+                    title="Change project folder"
+                  >
+                    <Pencil className="w-3 h-3" />
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={async () => {
+                    try {
+                      const result = await invoke<string | null>('select_recording_folder');
+                      if (result) setProjectDir(result);
+                    } catch { toast.error('Failed to open folder picker'); }
+                  }}
+                  className="flex items-center gap-1 text-xs text-brand hover:text-brand-hover transition-colors"
+                >
+                  <FolderOpen className="w-3 h-3 flex-shrink-0" />
+                  <span>Set project folder...</span>
+                </button>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
             {sessionId && (
               <button
                 onClick={clearSession}
-                className="p-1 text-muted-foreground hover:text-red-500"
+                className="p-1 text-muted-foreground hover:text-destructive"
                 title="Clear session"
               >
                 <Trash2 className="w-4 h-4" />
@@ -619,9 +649,9 @@ export function ClaudePanel() {
 
         {/* API key not set warning */}
         {!hasApiKey && (
-          <div className="px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800/30 flex items-start gap-2 flex-shrink-0">
-            <AlertCircle className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
-            <div className="text-xs text-amber-700 dark:text-amber-300">
+          <div className="px-3 py-2 bg-warning-muted border-b border-warning/20 flex items-start gap-2 flex-shrink-0">
+            <AlertCircle className="w-4 h-4 text-warning mt-0.5 flex-shrink-0" />
+            <div className="text-xs text-warning-foreground">
               Anthropic API key not set. It will be requested when you send your first message.
             </div>
           </div>
@@ -629,9 +659,9 @@ export function ClaudePanel() {
 
         {/* F005: PII service unavailable warning */}
         {anonymizationEnabled && piiAvailable === false && (
-          <div className="px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800/30 flex items-start gap-2 flex-shrink-0">
-            <Shield className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
-            <div className="text-xs text-amber-700 dark:text-amber-300">
+          <div className="px-3 py-2 bg-warning-muted border-b border-warning/20 flex items-start gap-2 flex-shrink-0">
+            <Shield className="w-4 h-4 text-warning mt-0.5 flex-shrink-0" />
+            <div className="text-xs text-warning-foreground">
               PII anonymization is enabled but the backend service is unavailable. Context will be sent without anonymization.
             </div>
           </div>
@@ -682,7 +712,7 @@ export function ClaudePanel() {
               </div>
               <button
                 onClick={cancelListening}
-                className="text-muted-foreground hover:text-red-500 ml-2 flex-shrink-0"
+                className="text-muted-foreground hover:text-destructive ml-2 flex-shrink-0"
                 title="Cancel (Esc)"
               >
                 <X className="w-3.5 h-3.5" />
@@ -692,19 +722,19 @@ export function ClaudePanel() {
 
           {/* F018: Active command capture indicator */}
           {activeCommand && (
-            <div className="flex items-center justify-between mb-2 px-2 py-1.5 rounded-md bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/30 text-xs">
+            <div className="flex items-center justify-between mb-2 px-2 py-1.5 rounded-md bg-brand-muted border border-brand/20 text-xs">
               <div className="flex items-center gap-2">
                 {recordingState.isRecording && (
                   <span className="relative flex h-2 w-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500" />
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-recording/75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-recording" />
                   </span>
                 )}
-                <span className="font-mono font-medium text-blue-700 dark:text-blue-300">
+                <span className="font-mono font-medium text-brand-muted-foreground">
                   /{activeCommand.name}
                 </span>
                 {recordingState.isRecording ? (
-                  <span className="text-blue-600 dark:text-blue-400">
+                  <span className="text-brand">
                     Capturing live transcript ({capturedSegmentCount} segment{capturedSegmentCount !== 1 ? 's' : ''})
                   </span>
                 ) : (
@@ -715,7 +745,7 @@ export function ClaudePanel() {
               </div>
               <button
                 onClick={() => { cancelCommand(); setInputText(''); }}
-                className="text-muted-foreground hover:text-red-500 ml-2"
+                className="text-muted-foreground hover:text-destructive ml-2"
                 title="Cancel command"
               >
                 <X className="w-3.5 h-3.5" />
@@ -723,21 +753,21 @@ export function ClaudePanel() {
             </div>
           )}
 
-          {/* F054: @code tag detected indicator */}
-          {/@code\b/i.test(inputText) && !activeCommand && (
-            <div className="flex items-center gap-2 mb-2 px-2 py-1.5 rounded-md bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800/30 text-xs">
-              <Code className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
-              <span className="font-medium text-emerald-700 dark:text-emerald-300">
-                @code — task will be queued for Claude Code
+          {/* F054: @code / @claude tag detected indicator */}
+          {/@(?:code|claude)\b/i.test(inputText) && !activeCommand && (
+            <div className="flex items-center gap-2 mb-2 px-2 py-1.5 rounded-md bg-success/10 border border-success/20 text-xs">
+              <Code className="w-3.5 h-3.5 text-success flex-shrink-0" />
+              <span className="font-medium text-success">
+                @code / @claude — task will be queued for Claude Code
               </span>
             </div>
           )}
 
-          <div className="relative flex items-end gap-2">
+          <div className="relative flex items-center gap-2">
             <Popover>
               <PopoverTrigger asChild>
                 <button
-                  className="flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground pb-2 flex-shrink-0"
+                  className="flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground flex-shrink-0"
                   title="Select model"
                 >
                   <ChevronUp className="w-3 h-3" />
@@ -752,7 +782,7 @@ export function ClaudePanel() {
                     className="flex items-center justify-between w-full px-2 py-1.5 text-xs rounded hover:bg-muted"
                   >
                     <span>{m.label}</span>
-                    {m.id === selectedModel && <Check className="w-3 h-3 text-blue-500" />}
+                    {m.id === selectedModel && <Check className="w-3 h-3 text-brand" />}
                   </button>
                 ))}
               </PopoverContent>
@@ -760,11 +790,11 @@ export function ClaudePanel() {
             {/* F005: PII Anonymization toggle */}
             <button
               onClick={toggleAnonymization}
-              className={`flex items-center gap-0.5 text-[10px] pb-2 flex-shrink-0 transition-colors ${
+              className={`flex items-center gap-0.5 text-[10px] flex-shrink-0 transition-colors ${
                 anonymizationEnabled && piiAvailable !== false
-                  ? 'text-emerald-500 hover:text-emerald-600'
+                  ? 'text-success hover:text-success/80'
                   : anonymizationEnabled && piiAvailable === false
-                    ? 'text-amber-500 hover:text-amber-600'
+                    ? 'text-warning hover:text-warning/80'
                     : 'text-muted-foreground/50 hover:text-muted-foreground'
               }`}
               title={
@@ -789,7 +819,7 @@ export function ClaudePanel() {
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isParsingFile}
-              className="flex items-center gap-0.5 text-[10px] pb-2 flex-shrink-0 text-muted-foreground/50 hover:text-muted-foreground transition-colors disabled:animate-pulse"
+              className="flex items-center gap-0.5 text-[10px] flex-shrink-0 text-muted-foreground/50 hover:text-muted-foreground transition-colors disabled:animate-pulse"
               title={isParsingFile ? 'Parsing document...' : 'Attach document (PDF, DOCX, TXT, MD, CSV)'}
             >
               <Paperclip className="w-3 h-3" />
@@ -814,7 +844,7 @@ export function ClaudePanel() {
                 onKeyDown={handleKeyDown}
                 placeholder={activeCommand ? `Type additional context for /${activeCommand.name}...` : 'Ask anything... (type / for commands)'}
                 rows={1}
-                className="w-full resize-none border border-border rounded-lg px-3 py-2 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full resize-none border border-border rounded-lg px-3 py-2 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-brand"
               />
             </div>
             {isStreaming && (

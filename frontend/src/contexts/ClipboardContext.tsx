@@ -35,37 +35,54 @@ export function ClipboardProvider({ children }: { children: React.ReactNode }) {
   }, [clipboardItems]);
 
   // Listen for clipboard-captured and recording-stopped events
+  // Both listeners are registered in parallel and each checks a mounted flag
+  // after the async listen() call completes to prevent leaks on early unmount.
   useEffect(() => {
     let mounted = true;
 
-    const setup = async () => {
-      unlistenCapturedRef.current = await listen<ClipboardData>('clipboard-captured', (event) => {
-        if (mounted) {
-          setClipboardItems((prev) => [...prev, event.payload]);
-          const label = event.payload.content_type === 'image' ? 'Image' : 'Text';
-          toast.success(`${label} clip captured`);
-        }
-      });
+    // Register both listeners concurrently to minimise the window where
+    // a clipboard-captured event could fire before the listener exists.
+    const capturedPromise = listen<ClipboardData>('clipboard-captured', (event) => {
+      if (!mounted) return;
+      setClipboardItems((prev) => [...prev, event.payload]);
+      const label = event.payload.content_type === 'image' ? 'Image' : 'Text';
+      toast.success(`${label} clip captured`);
+    });
 
-      // Auto-save when recording stops
-      unlistenStoppedRef.current = await listen<{
-        message: string;
-        folder_path?: string;
-      }>('recording-stopped', async (event) => {
-        const { folder_path } = event.payload;
-        const currentItems = itemsRef.current;
-        if (folder_path && currentItems.length > 0) {
-          try {
-            await saveClipboardJson(folder_path, currentItems);
-            console.log(`[ClipboardContext] Auto-saved ${currentItems.length} clipboard items to ${folder_path}`);
-          } catch (err) {
-            console.error('[ClipboardContext] Failed to auto-save clipboard items:', err);
-          }
+    const stoppedPromise = listen<{
+      message: string;
+      folder_path?: string;
+    }>('recording-stopped', async (event) => {
+      if (!mounted) return;
+      const { folder_path } = event.payload;
+      const currentItems = itemsRef.current;
+      if (folder_path && currentItems.length > 0) {
+        try {
+          await saveClipboardJson(folder_path, currentItems);
+          console.log(`[ClipboardContext] Auto-saved ${currentItems.length} clipboard items to ${folder_path}`);
+        } catch (err) {
+          console.error('[ClipboardContext] Failed to auto-save clipboard items:', err);
         }
-      });
-    };
+      }
+    });
 
-    setup();
+    // Assign unlisten functions once the promises resolve; if we unmounted
+    // in the meantime, immediately call the unlisten to clean up.
+    capturedPromise.then((unlisten) => {
+      if (mounted) {
+        unlistenCapturedRef.current = unlisten;
+      } else {
+        unlisten();
+      }
+    });
+
+    stoppedPromise.then((unlisten) => {
+      if (mounted) {
+        unlistenStoppedRef.current = unlisten;
+      } else {
+        unlisten();
+      }
+    });
 
     return () => {
       mounted = false;

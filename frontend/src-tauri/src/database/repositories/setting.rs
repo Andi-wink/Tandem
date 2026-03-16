@@ -346,3 +346,294 @@ impl SettingsRepository {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::test_helpers::create_test_pool;
+
+    #[tokio::test]
+    async fn test_save_and_get_model_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        SettingsRepository::save_model_config(&pool, "claude", "claude-opus-4-6", "large-v3", None)
+            .await
+            .unwrap();
+
+        let config = SettingsRepository::get_model_config(&pool)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(config.provider, "claude");
+        assert_eq!(config.model, "claude-opus-4-6");
+        assert_eq!(config.whisper_model, "large-v3");
+    }
+
+    #[tokio::test]
+    async fn test_save_model_config_upsert() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        SettingsRepository::save_model_config(&pool, "ollama", "llama3", "small", None)
+            .await
+            .unwrap();
+        SettingsRepository::save_model_config(
+            &pool,
+            "claude",
+            "claude-opus-4-6",
+            "large-v3",
+            None,
+        )
+        .await
+        .unwrap();
+
+        let config = SettingsRepository::get_model_config(&pool)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(config.provider, "claude");
+    }
+
+    #[tokio::test]
+    async fn test_get_model_config_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let config = SettingsRepository::get_model_config(&pool).await.unwrap();
+        assert!(config.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_save_and_get_api_key_openai() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        SettingsRepository::save_api_key(&pool, "openai", "sk-test-key")
+            .await
+            .unwrap();
+
+        let key = SettingsRepository::get_api_key(&pool, "openai")
+            .await
+            .unwrap();
+        assert_eq!(key.as_deref(), Some("sk-test-key"));
+    }
+
+    #[tokio::test]
+    async fn test_save_and_get_api_key_claude() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        SettingsRepository::save_api_key(&pool, "claude", "sk-ant-test")
+            .await
+            .unwrap();
+
+        let key = SettingsRepository::get_api_key(&pool, "claude")
+            .await
+            .unwrap();
+        assert_eq!(key.as_deref(), Some("sk-ant-test"));
+    }
+
+    #[tokio::test]
+    async fn test_save_api_key_invalid_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let result = SettingsRepository::save_api_key(&pool, "invalid-provider", "key").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_save_api_key_custom_openai_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let result = SettingsRepository::save_api_key(&pool, "custom-openai", "key").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_save_api_key_builtin_ai_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        // builtin-ai should succeed without storing anything
+        SettingsRepository::save_api_key(&pool, "builtin-ai", "key")
+            .await
+            .unwrap();
+
+        let key = SettingsRepository::get_api_key(&pool, "builtin-ai")
+            .await
+            .unwrap();
+        assert!(key.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_delete_api_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        SettingsRepository::save_api_key(&pool, "groq", "gsk-test")
+            .await
+            .unwrap();
+
+        // Verify key was stored
+        let key = SettingsRepository::get_api_key(&pool, "groq")
+            .await
+            .unwrap();
+        assert_eq!(key.as_deref(), Some("gsk-test"));
+
+        SettingsRepository::delete_api_key(&pool, "groq")
+            .await
+            .unwrap();
+
+        // Verify via raw query that the column is now NULL
+        let raw: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT groqApiKey FROM settings WHERE id = '1'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        // Row exists but column should be NULL
+        assert_eq!(raw, Some(None));
+    }
+
+    #[tokio::test]
+    async fn test_save_and_get_transcript_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        SettingsRepository::save_transcript_config(&pool, "whisper", "large-v3")
+            .await
+            .unwrap();
+
+        let config = SettingsRepository::get_transcript_config(&pool)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(config.provider, "whisper");
+        assert_eq!(config.model, "large-v3");
+    }
+
+    #[tokio::test]
+    async fn test_save_and_get_transcript_api_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        SettingsRepository::save_transcript_api_key(&pool, "deepgram", "dg-test-key")
+            .await
+            .unwrap();
+
+        let key = SettingsRepository::get_transcript_api_key(&pool, "deepgram")
+            .await
+            .unwrap();
+        assert_eq!(key.as_deref(), Some("dg-test-key"));
+    }
+
+    #[tokio::test]
+    async fn test_transcript_api_key_parakeet_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        SettingsRepository::save_transcript_api_key(&pool, "parakeet", "key")
+            .await
+            .unwrap();
+
+        let key = SettingsRepository::get_transcript_api_key(&pool, "parakeet")
+            .await
+            .unwrap();
+        assert!(key.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_save_and_get_custom_openai_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let config = CustomOpenAIConfig {
+            endpoint: "https://my-server.com/v1".into(),
+            api_key: Some("sk-custom-key".into()),
+            model: "my-model".into(),
+            max_tokens: Some(4096),
+            temperature: Some(0.7),
+            top_p: Some(0.9),
+        };
+
+        SettingsRepository::save_custom_openai_config(&pool, &config)
+            .await
+            .unwrap();
+
+        let loaded = SettingsRepository::get_custom_openai_config(&pool)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.endpoint, "https://my-server.com/v1");
+        assert_eq!(loaded.api_key.as_deref(), Some("sk-custom-key"));
+        assert_eq!(loaded.model, "my-model");
+        assert_eq!(loaded.max_tokens, Some(4096));
+    }
+
+    #[tokio::test]
+    async fn test_get_custom_openai_config_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let config = SettingsRepository::get_custom_openai_config(&pool)
+            .await
+            .unwrap();
+        assert!(config.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_api_key_via_custom_openai() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let config = CustomOpenAIConfig {
+            endpoint: "https://example.com".into(),
+            api_key: Some("custom-key".into()),
+            model: "model".into(),
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+        };
+
+        SettingsRepository::save_custom_openai_config(&pool, &config)
+            .await
+            .unwrap();
+
+        // get_api_key with "custom-openai" should extract from JSON config
+        let key = SettingsRepository::get_api_key(&pool, "custom-openai")
+            .await
+            .unwrap();
+        assert_eq!(key.as_deref(), Some("custom-key"));
+    }
+
+    #[tokio::test]
+    async fn test_delete_api_key_custom_openai() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let config = CustomOpenAIConfig {
+            endpoint: "https://example.com".into(),
+            api_key: Some("key".into()),
+            model: "model".into(),
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+        };
+
+        SettingsRepository::save_custom_openai_config(&pool, &config)
+            .await
+            .unwrap();
+
+        SettingsRepository::delete_api_key(&pool, "custom-openai")
+            .await
+            .unwrap();
+
+        let loaded = SettingsRepository::get_custom_openai_config(&pool)
+            .await
+            .unwrap();
+        assert!(loaded.is_none());
+    }
+}

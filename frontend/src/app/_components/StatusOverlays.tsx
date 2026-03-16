@@ -1,3 +1,5 @@
+import { Loader2 } from 'lucide-react';
+
 interface StatusOverlaysProps {
   // Status flags
   isProcessing: boolean;      // Processing transcription after recording stops
@@ -27,7 +29,7 @@ function StatusOverlay({ show, message, sidebarCollapsed }: StatusOverlayProps) 
       >
         <div className="w-2/3 max-w-[750px] flex justify-center">
           <div className="bg-card rounded-lg shadow-lg px-4 py-2 flex items-center space-x-2">
-            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-foreground"></div>
+            <Loader2 className="h-4 w-4 animate-spin text-foreground" />
             <span className="text-sm text-foreground">{message}</span>
           </div>
         </div>

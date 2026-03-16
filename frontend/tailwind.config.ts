@@ -40,6 +40,36 @@ export default {
           DEFAULT: "hsl(var(--destructive))",
           foreground: "hsl(var(--destructive-foreground))",
         },
+        recording: {
+          DEFAULT: "hsl(var(--recording))",
+          hover: "hsl(var(--recording-hover))",
+          foreground: "hsl(var(--recording-foreground))",
+          muted: "hsl(var(--recording-muted))",
+        },
+        paused: {
+          DEFAULT: "hsl(var(--paused))",
+          foreground: "hsl(var(--paused-foreground))",
+        },
+        brand: {
+          DEFAULT: "hsl(var(--brand))",
+          hover: "hsl(var(--brand-hover))",
+          foreground: "hsl(var(--brand-foreground))",
+          muted: "hsl(var(--brand-muted))",
+          "muted-foreground": "hsl(var(--brand-muted-foreground))",
+        },
+        success: {
+          DEFAULT: "hsl(var(--success))",
+          foreground: "hsl(var(--success-foreground))",
+        },
+        warning: {
+          DEFAULT: "hsl(var(--warning))",
+          foreground: "hsl(var(--warning-foreground))",
+          muted: "hsl(var(--warning-muted))",
+        },
+        info: {
+          DEFAULT: "hsl(var(--info))",
+          foreground: "hsl(var(--info-foreground))",
+        },
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",

@@ -52,8 +52,8 @@ impl ContinuousVadProcessor {
         // Previous: capped at 400ms, causing VAD to fragment 5-second speech into 40ms segments
         // New: Use full redemption_time from pipeline (2000ms) to bridge natural pauses
         config.redemption_time = Duration::from_millis(redemption_time_ms as u64);
-        config.pre_speech_pad = Duration::from_millis(300);   // Pre-speech padding for context
-        config.post_speech_pad = Duration::from_millis(400);  // Increased: more context at end
+        config.pre_speech_pad = Duration::from_millis(500);   // Increased from 300ms: capture speech onset more reliably
+        config.post_speech_pad = Duration::from_millis(600);  // Increased from 400ms: capture trailing words
 
         // CRITICAL FIX: Increased min_speech_time to prevent tiny 40ms fragments
         // Previous: 100ms allowed too-short segments that Whisper rejects
@@ -344,9 +344,9 @@ pub fn extract_speech_16k(samples_mono_16k: &[f32]) -> Result<Vec<f32>> {
         let rms = input_energy.sqrt();
         let peak = samples_mono_16k.iter().map(|&x| x.abs()).fold(0.0f32, f32::max);
 
-        // BALANCED FIX: Lowered thresholds to preserve quiet speech while still filtering silence
-        // Previous aggressive values (0.08/0.15) were discarding valid quiet speech
-        // New values (0.03/0.08) are more balanced - catch quiet speech, reject pure silence
+        // Energy filter: reject pure silence/noise to prevent Whisper hallucinations
+        // on very short segments. RMS 0.2 / peak 0.20 catches quiet speech while
+        // still filtering ambient noise.
         if rms < 0.2 || peak < 0.20 {
             info!("-----VAD detected silence/noise (RMS: {:.6}, Peak: {:.6}), skipping to prevent hallucinations-----", rms, peak);
             return Ok(Vec::new());
