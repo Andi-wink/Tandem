@@ -72,7 +72,7 @@ interface ClaudeContextValue extends ClaudeState {
   removeFromBasket: (itemId: string) => void;
   clearBasket: () => void;
   // Session
-  openPanel: (meetingId: string, meetingTitle: string, defaultProjectDir: string) => void;
+  openPanel: (meetingId: string, meetingTitle: string, defaultProjectDir: string) => Promise<void>;
   closePanel: () => void;
   sendMessage: (message: string) => Promise<void>;
   clearSession: () => Promise<void>;
@@ -85,7 +85,6 @@ interface ClaudeContextValue extends ClaudeState {
   toggleAnonymization: () => void;
   toggleItemAnonymization: (itemId: string) => void;
   clearEntityMap: () => void;
-  piiAvailable: boolean | null;
   // Panel resize
   panelWidth: number;
   setPanelWidth: (width: number) => void;
@@ -302,11 +301,10 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
   }, [state.meetingId]);
 
   // Cancel any pending RAF and flush the latest streamed text into state
-  const flushPendingRaf = () => {
+  const flushPendingRaf = useCallback(() => {
     if (rafIdRef.current !== null) {
       cancelAnimationFrame(rafIdRef.current);
       rafIdRef.current = null;
-      // Flush the accumulated text so nothing is lost
       const finalText = streamingTextRef.current;
       if (finalText) {
         setState(prev => {
@@ -319,7 +317,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         });
       }
     }
-  };
+  }, []); // Safe: only uses refs and setState (stable)
 
   // ── Event handler for SSE events ────────────────────────────────────────
   const handleStreamEvent = useCallback((event: ClaudeFrontendEvent) => {

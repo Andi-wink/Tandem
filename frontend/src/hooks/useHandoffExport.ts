@@ -75,6 +75,17 @@ export function useHandoffExport(): UseHandoffExportReturn {
     apiKey: typeof apiKey;
   } | null>(null);
 
+  // Cleanup refs on unmount to prevent stale Promise resolvers
+  useEffect(() => {
+    return () => {
+      snapshotRef.current = null;
+      if (dialogResolveRef.current) {
+        dialogResolveRef.current();
+        dialogResolveRef.current = null;
+      }
+    };
+  }, []);
+
   // ─── Trigger ─────────────────────────────────────────────────────────────
 
   const triggerHandoff = useCallback((folderPath: string, meetingName: string): Promise<void> => {

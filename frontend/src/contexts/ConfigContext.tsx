@@ -206,9 +206,11 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
 
   // Load transcript configuration on mount
   useEffect(() => {
+    let cancelled = false;
     const loadTranscriptConfig = async () => {
       try {
         const config = await configService.getTranscriptConfig();
+        if (cancelled) return;
         if (config) {
           console.log('[ConfigContext] Loaded saved transcript config:', config);
           setTranscriptModelConfig({
@@ -218,24 +220,28 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
           });
         }
       } catch (error) {
+        if (cancelled) return;
         console.error('[ConfigContext] Failed to load transcript config:', error);
       }
     };
     loadTranscriptConfig();
+    return () => { cancelled = true; };
   }, []);
 
   // Load model configuration on mount
   useEffect(() => {
+    let cancelled = false;
     const fetchModelConfig = async () => {
       try {
         const data = await configService.getModelConfig();
+        if (cancelled) return;
         if (data && data.provider) {
           // If provider is custom-openai, fetch the additional config
           if (data.provider === 'custom-openai') {
             try {
               const customConfig = await configService.getCustomOpenAIConfig();
+              if (cancelled) return;
               if (customConfig) {
-                // Merge custom config fields into modelConfig
                 console.log('[ConfigContext] Loading custom OpenAI config:', {
                   endpoint: customConfig.endpoint,
                   model: customConfig.model,
@@ -264,6 +270,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
                 return; // Early return
               }
             } catch (err) {
+              if (cancelled) return;
               console.error('[ConfigContext] Failed to fetch custom OpenAI config:', err);
             }
           }
@@ -285,14 +292,17 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
           }
         }
       } catch (error) {
+        if (cancelled) return;
         console.error('Failed to fetch saved model config in ConfigContext:', error);
       }
     };
     fetchModelConfig();
+    return () => { cancelled = true; };
   }, []);
 
   // Load all provider API keys on mount
   useEffect(() => {
+    let cancelled = false;
     const loadAllApiKeys = async () => {
       try {
         const providers = ['claude', 'groq', 'openai', 'openrouter'];
@@ -302,6 +312,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
               .catch(() => null) // Gracefully handle missing keys
           )
         );
+        if (cancelled) return;
 
         setProviderApiKeys({
           claude: keys[0],
@@ -311,11 +322,13 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
         });
         console.log('[ConfigContext] Loaded provider API keys');
       } catch (error) {
+        if (cancelled) return;
         console.error('[ConfigContext] Failed to load provider API keys:', error);
       }
     };
 
     loadAllApiKeys();
+    return () => { cancelled = true; };
   }, []);
 
   // Listen for model config updates from other components
@@ -344,9 +357,11 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
 
   // Load device preferences on mount
   useEffect(() => {
+    let cancelled = false;
     const loadDevicePreferences = async () => {
       try {
         const prefs = await configService.getRecordingPreferences();
+        if (cancelled) return;
         if (prefs && (prefs.preferred_mic_device || prefs.preferred_system_device)) {
           setSelectedDevices({
             micDevice: prefs.preferred_mic_device,
@@ -355,28 +370,33 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
           console.log('Loaded device preferences:', prefs);
         }
       } catch (error) {
+        if (cancelled) return;
         console.log('No device preferences found or failed to load:', error);
       }
     };
     loadDevicePreferences();
+    return () => { cancelled = true; };
   }, []);
 
   // Load language preference on mount
   useEffect(() => {
+    let cancelled = false;
     const loadLanguagePreference = async () => {
       try {
         const language = await configService.getLanguagePreference();
+        if (cancelled) return;
         if (language) {
           setSelectedLanguage(language);
           console.log('Loaded language preference:', language);
         }
       } catch (error) {
+        if (cancelled) return;
         console.log('No language preference found or failed to load, using default (auto-translate):', error);
-        // Default to 'auto-translate' (Auto Detect with English translation) if no preference is saved
         setSelectedLanguage('auto-translate');
       }
     };
     loadLanguagePreference();
+    return () => { cancelled = true; };
   }, []);
 
   // Calculate model options based on available models
