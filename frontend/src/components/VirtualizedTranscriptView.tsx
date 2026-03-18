@@ -98,6 +98,8 @@ function cleanStopWords(text: string): string {
     return cleanedText.replace(/\s+/g, ' ').trim();
 }
 
+/** Creates a basket item from a transcript segment. Module-level function —
+ *  returns a new object each call. If memoization is needed, cache at the consumer. */
 function segmentToBasketItem(seg: TranscriptSegmentData): ContextBasketItem {
     return {
         id: `segment-${seg.id}`,

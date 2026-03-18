@@ -215,7 +215,10 @@ export default function Home() {
     if (recordingState.isRecording && !isPanelOpen) {
       openPanel('live-recording', meetingTitle || 'Live Recording', '');
     }
-  }, [recordingState.isRecording]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Only react to isRecording changes — fire once when recording starts,
+    // not re-fire on panel state or title changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recordingState.isRecording]);
 
   // Computed values using global status
   const isProcessingStop = status === RecordingStatus.PROCESSING_TRANSCRIPTS || isProcessing;
