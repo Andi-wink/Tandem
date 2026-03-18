@@ -10,7 +10,6 @@ import logging
 from dotenv import load_dotenv
 from db import DatabaseManager
 import json
-from threading import Lock
 from transcript_processor import TranscriptProcessor
 import time
 import uuid
@@ -581,7 +580,7 @@ async def get_model_config():
     model_config = await db.get_model_config()
     if model_config:
         api_key = await db.get_api_key(model_config["provider"])
-        if api_key != None:
+        if api_key is not None:
             model_config["apiKey"] = api_key
     return model_config
 
@@ -589,7 +588,7 @@ async def get_model_config():
 async def save_model_config(request: SaveModelConfigRequest):
     """Save the model configuration"""
     await db.save_model_config(request.provider, request.model, request.whisperModel)
-    if request.apiKey != None:
+    if request.apiKey is not None:
         await db.save_api_key(request.apiKey, request.provider)
     return {"status": "success", "message": "Model configuration saved successfully"}  
 
@@ -599,7 +598,7 @@ async def get_transcript_config():
     transcript_config = await db.get_transcript_config()
     if transcript_config:
         transcript_api_key = await db.get_transcript_api_key(transcript_config["provider"])
-        if transcript_api_key != None:
+        if transcript_api_key is not None:
             transcript_config["apiKey"] = transcript_api_key
     return transcript_config
 
@@ -607,7 +606,7 @@ async def get_transcript_config():
 async def save_transcript_config(request: SaveTranscriptConfigRequest):
     """Save the transcript configuration"""
     await db.save_transcript_config(request.provider, request.model)
-    if request.apiKey != None:
+    if request.apiKey is not None:
         await db.save_transcript_api_key(request.apiKey, request.provider)
     return {"status": "success", "message": "Transcript configuration saved successfully"}
 

@@ -259,11 +259,8 @@ _STREAM_END = object()
 def _run_query_in_proactor(
     prompt: str, options: ClaudeAgentOptions, q: queue.Queue, cancel: Event,
 ) -> None:
-    """Thread target: run SDK query() on a ProactorEventLoop (Windows subprocess support)."""
-    if sys.platform == "win32":
-        loop = asyncio.ProactorEventLoop()
-    else:
-        loop = asyncio.new_event_loop()
+    """Thread target: run SDK query() on a new event loop (Windows gets ProactorEventLoop by default)."""
+    loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
     async def _collect():
