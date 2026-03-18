@@ -24,9 +24,11 @@ export function PreferenceSettings() {
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
   const [apiKeySaved, setApiKeySaved] = useState(false);
 
-  // Sync input when apiKey loads from backend
+  // Sync input when apiKey loads from backend (intentionally omitting apiKeyInput
+  // from deps to avoid overwriting user's in-progress edits)
   useEffect(() => {
     if (apiKey && !apiKeyInput) setApiKeyInput(apiKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiKey]);
 
   const [notificationsEnabled, setNotificationsEnabled] = useState<boolean | null>(null);
@@ -259,7 +261,7 @@ export function PreferenceSettings() {
               <button
                 type="button"
                 onClick={() => setApiKeyVisible(!apiKeyVisible)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-muted-foreground"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
               >
                 {apiKeyVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>

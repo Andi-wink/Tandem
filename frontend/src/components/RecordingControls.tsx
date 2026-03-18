@@ -9,6 +9,7 @@ import { listen } from '@tauri-apps/api/event';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { motion, AnimatePresence } from 'framer-motion';
+import { toast } from 'sonner';
 import { logger } from '@/lib/logger';
 import { MIN_RECORDING_DURATION_MS } from '@/lib/constants';
 import Analytics from '@/lib/analytics';
@@ -68,7 +69,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         logger.log('Tauri is initialized and ready, is_recording result:', result);
       } catch (error) {
         console.error('Tauri initialization error:', error);
-        alert('Failed to initialize recording. Please check the console for details.');
+        toast.error('Failed to initialize recording. Check the console for details.');
       }
     };
     checkTauri();
@@ -203,7 +204,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       logger.log('Recording paused successfully');
     } catch (error) {
       console.error('Failed to pause recording:', error);
-      alert('Failed to pause recording. Please check the console for details.');
+      toast.error('Failed to pause recording. Check the console for details.');
     } finally {
       setIsPausing(false);
     }
@@ -221,7 +222,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       logger.log('Recording resumed successfully');
     } catch (error) {
       console.error('Failed to resume recording:', error);
-      alert('Failed to resume recording. Please check the console for details.');
+      toast.error('Failed to resume recording. Check the console for details.');
     } finally {
       setIsResuming(false);
     }

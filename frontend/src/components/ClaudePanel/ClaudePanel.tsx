@@ -648,6 +648,7 @@ export function ClaudePanel() {
             )}
             <button
               onClick={closePanel}
+              aria-label="Close AI panel"
               className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
             >
               <X className="w-4 h-4" />
