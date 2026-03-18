@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { X, FileText, Camera, Clipboard, Quote, StickyNote, Shield, Trash2 } from 'lucide-react';
 import { ContextBasketItem } from '@/contexts/ClaudeContext';
 import { CHARS_PER_TOKEN } from '@/lib/constants';
@@ -22,11 +22,17 @@ const typeIcons: Record<string, React.ElementType> = {
 
 export function ContextBasket({ items, onRemove, onClear, anonymizationEnabled, onToggleItemAnonymization }: ContextBasketProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const lastSelectedIdRef = useRef<string | null>(null);
 
   const toggleItem = useCallback((id: string) => {
     setSelectedIds(prev => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+        lastSelectedIdRef.current = id;
+      }
       return next;
     });
   }, []);
@@ -37,7 +43,7 @@ export function ContextBasket({ items, onRemove, onClear, anonymizationEnabled, 
       toggleItem(id);
     } else if (e.shiftKey && selectedIds.size > 0) {
       e.preventDefault();
-      const lastId = Array.from(selectedIds).pop()!;
+      const lastId = lastSelectedIdRef.current ?? Array.from(selectedIds).pop()!;
       const startIdx = items.findIndex(i => i.id === lastId);
       const endIdx = items.findIndex(i => i.id === id);
       if (startIdx !== -1 && endIdx !== -1) {
