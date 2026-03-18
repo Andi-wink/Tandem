@@ -987,7 +987,11 @@ fn extract_folder_timestamp_suffix(folder_name: &str) -> Option<&str> {
     if folder_name.len() < 17 {
         return None;
     }
-    let suffix = &folder_name[folder_name.len() - 17..];
+    let start = folder_name.len() - 17;
+    if !folder_name.is_char_boundary(start) {
+        return None; // Multi-byte character at boundary — can't extract timestamp
+    }
+    let suffix = &folder_name[start..];
     let bytes = suffix.as_bytes();
     // Validate pattern: _DDDD-DD-DD_DD-DD
     if bytes[0] != b'_'

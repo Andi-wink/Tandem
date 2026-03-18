@@ -110,6 +110,7 @@ pub fn start_transcription_task<R: Runtime>(
                     warn!("⚠️ Worker {} pre-validation: {} model not loaded - chunks may be skipped", worker_id, engine_name);
                 }
 
+                let mut chunk_loss_retries: u32 = 0;
                 loop {
                     // Try to get a chunk to process
                     let chunk = {
@@ -180,19 +181,14 @@ pub fn start_transcription_task<R: Runtime>(
 
                                         // Emit speech-detected event for frontend UX (only on first detection per session)
                                         // This is lightweight and provides better user feedback
-                                        let current_flag = SPEECH_DETECTED_EMITTED.load(Ordering::SeqCst);
-                                        info!("🔍 Checking speech-detected flag: current={}, will_emit={}", current_flag, !current_flag);
-
-                                        if !current_flag {
-                                            SPEECH_DETECTED_EMITTED.store(true, Ordering::SeqCst);
+                                        // Atomically check-and-set to avoid race between workers
+                                        if SPEECH_DETECTED_EMITTED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
                                             match app_clone.emit("speech-detected", serde_json::json!({
                                                 "message": "Speech activity detected"
                                             })) {
                                                 Ok(_) => info!("🎤 ✅ First speech detected - successfully emitted speech-detected event"),
                                                 Err(e) => error!("🎤 ❌ Failed to emit speech-detected event: {}", e),
                                             }
-                                        } else {
-                                            info!("🔍 Speech already detected in this session, not re-emitting");
                                         }
 
                                         // Generate sequence ID and calculate timestamps FIRST
@@ -306,8 +302,12 @@ pub fn start_transcription_task<R: Runtime>(
                                     );
                                     break;
                                 } else {
-                                    warn!("👷 Worker {} detected potential chunk loss: {}/{} completed, waiting...", worker_id, final_completed, final_queued);
-                                    // AGGRESSIVE POLLING: Reduced from 50ms to 5ms for faster chunk detection during shutdown
+                                    chunk_loss_retries += 1;
+                                    if chunk_loss_retries > 200 { // 200 * 5ms = 1 second max wait
+                                        warn!("👷 Worker {} giving up after 1s: {}/{} chunks completed", worker_id, final_completed, final_queued);
+                                        break;
+                                    }
+                                    warn!("👷 Worker {} waiting for chunks: {}/{} completed (retry {})", worker_id, final_completed, final_queued, chunk_loss_retries);
                                     tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
                                 }
                             } else {
