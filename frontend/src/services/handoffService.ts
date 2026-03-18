@@ -23,12 +23,6 @@ export const LIVE_TRANSCRIPT_DEBOUNCE_MS = 10_000; // 10 seconds
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function formatSecs(secs: number): string {
-  const m = Math.floor(secs / 60);
-  const s = Math.floor(secs % 60);
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
-
 function formatTimestamp(secs: number): string {
   const h = Math.floor(secs / 3600);
   const m = Math.floor((secs % 3600) / 60);
