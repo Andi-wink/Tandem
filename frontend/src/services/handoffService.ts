@@ -7,7 +7,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { Transcript } from '@/types';
+import { Transcript, ScreenshotData } from '@/types';
 import { ContextBasketItem } from '@/contexts/ContextBasketContext';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -130,19 +130,28 @@ This project has Tandem meeting integration. During meetings, Tandem writes file
 When the user says \`@code <task>\` during a meeting, Tandem creates a task file.
 Each file contains the task description, recent transcript context, and any attached items.
 
-**To process:** Read the task, execute it against this codebase, then delete the file.
+**To process:**
+1. Read the task file
+2. Execute it against this codebase
+3. Move the file to \`.tandem/tasks/done/\` (do NOT delete — avoids permission prompts)
+4. Write a brief result summary to \`.tandem/response.md\` so Tandem can display it
 
 ## Live Transcript (\`.tandem/live-transcript.md\`)
 Updated every 10 seconds during recording with a rolling 30-minute window.
-Look for spoken requests like "Tandem, start working on..." or "Claude Code, handle..."
+Scan for lines containing \`@code\` or \`Tandem,\` that were added since your last check.
+If you find a new spoken request, act on it and write a result to \`.tandem/response.md\`.
 
-**To monitor:** Check for new requests, read surrounding context, and act on them.
-Track what you've already processed to avoid duplicates.
+**Track your position:** Record the last timestamp or line count you processed to avoid duplicates.
+
+## Response File (\`.tandem/response.md\`)
+After completing any task, write a short (1-3 sentence) summary here.
+Tandem polls this file every 10 seconds and shows your response in the AI panel.
+**Clear the file after writing** by writing an empty string, or Tandem will clear it after reading.
 
 ## Quick Start
 Run this in Claude Code to start polling:
 \`\`\`
-/loop 1m Check .tandem/tasks/ for new .md files. If found, read the task, execute it, then delete the file. Also check .tandem/live-transcript.md for spoken requests directed at you. Track what you've already processed.
+/loop 1m Check .tandem/tasks/ for new .md files. If found, read the task, execute it, move the file to .tandem/tasks/done/, then write a brief result to .tandem/response.md. Also scan .tandem/live-transcript.md for new lines containing "@code" or "Tandem," since last check. Track what you have already processed.
 \`\`\`
 `;
 
@@ -154,6 +163,46 @@ export async function ensureTandemClaudeMd(projectDir: string): Promise<void> {
   const sep = projectDir.includes('\\') ? '\\' : '/';
   const filePath = `${projectDir}${sep}.tandem${sep}CLAUDE.md`;
   await invoke('save_transcript', { filePath, content: TANDEM_CLAUDE_MD });
+}
+
+// ─── Live Screenshots File ──────────────────────────────────────────────────
+
+export function generateLiveScreenshotsMarkdown(screenshots: ScreenshotData[]): string {
+  const lines: string[] = [];
+
+  lines.push('# Live Screenshots');
+  lines.push(`Updated: ${new Date().toISOString()}`);
+  lines.push('');
+
+  if (screenshots.length === 0) {
+    lines.push('*(No screenshots captured yet)*');
+    return lines.join('\n');
+  }
+
+  for (const ss of screenshots) {
+    const ts = ss.recording_elapsed_secs != null
+      ? `[${formatTimestamp(ss.recording_elapsed_secs)}]`
+      : `[${ss.timestamp}]`;
+    lines.push(`## ${ts} ${ss.capture_mode === 'region' ? 'Region' : 'Fullscreen'} — ${ss.width}×${ss.height}`);
+    lines.push(`File: ${ss.file_path}`);
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Write screenshots index to {projectDir}/.tandem/screenshots.md
+ */
+export async function writeLiveScreenshots(
+  projectDir: string,
+  screenshots: ScreenshotData[],
+): Promise<void> {
+  if (screenshots.length === 0) return;
+  const sep = projectDir.includes('\\') ? '\\' : '/';
+  const filePath = `${projectDir}${sep}.tandem${sep}screenshots.md`;
+  const content = generateLiveScreenshotsMarkdown(screenshots);
+  await invoke('save_transcript', { filePath, content });
 }
 
 // ─── Live Transcript File ───────────────────────────────────────────────────

@@ -232,6 +232,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
                         <p
                             className="text-base text-foreground leading-relaxed select-text cursor-text"
                             onDoubleClick={onEditStart}
+                            onMouseDown={(e) => e.stopPropagation()}
                         >
                             {displayText}
                         </p>

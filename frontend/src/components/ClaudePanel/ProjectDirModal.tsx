@@ -22,7 +22,14 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
     if (!defaultDir) {
       invoke<string | null>('get_meeting_folder_path')
         .then(path => {
-          if (path) setSelectedDir(path);
+          if (path) {
+            setSelectedDir(path);
+          } else {
+            // Pre-recording: no active meeting yet — use base recordings dir as default
+            invoke<string | null>('get_recordings_base_dir')
+              .then(base => { if (base) setSelectedDir(base); })
+              .catch(() => {});
+          }
         })
         .catch(() => {});
     }
@@ -35,7 +42,9 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
 
   const handleBrowse = async () => {
     try {
-      const result = await invoke<string | null>('select_recording_folder');
+      const result = await invoke<string | null>('select_recording_folder', {
+        startingDir: selectedDir || null,
+      });
       if (result) {
         setSelectedDir(result);
         setUseDefault(false);

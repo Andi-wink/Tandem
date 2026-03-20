@@ -88,6 +88,8 @@ interface ClaudeContextValue extends ClaudeState {
   // Panel resize
   panelWidth: number;
   setPanelWidth: (width: number) => void;
+  // Bug 8: inject a Claude Code response as an assistant message (no SSE call)
+  injectExternalMessage: (text: string) => void;
 }
 
 const ClaudeContext = createContext<ClaudeContextValue | null>(null);
@@ -645,6 +647,15 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     }));
   }, [clearBasket]);
 
+  const injectExternalMessage = useCallback((text: string) => {
+    const msg: ClaudeMessage = {
+      id: `external-${crypto.randomUUID()}`,
+      role: 'assistant',
+      text: `📋 **Claude Code:**\n\n${text}`,
+    };
+    setState(prev => ({ ...prev, conversation: [...prev.conversation, msg] }));
+  }, []);
+
   const value = useMemo<ClaudeContextValue>(() => ({
     ...state,
     // R009: Basket fields from ContextBasketContext (backward compat)
@@ -667,7 +678,8 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     // Panel resize
     panelWidth,
     setPanelWidth,
-  }), [state, contextBasket, addToBasket, removeFromBasket, clearBasket, openPanel, closePanel, sendMessage, clearSessionAction, cancelStream, setApiKey, setModel, updateMeetingTitle, toggleAnonymization, toggleItemAnonymization, clearEntityMapAction, panelWidth, setPanelWidth]);
+    injectExternalMessage,
+  }), [state, contextBasket, addToBasket, removeFromBasket, clearBasket, openPanel, closePanel, sendMessage, clearSessionAction, cancelStream, setApiKey, setModel, updateMeetingTitle, toggleAnonymization, toggleItemAnonymization, clearEntityMapAction, panelWidth, setPanelWidth, injectExternalMessage]);
 
   return (
     <ClaudeContext.Provider value={value}>

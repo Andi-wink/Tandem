@@ -29,6 +29,7 @@ interface RecordingControlsProps {
     systemDevice: string | null;
   };
   meetingName?: string;
+  onBeforeRecord?: (start: () => void) => void; // Intercept record click to show pre-record modal
 }
 
 export const RecordingControls: React.FC<RecordingControlsProps> = ({
@@ -43,6 +44,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   isParentProcessing,
   selectedDevices,
   meetingName,
+  onBeforeRecord,
 }) => {
   // Use global recording state context for pause state (syncs with tray operations)
   const recordingState = useRecordingState();
@@ -376,7 +378,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                           <button
                             onClick={() => {
                               Analytics.trackButtonClick('start_recording', 'recording_controls');
-                              handleStartRecording();
+                              if (onBeforeRecord) {
+                                onBeforeRecord(handleStartRecording);
+                              } else {
+                                handleStartRecording();
+                              }
                             }}
                             disabled={isStarting || isProcessing || isRecordingDisabled || isValidatingModel}
                             className={`w-12 h-12 flex items-center justify-center ${

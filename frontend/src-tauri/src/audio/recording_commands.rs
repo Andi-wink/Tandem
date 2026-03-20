@@ -1298,3 +1298,11 @@ pub fn get_current_meeting_folder() -> Option<std::path::PathBuf> {
     let manager_guard = RECORDING_MANAGER.lock().ok()?;
     manager_guard.as_ref()?.get_meeting_folder()
 }
+
+/// Get the base recordings directory (parent of per-meeting folders).
+/// Useful as a default path hint before a recording has started.
+#[tauri::command]
+pub async fn get_recordings_base_dir() -> Result<Option<String>, String> {
+    let base = super::recording_preferences::get_default_recordings_folder();
+    Ok(Some(base.to_string_lossy().to_string()))
+}
