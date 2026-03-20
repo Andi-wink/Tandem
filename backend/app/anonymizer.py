@@ -59,7 +59,6 @@ SURROGATE_ENTITIES = [
     "EMAIL_ADDRESS",
     "PHONE_NUMBER",
     "LOCATION",
-    "DATE_TIME",
     "URL",
     "IP_ADDRESS",
 ]

@@ -242,11 +242,25 @@ async fn save_transcript(file_path: String, content: String) -> Result<(), Strin
     Ok(())
 }
 
-/// F048: Read a text file and return its contents.
+/// Read a file if it exists and has non-empty content.
+/// Returns None if the file is missing, unreadable, or empty.
 #[tauri::command]
-async fn read_text_file(file_path: String) -> Result<String, String> {
-    std::fs::read_to_string(&file_path)
-        .map_err(|e| format!("Failed to read file {}: {}", file_path, e))
+async fn read_file_if_exists(path: String) -> Result<Option<String>, String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Ok(None);
+    }
+    match std::fs::read_to_string(p) {
+        Ok(content) => {
+            let trimmed = content.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed.to_string()))
+            }
+        }
+        Err(e) => Err(format!("Failed to read file: {}", e)),
+    }
 }
 
 // Audio level monitoring commands
@@ -652,7 +666,7 @@ pub fn run() {
             get_transcription_status,
             read_audio_file,
             save_transcript,
-            read_text_file,
+            read_file_if_exists,
             analytics::commands::init_analytics,
             analytics::commands::disable_analytics,
             analytics::commands::track_event,
@@ -730,6 +744,7 @@ pub fn run() {
             audio::recording_commands::is_recording_paused,
             audio::recording_commands::get_recording_state,
             audio::recording_commands::get_meeting_folder_path,
+            audio::recording_commands::get_recordings_base_dir,
             // Reload sync commands (retrieve transcript history and meeting name)
             audio::recording_commands::get_transcript_history,
             audio::recording_commands::get_recording_meeting_name,

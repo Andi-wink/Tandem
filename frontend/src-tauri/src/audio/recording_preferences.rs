@@ -246,13 +246,18 @@ pub async fn open_recordings_folder<R: Runtime>(app: AppHandle<R>) -> Result<(),
 #[tauri::command]
 pub async fn select_recording_folder<R: Runtime>(
     app: AppHandle<R>,
+    starting_dir: Option<String>,
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
-    let dialog = app.dialog().file();
-    let folder = dialog
-        .set_title("Select project directory")
-        .blocking_pick_folder();
+    let mut dialog = app.dialog().file().set_title("Select project directory");
+    if let Some(dir) = starting_dir {
+        let path = std::path::PathBuf::from(&dir);
+        if path.exists() {
+            dialog = dialog.set_directory(path);
+        }
+    }
+    let folder = dialog.blocking_pick_folder();
 
     match folder {
         Some(file_path) => {

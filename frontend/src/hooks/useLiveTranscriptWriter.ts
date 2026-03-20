@@ -9,23 +9,30 @@
  */
 
 import { useEffect, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useClaude } from '@/contexts/ClaudeContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { useScreenshots } from '@/contexts/ScreenshotContext';
 import {
   writeLiveTranscript,
+  writeLiveScreenshots,
   getRecentTranscripts,
   LIVE_TRANSCRIPT_WINDOW_SECS,
   LIVE_TRANSCRIPT_DEBOUNCE_MS,
 } from '@/services/handoffService';
 
+const RESPONSE_POLL_MS = 10_000; // poll every 10s
+
 export function useLiveTranscriptWriter() {
   const { transcripts, meetingTitle } = useTranscripts();
-  const { projectDir } = useClaude();
+  const { projectDir, injectExternalMessage } = useClaude();
   const { isRecording } = useRecordingState();
+  const { screenshots } = useScreenshots();
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastWrittenCountRef = useRef<number>(0);
+  const responsePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Debounced write on transcript changes during recording
   useEffect(() => {
@@ -40,6 +47,7 @@ export function useLiveTranscriptWriter() {
       try {
         const recentTranscripts = getRecentTranscripts(transcripts, LIVE_TRANSCRIPT_WINDOW_SECS);
         await writeLiveTranscript(projectDir, recentTranscripts, meetingTitle || 'Meeting');
+        await writeLiveScreenshots(projectDir, screenshots);
         lastWrittenCountRef.current = transcripts.length;
       } catch (err) {
         // Non-blocking — don't toast on every failed write
@@ -50,7 +58,7 @@ export function useLiveTranscriptWriter() {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [transcripts, isRecording, projectDir, meetingTitle]);
+  }, [transcripts, screenshots, isRecording, projectDir, meetingTitle]);
 
   // Final flush when recording stops
   useEffect(() => {
@@ -64,4 +72,29 @@ export function useLiveTranscriptWriter() {
     // Only react to isRecording going from true→false
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isRecording]);
+
+  // Bug 8: Poll .tandem/response.md for Claude Code responses
+  useEffect(() => {
+    if (!projectDir) return;
+
+    const sep = projectDir.includes('\\') ? '\\' : '/';
+    const responsePath = `${projectDir}${sep}.tandem${sep}response.md`;
+
+    responsePollRef.current = setInterval(async () => {
+      try {
+        const content = await invoke<string | null>('read_file_if_exists', { path: responsePath });
+        if (content) {
+          injectExternalMessage(content);
+          // Clear the file so we don't re-inject the same response
+          await invoke('save_transcript', { filePath: responsePath, content: '' });
+        }
+      } catch {
+        // Non-blocking — file may not exist yet
+      }
+    }, RESPONSE_POLL_MS);
+
+    return () => {
+      if (responsePollRef.current) clearInterval(responsePollRef.current);
+    };
+  }, [projectDir, injectExternalMessage]);
 }

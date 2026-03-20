@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { RecordingControls } from '@/components/RecordingControls';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { usePermissionCheck } from '@/hooks/usePermissionCheck';
@@ -27,12 +27,20 @@ import { useClaude } from '@/contexts/ClaudeContext';
 import { Bot } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { motion, AnimatePresence } from 'framer-motion';
+import { ProjectDirModal } from '@/components/ClaudePanel/ProjectDirModal';
 
 export default function Home() {
   // Local page state (not moved to contexts)
   const [isRecording, setIsRecordingState] = useState(false);
   const [barHeights, setBarHeights] = useState(['10px', '14px', '18px', '14px', '10px']);
   const [showRecoveryDialog, setShowRecoveryDialog] = useState(false);
+
+  // Pre-record project directory modal
+  const [showPreRecordModal, setShowPreRecordModal] = useState(false);
+  const [preRecordDir, setPreRecordDir] = useState('');
+  const pendingStartRef = useRef<(() => void) | null>(null);
+  const pendingTitleRef = useRef<string>('');
+  const preRecordDirRef = useRef<string>('');
 
   // Use contexts for state management
   const { meetingTitle } = useTranscripts();
@@ -209,11 +217,26 @@ export default function Home() {
     }
   }, [recordingState.isRecording]);
 
+  // Pre-record modal handlers
+  const handleBeforeRecord = (startFn: () => void) => {
+    pendingStartRef.current = startFn;
+    pendingTitleRef.current = `Meeting ${new Date().toLocaleDateString('en-GB').replace(/\//g, '_')}`;
+    setShowPreRecordModal(true);
+  };
+
+  const handlePreRecordDirConfirm = (dir: string) => {
+    setPreRecordDir(dir);
+    preRecordDirRef.current = dir;
+    setShowPreRecordModal(false);
+    pendingStartRef.current?.();
+  };
+
   // F054: Auto-open AI panel when recording starts so projectDir is set for live transcript writer
-  // Pass empty projectDir so the setup modal always prompts for the project directory
+  // Always call openPanel when recording starts — even if panel is already open — so projectDir
+  // is updated with the pre-selected directory and ClaudePanel doesn't prompt again.
   useEffect(() => {
-    if (recordingState.isRecording && !isPanelOpen) {
-      openPanel('live-recording', meetingTitle || 'Live Recording', '');
+    if (recordingState.isRecording) {
+      openPanel('live-recording', meetingTitle || 'Live Recording', preRecordDirRef.current);
     }
   }, [recordingState.isRecording]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -224,6 +247,16 @@ export default function Home() {
     <div
       className="flex flex-col h-screen bg-background"
     >
+      {/* Pre-record project directory modal */}
+      {showPreRecordModal && (
+        <ProjectDirModal
+          defaultDir={preRecordDir}
+          meetingTitle={pendingTitleRef.current}
+          onConfirm={handlePreRecordDirConfirm}
+          onCancel={() => setShowPreRecordModal(false)}
+        />
+      )}
+
       {/* All Modals supported*/}
       <SettingsModals
         modals={modals}
@@ -285,6 +318,7 @@ export default function Home() {
                       isParentProcessing={isProcessingStop}
                       selectedDevices={selectedDevices}
                       meetingName={meetingTitle}
+                      onBeforeRecord={handleBeforeRecord}
                     />
                   </div>
                 </div>

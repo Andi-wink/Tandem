@@ -336,8 +336,8 @@ export function ClaudePanel() {
       return; // Don't send to AI
     }
 
-    // Show setup modal if no session yet, API key missing, or projectDir empty
-    if ((!sessionId && meetingId && meetingTitle) || !hasApiKey || !projectDir) {
+    // Show setup modal if API key missing or projectDir empty
+    if (!hasApiKey || !projectDir) {
       setPendingFirstMessage(messageToSend);
       setShowProjectModal(true);
       return;
@@ -852,7 +852,7 @@ export function ClaudePanel() {
             </div>
 
             {/* Bottom toolbar — inside the input container */}
-            <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-2 pb-2">
+            <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-2 pb-2 z-10 bg-card/80 backdrop-blur-sm">
               {/* Left: attachment */}
               <button
                 onClick={() => fileInputRef.current?.click()}
