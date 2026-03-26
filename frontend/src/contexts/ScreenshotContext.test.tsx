@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import React from 'react';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { listen } from '@tauri-apps/api/event';
 import { ScreenshotProvider, useScreenshots } from './ScreenshotContext';
 
 const mockListen = vi.mocked(listen);
@@ -59,10 +59,6 @@ beforeEach(() => {
   } as unknown as typeof globalThis.Image;
 });
 
-afterEach(() => {
-  globalThis.Image = OriginalImage;
-});
-
 // Capture event handlers registered via listen()
 const eventHandlers: Record<string, Function> = {};
 
@@ -72,7 +68,7 @@ beforeEach(() => {
 
   mockListen.mockImplementation(async (event, handler) => {
     eventHandlers[event as string] = handler as Function;
-    return (() => {}) as UnlistenFn;
+    return (() => {}) as unknown as ReturnType<typeof listen> extends Promise<infer U> ? U : never; // unlisten
   });
 });
 

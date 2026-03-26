@@ -4,7 +4,6 @@
 // speech during recording. Voice commands are push-to-talk only (Ctrl+Space).
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { toast } from 'sonner';
 
 export interface VoiceCommandResult {
   /** The raw transcript text captured after wake word */
@@ -103,17 +102,16 @@ export function useVoiceCommand(options: UseVoiceCommandOptions = {}) {
         target?.isContentEditable
       ) return;
 
-      if (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.code === 'Space' && !e.repeat && !isHotkeyListeningRef.current) {
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.code === 'Space' && !e.repeat && !isListeningRef.current) {
         e.preventDefault();
         console.log('[VoiceCommand] Hotkey pressed — starting push-to-talk');
-        // Cancel any pending grace period from a previous press before resetting state
-        clearTimers();
         isHotkeyListeningRef.current = true;
         isListeningRef.current = true;
         capturedTextRef.current = '';
         setIsHotkeyListening(true);
         setIsListening(true);
         setCapturedText('');
+        clearTimers();
         // Safety timeout: auto-cancel after 15s if key somehow stays held
         timeoutRef.current = setTimeout(() => {
           console.log('[VoiceCommand] Hotkey safety timeout — cancelling');
@@ -135,20 +133,16 @@ export function useVoiceCommand(options: UseVoiceCommandOptions = {}) {
         // Use a longer grace period when no text has been captured yet, because Whisper
         // transcription has significant latency (3-10s). If some text was already captured,
         // a shorter wait suffices. Once transcripts start arriving, feedTranscript's own
-        // 2s activity timer takes over (see feedTranscript below).
+        // 2s activity timer takes over.
         if (activityTimerRef.current) clearTimeout(activityTimerRef.current);
         const hasCapturedText = capturedTextRef.current.trim().length > 0;
-        const graceMs = hasCapturedText ? 1500 : 20000;  // 20s max wait for slow local Whisper
+        const graceMs = hasCapturedText ? 1500 : 8000;
         activityTimerRef.current = setTimeout(() => {
           if (!isListeningRef.current) return;
           const captured = capturedTextRef.current.trim();
           console.log('[VoiceCommand] Hotkey grace period done — executing with:', captured);
-          if (captured) {
-            executeCommand(captured);
-          } else {
-            cancelListening();
-            toast.warning('Voice mode — no speech was captured. Try speaking while holding Ctrl+Space.');
-          }
+          if (captured) executeCommand(captured);
+          else cancelListening();
         }, graceMs);
       }
     };
@@ -157,7 +151,6 @@ export function useVoiceCommand(options: UseVoiceCommandOptions = {}) {
     window.addEventListener('keyup', handleKeyUp);
 
     return () => {
-      clearTimers();
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
@@ -181,21 +174,9 @@ export function useVoiceCommand(options: UseVoiceCommandOptions = {}) {
       capturedTextRef.current = updated;
       setCapturedText(updated);
 
-      // Key already released (grace period mode): restart a short 2s activity timer each time
-      // a new transcript segment arrives. This ensures we capture all speech even when Whisper
-      // is slow — as long as segments keep arriving, we keep extending the window.
-      // When segments stop for 2s, we execute the accumulated command.
-      if (!isHotkeyListeningRef.current) {
-        if (activityTimerRef.current) clearTimeout(activityTimerRef.current);
-        activityTimerRef.current = setTimeout(() => {
-          if (!isListeningRef.current) return;
-          const captured = capturedTextRef.current.trim();
-          console.log('[VoiceCommand] Activity timer done — executing with:', captured.slice(0, 80));
-          if (captured) executeCommand(captured);
-          else cancelListening();
-        }, 2000);
-      }
-    }, [executeCommand, cancelListening]),
+      // In hotkey mode the user controls when to stop (key release).
+      // The grace-period timer in handleKeyUp handles execution after release.
+    }, [executeCommand]),
     /** Manually trigger command execution with the currently captured text */
     executeCommand,
     /** Parse a transcript into a voice command (utility, no side effects) */

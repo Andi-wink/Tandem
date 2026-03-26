@@ -11,24 +11,11 @@ import { motion, AnimatePresence } from "framer-motion";
 import { TranscriptSegmentData, ScreenshotData, ClipboardData, TimelineItem, TimelineFilter } from "@/types";
 import { TimelineFilterBar } from "./TimelineFilterBar";
 import { ScreenshotThumbnail } from "./ScreenshotThumbnail";
-import { Clipboard, Loader2 } from "lucide-react";
+import { Clipboard } from "lucide-react";
 import { ContextBasketItem } from "@/contexts/ClaudeContext";
 import { useDraggableBasketItem } from "@/hooks/useDragAndDrop";
 import { useSelection } from "@/contexts/SelectionContext";
 import { useRubberBandSelect, SelectionRect } from "@/hooks/useRubberBandSelect";
-
-/** Shared listening indicator shown when recording is active */
-const ListeningIndicator = () => (
-    <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        className="flex items-center gap-2 mt-4 text-muted-foreground"
-    >
-        <div className="w-2 h-2 bg-info rounded-full animate-pulse" />
-        <span className="text-sm">Listening...</span>
-    </motion.div>
-);
 
 export interface VirtualizedTranscriptViewProps {
     /** Transcript segments to display */
@@ -71,9 +58,6 @@ export interface VirtualizedTranscriptViewProps {
 // Threshold for enabling virtualization (below this, use simple rendering)
 const VIRTUALIZATION_THRESHOLD = 10;
 
-// F055: 5-minute chunk window for sticky headers (matches useTimeline.ts)
-const CHUNK_WINDOW_SECS = 300;
-
 // Helper function to format seconds as recording-relative time [MM:SS]
 function formatRecordingTime(seconds: number | undefined): string {
     if (seconds === undefined) return '[--:--]';
@@ -98,8 +82,6 @@ function cleanStopWords(text: string): string {
     return cleanedText.replace(/\s+/g, ' ').trim();
 }
 
-/** Creates a basket item from a transcript segment. Module-level function —
- *  returns a new object each call. If memoization is needed, cache at the consumer. */
 function segmentToBasketItem(seg: TranscriptSegmentData): ContextBasketItem {
     return {
         id: `segment-${seg.id}`,
@@ -144,12 +126,12 @@ const DraggableClipboardItem = memo(function DraggableClipboardItem({
         <div
             {...dragHandlers}
             data-selectable-id={clip.id}
-            className={`flex items-start gap-2 bg-warning-muted border border-warning/20 rounded-lg px-3 py-2 text-xs select-none transition-all ${onClick ? 'cursor-grab hover:bg-warning-muted/80' : ''} ${isDragging ? 'opacity-60 ring-2 ring-brand shadow-[0_0_12px_hsl(var(--brand)/0.4)] scale-[0.97]' : ''} ${isSelected ? 'ring-2 ring-brand bg-brand-muted' : ''}`}
+            className={`flex items-start gap-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/30 rounded-lg px-3 py-2 text-xs select-none transition-all ${onClick ? 'cursor-grab hover:bg-amber-100' : ''} ${isDragging ? 'opacity-60 ring-2 ring-blue-400 shadow-[0_0_12px_rgba(59,130,246,0.4)] scale-[0.97]' : ''} ${isSelected ? 'ring-2 ring-blue-400 bg-blue-50 dark:bg-blue-900/30' : ''}`}
             onClick={() => onClick?.(clip)}
         >
-            <Clipboard className="w-3.5 h-3.5 text-warning mt-0.5 shrink-0" />
+            <Clipboard className="w-3.5 h-3.5 text-amber-500 mt-0.5 shrink-0" />
             <div className="min-w-0">
-                <span className="text-warning font-medium mr-2">{clip.timestamp}</span>
+                <span className="text-amber-600 dark:text-amber-400 font-medium mr-2">{clip.timestamp}</span>
                 <span className="text-foreground line-clamp-2">{clip.text}</span>
             </div>
         </div>
@@ -209,7 +191,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
 
     return (
         <div id={`segment-${id}`} data-selectable-id={`segment-${id}`} className="mb-3" {...(isEditing ? {} : dragHandlers)}>
-            <div className={`flex items-start gap-2 select-none transition-all ${isDragging ? 'opacity-60 ring-2 ring-brand shadow-[0_0_12px_hsl(var(--brand)/0.4)] scale-[0.97] rounded-lg' : ''} ${isSelected && !isEditing ? 'bg-brand-muted ring-1 ring-brand/30 rounded-lg px-1' : ''} ${basketItem && !isEditing ? 'cursor-grab' : ''}`}>
+            <div className={`flex items-start gap-2 select-none transition-all ${isDragging ? 'opacity-60 ring-2 ring-blue-400 shadow-[0_0_12px_rgba(59,130,246,0.4)] scale-[0.97] rounded-lg' : ''} ${isSelected && !isEditing ? 'bg-blue-50 dark:bg-blue-900/30 ring-1 ring-blue-300 rounded-lg px-1' : ''} ${basketItem && !isEditing ? 'cursor-grab' : ''}`}>
                 <Tooltip>
                     <TooltipTrigger>
                         <span className="text-xs text-muted-foreground mt-1 flex-shrink-0 min-w-[50px]">
@@ -235,7 +217,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
                                 }}
                                 onKeyDown={onEditKeyDown}
                                 onBlur={onEditSave}
-                                className="w-full text-base text-foreground leading-relaxed bg-brand-muted border border-brand/30 rounded-md px-2 py-1 resize-none focus:outline-none focus:ring-2 focus:ring-brand"
+                                className="w-full text-base text-foreground leading-relaxed bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-700 rounded-md px-2 py-1 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 rows={1}
                             />
                             <span className="text-[10px] text-muted-foreground mt-0.5 block">
@@ -432,7 +414,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                 }
             },
             {
-                root: scrollRef.current,
+                root: null,
                 rootMargin: '100px',
                 threshold: 0,
             }
@@ -472,70 +454,6 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
         return () => scrollElement.removeEventListener('scroll', handleScroll);
     }, [onLoadMore, hasMore, isLoadingMore, isRecording]);
 
-    // F055: Sticky chunk header — tracks the current 5-minute window based on scroll position
-    const [stickyChunkLabel, setStickyChunkLabel] = useState<string | null>(null);
-
-    useEffect(() => {
-        const scrollElement = scrollRef.current;
-        if (!scrollElement || segments.length < VIRTUALIZATION_THRESHOLD) return;
-
-        let ticking = false;
-        const updateStickyHeader = () => {
-            if (!scrollElement) return;
-
-            // Find the first visible segment element
-            const container = scrollElement.getBoundingClientRect();
-            // Check the top of the content area (account for sticky elements ~40px)
-            const stickyOffset = container.top + 40;
-
-            let firstVisibleTimestamp: number | undefined;
-
-            if (segments.length >= VIRTUALIZATION_THRESHOLD) {
-                // Virtualized mode: use virtualizer range
-                const visibleRange = virtualizer.range;
-                if (visibleRange) {
-                    firstVisibleTimestamp = segments[visibleRange.startIndex]?.timestamp;
-                }
-            } else {
-                // Simple mode: find first segment element in viewport
-                const segElements = scrollElement.querySelectorAll('[id^="segment-"]');
-                for (const el of segElements) {
-                    const rect = el.getBoundingClientRect();
-                    if (rect.bottom > stickyOffset) {
-                        const idx = segments.findIndex(s => `segment-${s.id}` === el.id);
-                        if (idx >= 0) firstVisibleTimestamp = segments[idx].timestamp;
-                        break;
-                    }
-                }
-            }
-
-            if (firstVisibleTimestamp !== undefined) {
-                const chunkStart = Math.floor(firstVisibleTimestamp / CHUNK_WINDOW_SECS) * CHUNK_WINDOW_SECS;
-                const chunkEnd = chunkStart + CHUNK_WINDOW_SECS;
-                const mm1 = String(Math.floor(chunkStart / 60)).padStart(2, '0');
-                const ss1 = String(chunkStart % 60).padStart(2, '0');
-                const mm2 = String(Math.floor(chunkEnd / 60)).padStart(2, '0');
-                const ss2 = String(chunkEnd % 60).padStart(2, '0');
-                setStickyChunkLabel(`${mm1}:${ss1} – ${mm2}:${ss2}`);
-            }
-        };
-
-        const handleScroll = () => {
-            if (ticking) return;
-            ticking = true;
-            requestAnimationFrame(() => {
-                updateStickyHeader();
-                ticking = false;
-            });
-        };
-
-        // Initial computation
-        updateStickyHeader();
-
-        scrollElement.addEventListener('scroll', handleScroll, { passive: true });
-        return () => scrollElement.removeEventListener('scroll', handleScroll);
-    }, [segments, virtualizer]);
-
     // Use simple rendering for small lists, virtualization for large lists
     // When timeline items are present (has screenshots), use timeline rendering
     const hasTimeline = timelineItems && timelineItems.length > 0;
@@ -555,13 +473,6 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                     </div>
                 )}
             </AnimatePresence>
-
-            {/* F055: Sticky chunk time header — sits below recording status bar when recording */}
-            {stickyChunkLabel && segments.length >= VIRTUALIZATION_THRESHOLD && (
-                <div className={`sticky ${isRecording ? 'top-8' : 'top-0'} z-[9] bg-muted/95 backdrop-blur-sm border-b border-border px-3 py-1`}>
-                    <span className="text-xs font-medium text-muted-foreground">{stickyChunkLabel}</span>
-                </div>
-            )}
 
             {/* Timeline Filter Bar - shown when screenshots or clipboard clips exist */}
             {onTimelineFilterChange && (
@@ -585,7 +496,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                     {isRecording ? (
                         <>
                             <div className="flex items-center justify-center mb-3">
-                                <div className={`w-3 h-3 rounded-full ${isPaused ? 'bg-paused' : 'bg-info animate-pulse'}`}></div>
+                                <div className={`w-3 h-3 rounded-full ${isPaused ? 'bg-orange-500' : 'bg-blue-500 animate-pulse'}`}></div>
                             </div>
                             <p className="text-sm text-muted-foreground">
                                 {isPaused ? 'Recording paused' : 'Listening for speech...'}
@@ -704,7 +615,15 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
 
                     {/* Listening indicator when recording */}
                     {!isStopping && isRecording && !isPaused && !isProcessing && (
-                        <ListeningIndicator />
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="flex items-center gap-2 mt-4 text-muted-foreground"
+                        >
+                            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                            <span className="text-sm">Listening...</span>
+                        </motion.div>
                     )}
                 </>
             ) : useVirtualization ? (
@@ -763,7 +682,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                         <div ref={loadMoreTriggerRef} className="flex justify-center items-center py-4 mt-2">
                             {isLoadingMore ? (
                                 <div className="flex items-center gap-2 text-muted-foreground">
-                                    <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                                    <div className="w-4 h-4 border-2 border-muted-foreground/30 border-t-muted-foreground rounded-full animate-spin" />
                                     <span className="text-sm">Loading more...</span>
                                 </div>
                             ) : hasMore && totalCount > 0 ? (
@@ -776,7 +695,15 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
 
                     {/* Listening indicator when recording */}
                     {!isStopping && isRecording && !isPaused && !isProcessing && segments.length > 0 && (
-                        <ListeningIndicator />
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="flex items-center gap-2 mt-4 text-muted-foreground"
+                        >
+                            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                            <span className="text-sm">Listening...</span>
+                        </motion.div>
                     )}
                 </>
             ) : (
@@ -822,7 +749,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                         <div ref={loadMoreTriggerRef} className="flex justify-center items-center py-4 mt-2">
                             {isLoadingMore ? (
                                 <div className="flex items-center gap-2 text-muted-foreground">
-                                    <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                                    <div className="w-4 h-4 border-2 border-muted-foreground/30 border-t-muted-foreground rounded-full animate-spin" />
                                     <span className="text-sm">Loading more...</span>
                                 </div>
                             ) : hasMore && totalCount > 0 ? (
@@ -835,7 +762,15 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
 
                     {/* Listening indicator when recording */}
                     {!isStopping && isRecording && !isPaused && !isProcessing && segments.length > 0 && (
-                        <ListeningIndicator />
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="flex items-center gap-2 mt-4 text-muted-foreground"
+                        >
+                            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                            <span className="text-sm">Listening...</span>
+                        </motion.div>
                     )}
                 </>
             )}
@@ -844,7 +779,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
             {/* Rubber-band selection rectangle */}
             {selectionRect && (
                 <div
-                    className="absolute border-2 border-dashed border-brand bg-brand/10 pointer-events-none z-10 rounded"
+                    className="absolute border-2 border-dashed border-blue-500 bg-blue-500/10 pointer-events-none z-10 rounded"
                     style={{
                         left: selectionRect.left,
                         top: selectionRect.top,

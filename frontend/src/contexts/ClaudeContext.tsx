@@ -72,7 +72,7 @@ interface ClaudeContextValue extends ClaudeState {
   removeFromBasket: (itemId: string) => void;
   clearBasket: () => void;
   // Session
-  openPanel: (meetingId: string, meetingTitle: string, defaultProjectDir: string) => Promise<void>;
+  openPanel: (meetingId: string, meetingTitle: string, defaultProjectDir: string) => void;
   closePanel: () => void;
   sendMessage: (message: string) => Promise<void>;
   clearSession: () => Promise<void>;
@@ -80,11 +80,11 @@ interface ClaudeContextValue extends ClaudeState {
   setApiKey: (key: string) => void;
   setModel: (model: string) => void;
   updateMeetingTitle: (newTitle: string) => void;
-  setProjectDir: (dir: string) => void;
   // F005: PII Anonymization
   toggleAnonymization: () => void;
   toggleItemAnonymization: (itemId: string) => void;
   clearEntityMap: () => void;
+  piiAvailable: boolean | null;
   // Panel resize
   panelWidth: number;
   setPanelWidth: (width: number) => void;
@@ -105,11 +105,7 @@ const MAX_PANEL_WIDTH = 700;
 
 export function ClaudeProvider({ children }: { children: React.ReactNode }) {
   // F020: Access recording duration for timestamping AI messages
-  // B040: Also watch isRecording to auto-initialize meeting context for voice commands
-  const { recordingDuration, isRecording } = useRecordingState();
-  // M11: Use ref so sendMessage always gets latest value without dep array churn
-  const recordingDurationRef = useRef(recordingDuration);
-  recordingDurationRef.current = recordingDuration;
+  const { recordingDuration } = useRecordingState();
 
   // R009: Basket state now lives in ContextBasketContext
   const { contextBasket, addToBasket, removeFromBasket, clearBasket, updateItem } = useContextBasket();
@@ -173,8 +169,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
             body: JSON.stringify({ provider: 'claude' }),
           });
           if (!cancelled && res.ok) {
-            const data = await res.json();
-            const key = data?.api_key;
+            const key = await res.json();
             if (key && typeof key === 'string' && key.length > 0) {
               setState(prev => ({ ...prev, apiKey: key }));
             }
@@ -218,37 +213,6 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; clearTimeout(timeoutId); };
   }, []);
 
-  // B040: Pre-populate meeting context when recording starts so voice commands work immediately
-  useEffect(() => {
-    if (!isRecording) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        let folder = await invoke<string | null>('get_meeting_folder_path');
-        let meetingName = await invoke<string | null>('get_recording_meeting_name');
-        // Retry once after 800ms if folder isn't ready yet (recording may still be initializing)
-        if (!folder && !cancelled) {
-          await new Promise(r => setTimeout(r, 800));
-          if (cancelled) return;
-          folder = await invoke<string | null>('get_meeting_folder_path');
-          meetingName = meetingName || await invoke<string | null>('get_recording_meeting_name');
-        }
-        if (!cancelled && folder) {
-          setState(prev => ({
-            ...prev,
-            projectDir: prev.projectDir || folder,
-            meetingId: prev.meetingId || 'live-recording',
-            meetingTitle: prev.meetingTitle || meetingName || 'Live Recording',
-          }));
-        }
-      } catch {
-        // Non-critical — voice commands fall back to handleVoiceCommand's own init path
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [isRecording]);
-
   // B017: Cleanup RAF and abort SSE on unmount
   useEffect(() => {
     return () => {
@@ -259,31 +223,6 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         abortRef.current.abort();
       }
     };
-  }, []);
-
-  // Listen for webhook notifications that should appear inline in the AI panel
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (!detail) return;
-      const { level, title, body, source } = detail;
-      const prefix = source && source !== 'unknown' ? `**[${source}]** ` : '';
-      const heading = title ? `**${title}**\n\n` : '';
-      const icon = level === 'success' ? '\u2705 ' : level === 'error' ? '\u274c ' : level === 'warning' ? '\u26a0\ufe0f ' : '';
-      const text = `${icon}${prefix}${heading}${body}`;
-
-      const msg: ClaudeMessage = {
-        id: `notify-${crypto.randomUUID()}`,
-        role: 'assistant',
-        text,
-      };
-      setState(prev => ({
-        ...prev,
-        conversation: [...prev.conversation, msg],
-      }));
-    };
-    window.addEventListener('tandem-notification', handler);
-    return () => window.removeEventListener('tandem-notification', handler);
   }, []);
 
   // Track the current streaming message being assembled
@@ -307,10 +246,11 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
   }, [state.meetingId]);
 
   // Cancel any pending RAF and flush the latest streamed text into state
-  const flushPendingRaf = useCallback(() => {
+  const flushPendingRaf = () => {
     if (rafIdRef.current !== null) {
       cancelAnimationFrame(rafIdRef.current);
       rafIdRef.current = null;
+      // Flush the accumulated text so nothing is lost
       const finalText = streamingTextRef.current;
       if (finalText) {
         setState(prev => {
@@ -323,7 +263,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         });
       }
     }
-  }, []); // Safe: only uses refs and setState (stable)
+  };
 
   // ── Event handler for SSE events ────────────────────────────────────────
   const handleStreamEvent = useCallback((event: ClaudeFrontendEvent) => {
@@ -492,10 +432,6 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     setState(prev => ({ ...prev, meetingTitle: newTitle }));
   }, []);
 
-  const setProjectDir = useCallback((dir: string) => {
-    setState(prev => ({ ...prev, projectDir: dir }));
-  }, []);
-
   // ── F005: PII Anonymization controls ──────────────────────────────────────
 
   const toggleAnonymization = useCallback(() => {
@@ -606,14 +542,14 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       contextSummary: contextSummary
         ? contextSummary + (anonymizedCount > 0 ? ` (${anonymizedCount} PII entities anonymized)` : '')
         : (anonymizedCount > 0 ? `(${anonymizedCount} PII entities anonymized)` : undefined),
-      recording_elapsed_secs: recordingDurationRef.current ?? undefined, // F020
+      recording_elapsed_secs: recordingDuration ?? undefined, // F020
     };
 
     const assistantMsg: ClaudeMessage = {
       id: `assistant-${crypto.randomUUID()}`,
       role: 'assistant',
       text: '',
-      recording_elapsed_secs: recordingDurationRef.current ?? undefined, // F020
+      recording_elapsed_secs: recordingDuration ?? undefined, // F020
     };
 
     streamingTextRef.current = '';
@@ -642,11 +578,6 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       body.meeting_title = s.meetingTitle;
     }
 
-    // Abort any previous stream before starting new one
-    if (abortRef.current) {
-      abortRef.current.abort();
-    }
-
     // Start SSE stream
     const controller = streamClaudeSession(
       endpoint as '/api/claude/start' | '/api/claude/message',
@@ -668,6 +599,10 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         });
       },
     );
+    // Abort any previous stream before starting new one
+    if (abortRef.current) {
+      abortRef.current.abort();
+    }
     abortRef.current = controller;
   }, [handleStreamEvent, clearBasket]);
 
@@ -737,7 +672,6 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     setApiKey,
     setModel,
     updateMeetingTitle,
-    setProjectDir,
     toggleAnonymization,
     toggleItemAnonymization,
     clearEntityMap: clearEntityMapAction,

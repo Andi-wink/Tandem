@@ -126,36 +126,11 @@
     --warning: 38 92% 50%;
     --warning-foreground: 0 0% 9%;
     --warning-muted: 48 96% 89%;
-    /* shadcn/ui chart tokens — unused, retained for future charting components */
     --chart-1: 12 76% 61%;
     --chart-2: 173 58% 39%;
     --chart-3: 197 37% 24%;
     --chart-4: 43 74% 66%;
     --chart-5: 27 87% 67%;
-
-    /* Recording state tokens */
-    --recording: 0 84% 60%;
-    --recording-hover: 0 72% 51%;
-    --recording-foreground: 0 0% 100%;
-    --recording-muted: 0 84% 95%;
-    --paused: 25 95% 53%;
-    --paused-foreground: 0 0% 100%;
-
-    /* Brand tokens */
-    --brand: 221 83% 53%;
-    --brand-hover: 224 76% 48%;
-    --brand-foreground: 0 0% 100%;
-    --brand-muted: 214 94% 94%;
-    --brand-muted-foreground: 224 76% 48%;
-
-    /* Semantic status tokens */
-    --success: 142 76% 36%;
-    --success-foreground: 0 0% 100%;
-    --warning: 38 92% 50%;
-    --warning-foreground: 0 0% 9%;
-    --warning-muted: 48 96% 89%;
-    --info: 217 91% 60%;
-    --info-foreground: 0 0% 100%;
   }
 
   .dark {
@@ -195,36 +170,11 @@
     --warning: 38 92% 50%;
     --warning-foreground: 0 0% 100%;
     --warning-muted: 38 92% 13%;
-    /* shadcn/ui chart tokens — unused, retained for future charting components */
     --chart-1: 220 70% 50%;
     --chart-2: 160 60% 45%;
     --chart-3: 30 80% 55%;
     --chart-4: 280 65% 60%;
     --chart-5: 340 75% 55%;
-
-    /* Recording state tokens */
-    --recording: 0 72% 51%;
-    --recording-hover: 0 84% 60%;
-    --recording-foreground: 0 0% 100%;
-    --recording-muted: 0 63% 15%;
-    --paused: 25 95% 50%;
-    --paused-foreground: 0 0% 100%;
-
-    /* Brand tokens */
-    --brand: 217 91% 60%;
-    --brand-hover: 214 94% 68%;
-    --brand-foreground: 0 0% 100%;
-    --brand-muted: 217 91% 15%;
-    --brand-muted-foreground: 214 95% 74%;
-
-    /* Semantic status tokens */
-    --success: 142 71% 45%;
-    --success-foreground: 0 0% 100%;
-    --warning: 38 92% 50%;
-    --warning-foreground: 0 0% 100%;
-    --warning-muted: 38 92% 13%;
-    --info: 217 91% 60%;
-    --info-foreground: 0 0% 100%;
   }
 }
 

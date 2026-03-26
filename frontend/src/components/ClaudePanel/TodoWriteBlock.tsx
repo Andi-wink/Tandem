@@ -32,12 +32,12 @@ const STATUS_CONFIG = {
   },
   in_progress: {
     icon: Loader2,
-    className: 'text-brand animate-spin',
+    className: 'text-blue-500 animate-spin',
     textClass: 'text-foreground font-medium',
   },
   completed: {
     icon: CheckCircle2,
-    className: 'text-success',
+    className: 'text-emerald-500',
     textClass: 'text-muted-foreground line-through',
   },
 } as const;

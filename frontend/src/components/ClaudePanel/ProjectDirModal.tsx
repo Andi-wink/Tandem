@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { FolderOpen, Key, ExternalLink } from 'lucide-react';
+import { FolderOpen, X, Key, ExternalLink } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { useClaude } from '@/contexts/ClaudeContext';
 
 interface ProjectDirModalProps {
@@ -61,15 +60,25 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
     onConfirm(selectedDir);
   };
 
+  // B026: Close on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCancel();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [onCancel]);
+
   return (
-    <Dialog open onOpenChange={(open) => { if (!open) onCancel(); }}>
-      <DialogContent className="max-w-[500px] gap-0 p-0">
-        <DialogHeader className="px-4 py-3 border-b border-border">
-          <DialogTitle className="text-sm">AI Assistant — Setup</DialogTitle>
-          <DialogDescription className="sr-only">
-            Configure API key and project directory for the AI assistant
-          </DialogDescription>
-        </DialogHeader>
+    // B027: Close on backdrop click
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onCancel}>
+      <div className="bg-background rounded-lg shadow-xl w-[420px] max-w-[90vw]" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+          <h3 className="font-semibold text-sm">AI Assistant — Setup</h3>
+          <button onClick={onCancel} className="text-muted-foreground hover:text-foreground">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
 
         <div className="px-4 py-4 space-y-4">
           <p className="text-sm text-muted-foreground">
@@ -88,18 +97,19 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
                 value={keyInput}
                 onChange={(e) => setKeyInput(e.target.value)}
                 placeholder="sk-ant-..."
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-brand"
-                autoFocus
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
               {keyInput && !isKeyValid && (
-                <p className="text-xs text-warning">API key should start with &quot;sk-ant-&quot;</p>
+                <p className="text-xs text-amber-600">API key should start with &quot;sk-ant-&quot;</p>
               )}
-              <button
-                onClick={() => invoke('open_external_url', { url: 'https://console.anthropic.com/' }).catch(console.error)}
-                className="inline-flex items-center gap-1 text-xs text-brand hover:underline"
+              <a
+                href="https://console.anthropic.com/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline"
               >
                 Get an API key <ExternalLink className="w-3 h-3" />
-              </button>
+              </a>
             </div>
           )}
 
@@ -116,7 +126,7 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
                 type="radio"
                 name="dir"
                 checked={useDefault}
-                onChange={() => { setUseDefault(true); if (defaultDir) setSelectedDir(defaultDir); }}
+                onChange={() => { setUseDefault(true); setSelectedDir(defaultDir); }}
                 className="mt-0.5"
               />
               <div className="flex-1 min-w-0">
@@ -126,7 +136,7 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
                 ) : !useDefault && defaultDir ? (
                   <div className="text-xs text-muted-foreground truncate">{defaultDir}</div>
                 ) : (
-                  <div className="text-xs text-warning">Waiting for meeting folder...</div>
+                  <div className="text-xs text-amber-500">Waiting for meeting folder...</div>
                 )}
               </div>
             </label>
@@ -142,7 +152,7 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
               />
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium">Existing repository</div>
-                <div className="flex items-center gap-2 mt-1 min-w-0">
+                <div className="flex items-center gap-2 mt-1">
                   <div className="text-xs text-muted-foreground truncate flex-1">
                     {!useDefault ? selectedDir : 'Select a folder...'}
                   </div>
@@ -162,11 +172,11 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
           </div>
         </div>
 
-        <DialogFooter className="px-4 py-3 border-t border-border">
+        <div className="flex justify-end gap-2 px-4 py-3 border-t border-border">
           <Button variant="outline" size="sm" onClick={onCancel}>Cancel</Button>
           <Button size="sm" onClick={handleConfirm} disabled={!canConfirm}>Start Session</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </div>
+      </div>
+    </div>
   );
 }

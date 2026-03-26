@@ -86,7 +86,7 @@ export function About() {
                         )}
                     </Button>
                     {updateInfo?.available && (
-                        <div className="mt-2 text-xs text-brand">
+                        <div className="mt-2 text-xs text-blue-600">
                             Update available: v{updateInfo.version}
                         </div>
                     )}
@@ -117,8 +117,8 @@ export function About() {
             </div>
 
             {/* Coming Soon - Compact */}
-            <div className="bg-brand-muted rounded p-3">
-                <p className="text-s text-brand-muted-foreground">
+            <div className="bg-blue-50 dark:bg-blue-950 rounded p-3">
+                <p className="text-s text-blue-800 dark:text-blue-200">
                     <span className="font-bold">Coming soon:</span> A library of on-device AI agents-automating follow-ups, action tracking, and more.
                 </p>
             </div>
@@ -131,7 +131,7 @@ export function About() {
                 </p>
                 <button
                     onClick={handleContactClick}
-                    className="inline-flex items-center px-4 py-2 bg-brand hover:bg-brand-hover text-brand-foreground text-sm font-medium rounded transition-colors duration-200 shadow-sm hover:shadow-md"
+                    className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded transition-colors duration-200 shadow-sm hover:shadow-md"
                 >
                     Chat with the Zackriya team
                 </button>

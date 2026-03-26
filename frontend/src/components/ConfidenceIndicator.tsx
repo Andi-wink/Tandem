@@ -5,10 +5,10 @@ interface ConfidenceIndicatorProps {
   showIndicator?: boolean;
 }
 
-export const ConfidenceIndicator = ({
+export const ConfidenceIndicator: React.FC<ConfidenceIndicatorProps> = ({
   confidence,
   showIndicator = true,
-}: ConfidenceIndicatorProps) => {
+}) => {
   // Don't render if preference is disabled
   if (!showIndicator) {
     return null;
@@ -16,10 +16,10 @@ export const ConfidenceIndicator = ({
 
   // Get color class based on confidence threshold
   const getColorClass = (conf: number): string => {
-    if (conf >= 0.8) return 'bg-success'; // 80-100%: High confidence
-    if (conf >= 0.7) return 'bg-warning'; // 70-79%: Good confidence
-    if (conf >= 0.4) return 'bg-paused'; // 40-69%: Medium confidence
-    return 'bg-destructive'; // Below 40%: Low confidence
+    if (conf >= 0.8) return 'bg-green-500'; // 80-100%: High confidence
+    if (conf >= 0.7) return 'bg-yellow-500'; // 70-79%: Good confidence
+    if (conf >= 0.4) return 'bg-orange-500'; // 40-79%: Medium confidence
+    return 'bg-red-500'; // Below 50%: Low confidence
   };
 
   // Get descriptive label for accessibility
@@ -38,16 +38,12 @@ export const ConfidenceIndicator = ({
     <div
       className="flex items-center gap-1"
       title={`${confidencePercent}% confidence - ${label}`}
-      role="status"
       aria-label={`Transcription confidence: ${confidencePercent}%`}
     >
       <div
         className={`w-2 h-2 rounded-full ${colorClass} transition-colors duration-200`}
-        aria-hidden="true"
+        role="status"
       />
-      <span className="text-[10px] tabular-nums text-muted-foreground">
-        {confidencePercent}%
-      </span>
     </div>
   );
 };

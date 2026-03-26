@@ -64,7 +64,7 @@ export function AskUserQuestionBlock({ call, onAnswer }: AskUserQuestionBlockPro
           <div className="flex items-center gap-1.5 px-2 py-1 bg-muted rounded-t">
             <MessageCircleQuestion className="w-3 h-3 text-muted-foreground flex-shrink-0" />
             {q.header && (
-              <span className="px-1.5 py-0.5 bg-brand-muted text-brand-muted-foreground rounded text-[10px] font-medium">
+              <span className="px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded text-[10px] font-medium">
                 {q.header}
               </span>
             )}
@@ -79,7 +79,7 @@ export function AskUserQuestionBlock({ call, onAnswer }: AskUserQuestionBlockPro
                   onClick={() => onAnswer?.(opt.label)}
                   title={opt.description}
                   className="inline-flex px-2 py-0.5 rounded-full border border-border bg-muted text-muted-foreground
-                    enabled:hover:bg-accent enabled:hover:border-brand enabled:hover:text-foreground
+                    enabled:hover:bg-accent enabled:hover:border-blue-400 enabled:hover:text-foreground
                     enabled:cursor-pointer disabled:cursor-default transition-colors"
                 >
                   {opt.label}
@@ -90,8 +90,8 @@ export function AskUserQuestionBlock({ call, onAnswer }: AskUserQuestionBlockPro
         </div>
       ))}
       {answer && (
-        <div className="px-2 py-1.5 border-t border-border bg-success/10">
-          <span className="text-success font-medium">Answer: </span>
+        <div className="px-2 py-1.5 border-t border-border bg-emerald-50 dark:bg-emerald-900/10">
+          <span className="text-emerald-600 dark:text-emerald-400 font-medium">Answer: </span>
           <span className="text-foreground">{answer}</span>
         </div>
       )}

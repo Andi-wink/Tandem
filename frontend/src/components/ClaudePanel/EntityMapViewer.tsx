@@ -35,7 +35,7 @@ export function EntityMapViewer({ entityMap, onClear }: EntityMapViewerProps) {
           )}
           <button
             onClick={(e) => { e.stopPropagation(); onClear(); }}
-            className="text-muted-foreground hover:text-destructive p-0.5"
+            className="text-muted-foreground hover:text-red-500 p-0.5"
             title="Clear entity map"
           >
             <Trash2 className="w-3 h-3" />
@@ -50,13 +50,13 @@ export function EntityMapViewer({ entityMap, onClear }: EntityMapViewerProps) {
               <div key={real} className="flex items-center gap-2 text-[11px] py-0.5">
                 {showReal ? (
                   <>
-                    <span className="text-destructive/70 line-through truncate flex-1 min-w-0">{real}</span>
+                    <span className="text-red-400 line-through truncate flex-1 min-w-0">{real}</span>
                     <span className="text-muted-foreground flex-shrink-0">&rarr;</span>
-                    <span className="text-success truncate flex-1 min-w-0">{surrogate}</span>
+                    <span className="text-emerald-500 truncate flex-1 min-w-0">{surrogate}</span>
                   </>
                 ) : (
                   <>
-                    <span className="text-success truncate flex-1 min-w-0">{surrogate}</span>
+                    <span className="text-emerald-500 truncate flex-1 min-w-0">{surrogate}</span>
                     <span className="text-muted-foreground/60 flex-shrink-0 text-[10px]">(redacted)</span>
                   </>
                 )}

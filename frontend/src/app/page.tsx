@@ -172,8 +172,7 @@ export default function Home() {
         await refetchMeetings();
 
         // If no more recoverable meetings, clear session flag so dialog can show again
-        const remaining = recoverableMeetings.filter(m => m.meetingId !== meetingId);
-        if (remaining.length === 0) {
+        if (recoverableMeetings.length === 0) {
           sessionStorage.removeItem('recovery_dialog_shown');
         }
 
@@ -239,10 +238,7 @@ export default function Home() {
     if (recordingState.isRecording) {
       openPanel('live-recording', meetingTitle || 'Live Recording', preRecordDirRef.current);
     }
-    // Only react to isRecording changes — fire once when recording starts,
-    // not re-fire on panel state or title changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recordingState.isRecording]);
+  }, [recordingState.isRecording]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Computed values using global status
   const isProcessingStop = status === RecordingStatus.PROCESSING_TRANSCRIPTS || isProcessing;
@@ -296,7 +292,7 @@ export default function Home() {
         />
 
         {/* Recording controls - only show when permissions are granted or already recording and not showing status messages */}
-        {(hasMicrophone || recordingState.isRecording) &&
+        {(hasMicrophone || isRecording) &&
           status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
           status !== RecordingStatus.SAVING && (
             <div className="fixed bottom-12 left-0 right-0 z-10 transition-[right] duration-200" style={{ right: isPanelOpen ? `${panelWidth}px` : '0' }}>

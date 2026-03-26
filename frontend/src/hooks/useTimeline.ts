@@ -10,8 +10,7 @@ export function useTimeline(
   return useMemo(() => {
     const items: TimelineItem[] = [];
 
-    if (filter === 'all' || filter === 'transcripts') {
-      // Transcript timestamps are formatted elapsed time ("MM:SS")
+    if (filter !== 'screenshots' && filter !== 'clipboard') {
       for (const seg of segments) {
         items.push({
           type: 'transcript',
@@ -23,26 +22,24 @@ export function useTimeline(
       }
     }
 
-    if (filter === 'all' || filter === 'screenshots') {
-      // Screenshot/clipboard timestamps are raw ISO strings from capture time.
-      // Sorting uses recording_elapsed_secs (numeric), not the display timestamp.
+    if (filter !== 'transcripts' && filter !== 'clipboard') {
       for (const ss of screenshots) {
         items.push({
           type: 'screenshot',
           id: ss.id,
-          recording_elapsed_secs: ss.recording_elapsed_secs ?? Infinity,
+          recording_elapsed_secs: ss.recording_elapsed_secs ?? 0,
           timestamp: ss.timestamp,
           data: ss,
         });
       }
     }
 
-    if (filter === 'all' || filter === 'clipboard') {
+    if (filter !== 'transcripts' && filter !== 'screenshots') {
       for (const clip of clipboardItems) {
         items.push({
           type: 'clipboard',
           id: clip.id,
-          recording_elapsed_secs: clip.recording_elapsed_secs ?? Infinity,
+          recording_elapsed_secs: clip.recording_elapsed_secs ?? 0,
           timestamp: clip.timestamp,
           data: clip,
         });

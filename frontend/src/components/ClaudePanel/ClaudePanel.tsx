@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X, Send, Trash2, AlertCircle, Square, ChevronUp, ChevronDown, Check, Shield, Paperclip, Mic, FolderOpen, Code, Pencil, SlidersHorizontal, Plus } from 'lucide-react';
+import { X, Send, AlertCircle, Square, Check, Shield, Paperclip, Mic, FolderOpen, Code, SlidersHorizontal, ChevronDown, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { useClaude, MODEL_OPTIONS } from '@/contexts/ClaudeContext';
@@ -49,7 +49,6 @@ export function ClaudePanel() {
     clearEntityMap,
     piiAvailable,
     updateMeetingTitle,
-    setProjectDir,
     panelWidth,
     setPanelWidth,
   } = useClaude();
@@ -241,16 +240,6 @@ export function ClaudePanel() {
 
   // F047: Feed new transcript segments into voice command capture while listening
   const { transcripts } = useTranscripts();
-
-  // M18: Refs for writeCodeHandoff to avoid stale closures in the useEffect
-  const transcriptsRef_handoff = useRef(transcripts);
-  transcriptsRef_handoff.current = transcripts;
-  const contextBasketRef = useRef(contextBasket);
-  contextBasketRef.current = contextBasket;
-  const meetingTitleRef = useRef(meetingTitle);
-  meetingTitleRef.current = meetingTitle;
-  const meetingIdRef = useRef(meetingId);
-  meetingIdRef.current = meetingId;
   const lastFedTranscriptIdRef = useRef<string | null>(null);
   const prevIsListeningRef = useRef(false);
 
@@ -294,16 +283,6 @@ export function ClaudePanel() {
     handleInputForCommands(value);
   };
 
-  // F020: Shared handoff trigger — extracted from 3 duplicate call sites
-  const invokeHandoff = useCallback(async () => {
-    const folderPath = await invoke<string | null>('get_meeting_folder_path').catch(() => null);
-    if (folderPath && window.triggerHandoff) {
-      window.triggerHandoff(folderPath, meetingTitle || 'Meeting');
-    } else if (window.triggerHandoff) {
-      toast.error('No active recording folder. Start a recording first.');
-    }
-  }, [meetingTitle]);
-
   const handleSend = async () => {
     const text = inputText.trim();
     if (!text) return;
@@ -318,7 +297,13 @@ export function ClaudePanel() {
     if (activeCommand?.type === 'action' && activeCommand.action === 'handoff') {
       cancelCommand();
       setInputText('');
-      invokeHandoff();
+      // Trigger handoff via window function (registered by useHandoffExport in page.tsx)
+      const folderPath = await invoke<string | null>('get_meeting_folder_path').catch(() => null);
+      if (folderPath && window.triggerHandoff) {
+        window.triggerHandoff(folderPath, meetingTitle || 'Meeting');
+      } else if (window.triggerHandoff) {
+        toast.error('No active recording folder. Start a recording first.');
+      }
       return;
     }
 
@@ -334,10 +319,10 @@ export function ClaudePanel() {
       cancelCommand();
     }
 
-    // F054: Detect @code / @claude tag — strip it, queue a task file, DON'T send to AI
-    const hasCodeTag = /@(?:code|claude)\b/i.test(messageToSend);
+    // F054: Detect @code tag — strip it, queue a task file, DON'T send to AI
+    const hasCodeTag = /@code\b/i.test(messageToSend);
     if (hasCodeTag) {
-      const taskText = messageToSend.replace(/@(?:code|claude)\b/gi, '').trim();
+      const taskText = messageToSend.replace(/@code\b/gi, '').trim();
       if (!projectDir) {
         // Need projectDir first — show modal, save task text as pending
         setPendingFirstMessage(`@code ${taskText}`);
@@ -373,13 +358,13 @@ export function ClaudePanel() {
   // F054: Write task handoff file for Claude Code /loop (fire-and-forget)
   const writeCodeHandoff = async (taskDescription: string) => {
     try {
-      const recentTranscripts = getRecentTranscripts(transcriptsRef_handoff.current, HANDOFF_TRANSCRIPT_WINDOW_SECS);
+      const recentTranscripts = getRecentTranscripts(transcripts, HANDOFF_TRANSCRIPT_WINDOW_SECS);
       const data: TaskHandoffData = {
         taskDescription,
-        meetingTitle: meetingTitleRef.current || 'Meeting',
-        meetingId: meetingIdRef.current || 'unknown',
+        meetingTitle: meetingTitle || 'Meeting',
+        meetingId: meetingId || 'unknown',
         transcripts: recentTranscripts,
-        contextItems: [...contextBasketRef.current],
+        contextItems: [...contextBasket],
         timestamp: new Date(),
       };
       const filePath = await writeTaskHandoff(projectDir!, data);
@@ -404,9 +389,9 @@ export function ClaudePanel() {
       setPendingFirstMessage(null);
       setInputText('');
 
-      // F054: If pending message was an @code/@claude task, write handoff instead of sending to AI
-      if (/^@(?:code|claude)\b/i.test(msg)) {
-        const taskText = msg.replace(/@(?:code|claude)\b/gi, '').trim();
+      // F054: If pending message was an @code task, write handoff instead of sending to AI
+      if (/^@code\b/i.test(msg)) {
+        const taskText = msg.replace(/@code\b/gi, '').trim();
         writeCodeHandoff(taskText);
         return;
       }
@@ -448,7 +433,15 @@ export function ClaudePanel() {
           if (cmd.type === 'action' && cmd.action === 'handoff') {
             dismissAutocomplete();
             setInputText('');
-            invokeHandoff();
+            invoke<string | null>('get_meeting_folder_path').then(folderPath => {
+              if (folderPath && window.triggerHandoff) {
+                window.triggerHandoff(folderPath, meetingTitle || 'Meeting');
+              } else if (window.triggerHandoff) {
+                toast.error('No active recording folder. Start a recording first.');
+              }
+            }).catch(() => {
+              toast.error('Failed to get meeting folder path');
+            });
             return;
           }
           const newText = activateCommand(cmd);
@@ -464,7 +457,15 @@ export function ClaudePanel() {
           if (cmd.type === 'action' && cmd.action === 'handoff') {
             dismissAutocomplete();
             setInputText('');
-            invokeHandoff();
+            invoke<string | null>('get_meeting_folder_path').then(folderPath => {
+              if (folderPath && window.triggerHandoff) {
+                window.triggerHandoff(folderPath, meetingTitle || 'Meeting');
+              } else if (window.triggerHandoff) {
+                toast.error('No active recording folder. Start a recording first.');
+              }
+            }).catch(() => {
+              toast.error('Failed to get meeting folder path');
+            });
             return;
           }
           // Select the command (don't send yet)
@@ -512,7 +513,8 @@ export function ClaudePanel() {
           className={`fixed right-0 top-0 bottom-0 z-50 flex items-center justify-center transition-all duration-150 ${
             isDropOver
               ? 'w-48 bg-brand/20 dark:bg-brand/15 border-l-2 border-brand'
-              : 'w-14 bg-brand/10 dark:bg-brand/5 border-l-2 border-dashed border-brand/50'          }`}
+              : 'w-14 bg-brand/10 dark:bg-brand/5 border-l-2 border-dashed border-brand/50'
+          }`}
         >
           <div className="flex flex-col items-center gap-1 pointer-events-none">
             <span className={`text-[10px] font-medium transition-colors ${isDropOver ? 'text-brand' : 'text-brand/70'}`}>
@@ -531,7 +533,8 @@ export function ClaudePanel() {
         {/* Resize drag handle — left edge */}
         <div
           onMouseDown={handleResizeStart}
-          className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize z-50 group hover:bg-brand/30 active:bg-brand/50 transition-colors"          title="Drag to resize"
+          className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize z-50 group hover:bg-brand/30 active:bg-brand/50 transition-colors"
+          title="Drag to resize"
         >
           <div className="absolute left-0 top-0 bottom-0 w-3 -translate-x-1" />
         </div>
@@ -543,13 +546,15 @@ export function ClaudePanel() {
             className={`absolute inset-0 z-50 transition-colors ${
               isDropOver
                 ? 'bg-brand/20 dark:bg-brand/10 ring-2 ring-brand ring-inset'
-                : 'bg-brand/5 dark:bg-brand/5 ring-1 ring-brand/30 ring-inset'            }`}
+                : 'bg-brand/5 dark:bg-brand/5 ring-1 ring-brand/30 ring-inset'
+            }`}
           >
             <div className="flex items-center justify-center h-full pointer-events-none">
               <span className={`text-sm font-medium px-3 py-1.5 rounded-full shadow-sm transition-colors ${
                 isDropOver
                   ? 'text-brand bg-white/90 dark:bg-card/90'
-                  : 'text-brand/60 bg-white/50 dark:bg-card/50'              }`}>
+                  : 'text-brand/60 bg-white/50 dark:bg-card/50'
+              }`}>
                 {isDropOver ? 'Drop to add to context' : 'Drop items here'}
               </span>
             </div>
@@ -569,7 +574,8 @@ export function ClaudePanel() {
                   if (e.key === 'Enter') { e.preventDefault(); handleTitleSave(); }
                   if (e.key === 'Escape') { setIsEditingTitle(false); }
                 }}
-                className="font-semibold text-sm w-full bg-background border border-border rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand"                autoFocus
+                className="font-medium text-sm w-full bg-background border border-border rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand"
+                autoFocus
               />
             ) : (
               <button
@@ -595,58 +601,17 @@ export function ClaudePanel() {
                 <Plus className="w-4 h-4" />
               </button>
             )}
-            <div className="flex items-center gap-1 max-w-full overflow-hidden">
-              {projectDir ? (
-                <>
-                  <button
-                    onClick={() => invoke('open_folder', { path: projectDir }).catch(() => toast.error('Failed to open folder'))}
-                    className="flex items-center gap-1 text-xs text-muted-foreground hover:text-brand overflow-hidden transition-colors group min-w-0"
-                    title={`Open ${projectDir}`}
-                  >
-                    <FolderOpen className="w-3 h-3 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
-                    <span className="truncate min-w-0">{projectDir}</span>
-                  </button>
-                  <button
-                    onClick={async () => {
-                      try {
-                        const result = await invoke<string | null>('select_recording_folder');
-                        if (result) setProjectDir(result);
-                      } catch { toast.error('Failed to open folder picker'); }
-                    }}
-                    className="p-0.5 text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
-                    title="Change project folder"
-                  >
-                    <Pencil className="w-3 h-3" />
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={async () => {
-                    try {
-                      const result = await invoke<string | null>('select_recording_folder');
-                      if (result) setProjectDir(result);
-                    } catch { toast.error('Failed to open folder picker'); }
-                  }}
-                  className="flex items-center gap-1 text-xs text-brand hover:text-brand-hover transition-colors"
-                >
-                  <FolderOpen className="w-3 h-3 flex-shrink-0" />
-                  <span>Set project folder...</span>
-                </button>
-              )}
-            </div>
-          </div>
-          <div className="flex items-center gap-1 flex-shrink-0">
-            {sessionId && (
+            {projectDir && (
               <button
-                onClick={clearSession}
-                className="p-1 text-muted-foreground hover:text-destructive"
-                title="Clear session"
+                onClick={() => invoke('show_in_folder', { path: projectDir }).catch(() => toast.error('Failed to open folder'))}
+                className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                title={projectDir}
               >
-                <Trash2 className="w-4 h-4" />              </button>
+                <FolderOpen className="w-4 h-4" />
+              </button>
             )}
             <button
               onClick={closePanel}
-              aria-label="Close AI panel"
               className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
             >
               <X className="w-4 h-4" />
@@ -733,7 +698,8 @@ export function ClaudePanel() {
               <div className="flex items-center gap-2">
                 {recordingState.isRecording && (
                   <span className="relative flex h-2 w-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-recording opacity-75" />                    <span className="relative inline-flex rounded-full h-2 w-2 bg-recording" />
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-recording opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-recording" />
                   </span>
                 )}
                 <span className="font-mono font-medium text-brand-muted-foreground">
@@ -759,76 +725,41 @@ export function ClaudePanel() {
             </div>
           )}
 
-          {/* F054: @code / @claude tag detected indicator */}
-          {/@(?:code|claude)\b/i.test(inputText) && !activeCommand && (
-            <div className="flex items-center gap-2 mb-2 px-2 py-1.5 rounded-md bg-success/10 border border-success/20 text-xs">
+          {/* F054: @code tag detected indicator */}
+          {/@code\b/i.test(inputText) && !activeCommand && (
+            <div className="flex items-center gap-2 mb-2 px-2 py-1.5 rounded-md bg-success-muted border border-success/20 text-xs">
               <Code className="w-3.5 h-3.5 text-success flex-shrink-0" />
-              <span className="font-medium text-success">
-                @code / @claude — task will be queued for Claude Code              </span>
+              <span className="font-medium text-success-foreground">
+                @code — task will be queued for Claude Code
+              </span>
             </div>
           )}
 
-          <div className="relative flex items-center gap-2">
-            <Popover>
-              <PopoverTrigger asChild>
-                <button
-                  className="flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground flex-shrink-0"
-                  title="Select model"
-                >
-                  <ChevronUp className="w-3 h-3" />
-                  <span className="max-w-[60px] truncate">{MODEL_OPTIONS.find(m => m.id === selectedModel)?.label ?? 'Model'}</span>
-                </button>
-              </PopoverTrigger>
-              <PopoverContent align="start" side="top" className="w-48 p-1">
-                {MODEL_OPTIONS.map(m => (
-                  <button
-                    key={m.id}
-                    onClick={() => setModel(m.id)}
-                    className="flex items-center justify-between w-full px-2 py-1.5 text-xs rounded hover:bg-muted"
-                  >
-                    <span>{m.label}</span>
-                    {m.id === selectedModel && <Check className="w-3 h-3 text-brand" />}
-                  </button>
-                ))}
-              </PopoverContent>
-            </Popover>
-            {/* F005: PII Anonymization toggle */}
-            <button
-              onClick={toggleAnonymization}
-              className={`flex items-center gap-0.5 text-[10px] flex-shrink-0 transition-colors ${
-                anonymizationEnabled && piiAvailable !== false
-                  ? 'text-success hover:text-success/80'
-                  : anonymizationEnabled && piiAvailable === false
-                    ? 'text-warning hover:text-warning/80'
-                    : 'text-muted-foreground/50 hover:text-muted-foreground'
-              }`}
-              title={
-                anonymizationEnabled && piiAvailable === false
-                  ? 'PII anonymization ON but service unavailable'
-                  : anonymizationEnabled
-                    ? 'PII anonymization ON — click to disable'
-                    : 'PII anonymization OFF — click to enable'
-              }
-            >
-              <Shield className="w-3 h-3" />
-              <span>PII</span>
-            </button>
-            {/* F044: Document attachment button */}            <input
+          {/* Streaming indicator — above input */}
+          {isStreaming && (
+            <div className="text-xs text-muted-foreground mb-2 flex items-center gap-1.5 px-1">
+              AI is thinking
+              <span className="inline-flex gap-0.5">
+                <span className="w-1 h-1 rounded-full bg-muted-foreground animate-[thinking-dot_1.4s_ease-in-out_infinite]" />
+                <span className="w-1 h-1 rounded-full bg-muted-foreground animate-[thinking-dot_1.4s_ease-in-out_0.2s_infinite]" />
+                <span className="w-1 h-1 rounded-full bg-muted-foreground animate-[thinking-dot_1.4s_ease-in-out_0.4s_infinite]" />
+              </span>
+            </div>
+          )}
+
+          {/* Input container — textarea with icons inside, like Cloudflare */}
+          <div className="relative rounded-xl border border-border focus-within:border-brand/50 transition-colors">
+            {/* F044: Hidden file input */}
+            <input
               ref={fileInputRef}
               type="file"
               accept=".pdf,.docx,.txt,.md,.markdown,.csv"
               className="hidden"
               onChange={(e) => { if (e.target.files?.[0]) handleFileUpload(e.target.files[0]); }}
             />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isParsingFile}
-              className="flex items-center gap-0.5 text-[10px] flex-shrink-0 text-muted-foreground/50 hover:text-muted-foreground transition-colors disabled:animate-pulse"
-              title={isParsingFile ? 'Parsing document...' : 'Attach document (PDF, DOCX, TXT, MD, CSV)'}
-            >
-              <Paperclip className="w-3 h-3" />
-            </button>
-            <div className="relative flex-1">              {/* F018: Slash command autocomplete dropdown */}
+
+            <div className="relative">
+              {/* F018: Slash command autocomplete dropdown */}
               {showAutocomplete && (
                 <SlashCommandAutocomplete
                   commands={filteredCommands}
@@ -845,9 +776,11 @@ export function ClaudePanel() {
                 value={inputText}
                 onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
-                placeholder={activeCommand ? `Type additional context for /${activeCommand.name}...` : 'Ask anything... (type / for commands)'}
-                rows={1}
-                className="w-full resize-none border border-border rounded-lg px-3 py-2 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-brand"              />
+                placeholder={activeCommand ? `Type additional context for /${activeCommand.name}...` : 'What can we help you with?'}
+                rows={2}
+                className="w-full resize-none rounded-xl px-3 pt-3 pb-10 text-sm bg-transparent text-foreground focus:outline-none placeholder:text-muted-foreground/60"
+                style={{ maxHeight: TEXTAREA_MAX_HEIGHT_PX }}
+              />
             </div>
 
             {/* Bottom toolbar — inside the input container */}
