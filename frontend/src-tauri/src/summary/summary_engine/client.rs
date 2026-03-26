@@ -307,10 +307,15 @@ mod tests {
         };
 
         let json = serde_json::to_string(&request).unwrap();
-        assert!(json.contains("\"type\":\"generate\""));
-        assert!(json.contains("\"prompt\":\"test prompt\""));
-        assert!(json.contains("\"max_tokens\":512"));
-        assert!(json.contains("\"temperature\":1.0"));
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "generate");
+        assert_eq!(parsed["prompt"], "test prompt");
+        assert_eq!(parsed["max_tokens"], 512);
+        assert_eq!(parsed["temperature"], 1.0);
+        assert_eq!(parsed["context_size"], 2048);
+        assert_eq!(parsed["top_k"], 64);
+        assert_eq!(parsed["top_p"], 0.95);
+        assert_eq!(parsed["stop_tokens"][0], "<end_of_turn>");
     }
 
     #[test]

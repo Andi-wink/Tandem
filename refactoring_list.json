@@ -3,7 +3,7 @@
     "description": "List of planned refactors to improve code quality, type safety, security, and robustness.",
     "base_branch": "main",
     "working_branch": "refactor/claude-service",
-    "last_updated": "2026-03-10",
+    "last_updated": "2026-03-18",
     "features": [
         {
             "id": "R001",
@@ -151,7 +151,7 @@
             "id": "R008",
             "category": "architecture",
             "name": "Split Backend main.py into Route Modules",
-            "description": "main.py is 857 lines containing Pydantic models, all endpoints, SummaryProcessor class, background tasks, AI integration, and PII routes. Should be decomposed into focused modules.",
+            "description": "main.py is 1,052 lines containing 15+ Pydantic models, SummaryProcessor class, 20+ endpoint definitions across 5 domains (meetings, summary, config, AI, anonymization), NotificationBus class, and process_transcript_background (247+ lines). Should be decomposed into focused modules.",
             "priority": "high",
             "status": "planned",
             "branch": null,
@@ -219,26 +219,27 @@
             "id": "R011",
             "category": "robustness",
             "name": "Replace Rust .lock().unwrap() with Error Handling",
-            "description": "138 .lock().unwrap() calls across 9 files. Investigation showed pattern is safe (short scopes, no cross-await). Fixed recording_commands.rs (20 occurrences on hot path), replaced panic!() in pipeline.rs with Result, fixed tray.rs caller. Remaining files use safe scoped-guard pattern.",
+            "description": "120 .lock().unwrap() calls remain across 7 active files. Investigation showed pattern is safe (short scopes, no cross-await). Fixed recording_commands.rs (20 occurrences on hot path), replaced panic!() in pipeline.rs with Result, fixed tray.rs caller. Remaining breakdown: recording_state.rs (42), analytics/commands.rs (25), parakeet_engine/commands.rs (16), whisper_engine/commands.rs (15), buffer_pool.rs (4), core_audio.rs (2).",
             "priority": "high",
             "status": "partial",
             "branch": "main",
             "commit": null,
             "steps": [
-                "Sweep whisper_engine/commands.rs: replace 15+ .lock().unwrap() with .lock().map_err(|e| format!(...))?",
-                "Sweep parakeet_engine/commands.rs: replace 13+ .lock().unwrap()",
-                "Remove explicit panic!() calls in pipeline.rs:735 and client.rs:326,339 — return Result instead",
-                "Replace .expect() calls in lib.rs:406-412, :611, :854 with proper error propagation",
-                "Audit audio/buffer_pool.rs:91,96,101 .expect() calls"
+                "Sweep recording_state.rs: replace 42 .lock().unwrap() with .lock().unwrap_or_else(|e| e.into_inner()) or parking_lot::Mutex",
+                "Sweep analytics/commands.rs: replace 25 .lock().unwrap()",
+                "Sweep parakeet_engine/commands.rs: replace 16 .lock().unwrap()",
+                "Sweep whisper_engine/commands.rs: replace 15 .lock().unwrap()",
+                "Sweep buffer_pool.rs and core_audio.rs: replace remaining 6 .lock().unwrap()",
+                "Delete recording_commands.rs.backup (16 dead .lock().unwrap() calls, stale backup file)"
             ],
             "passes": false,
             "affected_files": [
-                "frontend/src-tauri/src/whisper_engine/commands.rs",
+                "frontend/src-tauri/src/audio/recording_state.rs",
+                "frontend/src-tauri/src/analytics/commands.rs",
                 "frontend/src-tauri/src/parakeet_engine/commands.rs",
-                "frontend/src-tauri/src/audio/pipeline.rs",
-                "frontend/src-tauri/src/summary/summary_engine/client.rs",
-                "frontend/src-tauri/src/lib.rs",
-                "frontend/src-tauri/src/audio/buffer_pool.rs"
+                "frontend/src-tauri/src/whisper_engine/commands.rs",
+                "frontend/src-tauri/src/audio/buffer_pool.rs",
+                "frontend/src-tauri/src/audio/capture/core_audio.rs"
             ]
         },
         {
@@ -350,7 +351,7 @@
             "id": "R017",
             "category": "refactor",
             "name": "Split Monolithic Rust Files",
-            "description": "api/api.rs (1514 lines), recording_commands.rs (1246 lines), whisper_engine.rs (1158 lines), parakeet_engine.rs (1089 lines), and pipeline.rs (1077 lines) are all god files mixing multiple concerns.",
+            "description": "api/api.rs (1,651 lines), recording_commands.rs (1,300 lines), whisper_engine.rs (1,182 lines), pipeline.rs (1,145 lines), and parakeet_engine.rs (1,089 lines) are all god files mixing multiple concerns. Additionally model_manager.rs (851 lines) is approaching the threshold.",
             "priority": "medium",
             "status": "planned",
             "branch": null,
@@ -675,26 +676,36 @@
             "id": "R032",
             "category": "code-quality",
             "name": "Guard or Remove Console.log Statements in Frontend",
-            "description": "30+ console.log/warn/error calls across production frontend code (Sidebar, TranscriptView, RecordingControls, layout.tsx, ClaudePanel). These leak internal state, slow rendering, and pollute DevTools.",
+            "description": "logger.ts was created and the 4 originally-listed files (Sidebar, TranscriptView, RecordingControls, layout.tsx) were migrated. However, 300+ console.log/warn/error calls remain across 30+ other frontend files. Biggest offenders: analytics.ts (69), TranscriptContext.tsx (38), useSummaryGeneration.ts (30), BlockNoteSummaryView.tsx (23), useCopyOperations.ts (17), RecordingStateContext.tsx (14), indexedDBService.ts (14), useMeetingData.ts (11), ScreenshotContext.tsx (10), ClaudePanel.tsx (7), useVoiceCommand.ts (6), BlockNoteEditor/Editor.tsx (5).",
             "priority": "medium",
-            "status": "complete",
+            "status": "partial",
             "branch": "main",
             "commit": null,
             "steps": [
-                "Create a lightweight logger utility (src/lib/logger.ts) that respects NODE_ENV",
-                "Replace console.log calls in Sidebar/index.tsx (lines 110, 144)",
-                "Replace debug logging in TranscriptView.tsx (lines 111-118)",
-                "Replace console.log in RecordingControls.tsx (lines 76-90)",
-                "Replace console.log in layout.tsx (lines 58-65, 91)",
-                "Keep console.error for genuine error conditions"
+                "DONE: Create a lightweight logger utility (src/lib/logger.ts) that respects NODE_ENV",
+                "DONE: Replace console.log calls in Sidebar/index.tsx, TranscriptView.tsx, RecordingControls.tsx, layout.tsx",
+                "Migrate analytics.ts (69 calls) — mostly console.error/warn, keep only genuine errors",
+                "Migrate TranscriptContext.tsx (38 calls) to logger",
+                "Migrate useSummaryGeneration.ts (30 calls) to logger",
+                "Migrate BlockNoteSummaryView.tsx (23 calls) to logger",
+                "Migrate remaining 25+ files with console calls to logger",
+                "Keep console.error only for genuine unrecoverable errors at module boundaries"
             ],
             "passes": false,
             "affected_files": [
-                "frontend/src/components/Sidebar/index.tsx",
-                "frontend/src/components/TranscriptView.tsx",
-                "frontend/src/components/RecordingControls.tsx",
-                "frontend/src/app/layout.tsx",
-                "frontend/src/lib/logger.ts"
+                "frontend/src/lib/logger.ts",
+                "frontend/src/lib/analytics.ts",
+                "frontend/src/contexts/TranscriptContext.tsx",
+                "frontend/src/hooks/meeting-details/useSummaryGeneration.ts",
+                "frontend/src/components/AISummary/BlockNoteSummaryView.tsx",
+                "frontend/src/hooks/meeting-details/useCopyOperations.ts",
+                "frontend/src/contexts/RecordingStateContext.tsx",
+                "frontend/src/services/indexedDBService.ts",
+                "frontend/src/hooks/meeting-details/useMeetingData.ts",
+                "frontend/src/contexts/ScreenshotContext.tsx",
+                "frontend/src/components/ClaudePanel/ClaudePanel.tsx",
+                "frontend/src/hooks/useVoiceCommand.ts",
+                "frontend/src/components/BlockNoteEditor/Editor.tsx"
             ]
         },
         {
@@ -742,21 +753,29 @@
             "id": "R035",
             "category": "code-quality",
             "name": "Remove Dead Code and #[allow(dead_code)] in Rust",
-            "description": "ffmpeg_mixer.rs has a Timestamp struct and TimestampedChunk methods marked #[allow(dead_code)] (lines 22-46, 66-70). lib_old_complex.rs is 2437 lines of dead legacy code. These add compilation time and confuse grep/navigation.",
+            "description": "lib_old_complex.rs (2,437 lines) was deleted. However, core-old.rs (923 lines) and recording_saver_old.rs (dead code with 7 unsafe blocks) still exist and are unreferenced from any mod.rs. recording_commands.rs.backup (stale backup) also present. Additionally, 19 #[allow(dead_code)] annotations remain across the codebase (anthropic.rs, api.rs, batch_processor.rs, ffmpeg_mixer.rs, notifications/system.rs).",
             "priority": "low",
-            "status": "complete",
+            "status": "partial",
             "branch": "main",
             "commit": null,
             "steps": [
-                "Remove or feature-gate dead Timestamp/TimestampedChunk code in ffmpeg_mixer.rs",
-                "Delete lib_old_complex.rs (2437 lines of dead legacy code)",
-                "Search for other #[allow(dead_code)] annotations and evaluate each",
+                "DONE: Delete lib_old_complex.rs (2,437 lines of dead legacy code)",
+                "DONE: Remove or feature-gate dead Timestamp/TimestampedChunk code in ffmpeg_mixer.rs",
+                "Delete frontend/src-tauri/src/audio/core-old.rs (923 lines, unreferenced dead code)",
+                "Delete frontend/src-tauri/src/audio/recording_saver_old.rs (dead code, 7 unsafe blocks)",
+                "Delete frontend/src-tauri/src/audio/recording_commands.rs.backup (stale backup file)",
+                "Audit remaining 19 #[allow(dead_code)] annotations — remove dead code or justify annotation",
                 "Run cargo check to verify nothing breaks"
             ],
             "passes": false,
             "affected_files": [
+                "frontend/src-tauri/src/audio/core-old.rs",
+                "frontend/src-tauri/src/audio/recording_saver_old.rs",
+                "frontend/src-tauri/src/audio/recording_commands.rs.backup",
                 "frontend/src-tauri/src/audio/ffmpeg_mixer.rs",
-                "frontend/src-tauri/src/lib_old_complex.rs"
+                "frontend/src-tauri/src/anthropic/anthropic.rs",
+                "frontend/src-tauri/src/api/api.rs",
+                "frontend/src-tauri/src/audio/batch_processor.rs"
             ]
         },
         {
@@ -781,6 +800,85 @@
                 "frontend/src/components/ClaudePanel/ContextBasket.tsx",
                 "frontend/src/components/ClaudePanel/ClaudePanel.tsx",
                 "frontend/src/components/RecordingControls.tsx",
+                "backend/app/transcript_processor.py"
+            ]
+        },
+        {
+            "id": "R037",
+            "category": "type-safety",
+            "name": "Remove `as any` Type Casts in Frontend",
+            "description": "54 `as any` casts across frontend TypeScript code. Each bypasses type safety and masks potential runtime errors. Many are workarounds for incomplete type definitions that should be fixed at the source (proper interfaces, generics, or type narrowing).",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Audit all 54 `as any` casts — categorize as: (a) fixable with proper types, (b) necessary for FFI/Tauri invoke, (c) workaround for library types",
+                "Fix category (a) by adding proper interfaces or using type narrowing",
+                "For category (b), replace with `as unknown as TargetType` or typed invoke wrappers",
+                "For category (c), add // eslint-disable-next-line with justification comment",
+                "Run pnpm tsc --noEmit to verify no regressions"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src/components/",
+                "frontend/src/contexts/",
+                "frontend/src/services/",
+                "frontend/src/hooks/"
+            ]
+        },
+        {
+            "id": "R038",
+            "category": "robustness",
+            "name": "Standardize Tauri Event Listener Cleanup Pattern",
+            "description": "Multiple contexts (RecordingStateContext, ConfigContext, ClipboardContext, OnboardingContext, layout.tsx) have async listener setup races — the same root bug in 5 places. The pattern: setup() is async but useEffect cleanup runs before listeners resolve, leaking event listeners. Bugs B010, B012, B015, B031, B033 all describe variants of this. A single useTauriListener hook would fix all 5 simultaneously.",
+            "priority": "high",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Create frontend/src/hooks/useTauriListener.ts — wraps Tauri listen() with abort flag and cleanup guarantees",
+                "Pattern: useEffect sets up AbortController, passes signal to async setup, cleanup calls controller.abort() and stores unlisten fns in ref",
+                "Migrate RecordingStateContext.tsx (B012: async listener setup race)",
+                "Migrate ConfigContext.tsx (B015: cleanup variable undefined on unmount)",
+                "Migrate ClipboardContext.tsx (B033: async listener race, mounted flag missing)",
+                "Migrate OnboardingContext.tsx (B031: async setup race, setState on unmounted component)",
+                "Migrate layout.tsx (B010: .then(fn => fn()) cleanup race condition)",
+                "This single hook fix resolves 5 open bugs (B010, B012, B015, B031, B033) simultaneously"
+            ],
+            "passes": false,
+            "affected_files": [
+                "frontend/src/hooks/useTauriListener.ts",
+                "frontend/src/contexts/RecordingStateContext.tsx",
+                "frontend/src/contexts/ConfigContext.tsx",
+                "frontend/src/contexts/ClipboardContext.tsx",
+                "frontend/src/contexts/OnboardingContext.tsx",
+                "frontend/src/app/layout.tsx"
+            ]
+        },
+        {
+            "id": "R039",
+            "category": "error-handling",
+            "name": "Replace Bare except Exception with Specific Types",
+            "description": "69 bare `except Exception as e:` blocks across backend Python files. These catch everything including KeyboardInterrupt and SystemExit, mask the root cause of failures, and leak internal state via str(e) in HTTP responses (main.py:208, 222, 232, 245, 575, 625, 633, 640). Should use specific exception types with appropriate HTTP status codes.",
+            "priority": "medium",
+            "status": "planned",
+            "branch": null,
+            "commit": null,
+            "steps": [
+                "Audit all 69 except Exception blocks — categorize by actual exception types thrown",
+                "In main.py endpoints: separate ValueError (400) from sqlite3/aiosqlite errors (500) from network errors (502/503)",
+                "In db.py: catch aiosqlite.Error specifically, not all exceptions",
+                "In claude_agent.py: catch anthropic API errors separately from file I/O errors",
+                "Never expose str(e) in HTTP response detail — use sanitized user-facing error messages",
+                "Keep bare except Exception only at outermost handler (lifespan, background tasks) with logging"
+            ],
+            "passes": false,
+            "affected_files": [
+                "backend/app/main.py",
+                "backend/app/db.py",
+                "backend/app/claude_agent.py",
+                "backend/app/anonymizer.py",
                 "backend/app/transcript_processor.py"
             ]
         }

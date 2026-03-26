@@ -250,9 +250,11 @@ pub async fn select_recording_folder<R: Runtime>(
     use tauri_plugin_dialog::DialogExt;
 
     let dialog = app.dialog().file();
-    let folder = dialog
-        .set_title("Select project directory")
-        .blocking_pick_folder();
+    let folder = tokio::task::spawn_blocking(move || {
+        dialog
+            .set_title("Select project directory")
+            .blocking_pick_folder()
+    }).await.map_err(|e| format!("Dialog task failed: {e}"))?;
 
     match folder {
         Some(file_path) => {

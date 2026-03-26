@@ -141,7 +141,7 @@ export function ConversationView({ messages, isStreaming, onAnswer }: Conversati
                       },
                     }}
                   >
-                    {isStreaming && msg === messages[messages.length - 1]
+                    {isStreaming && msg.id === messages[messages.length - 1]?.id
                       ? msg.text + ' \u258B'
                       : msg.text}
                   </ReactMarkdown>

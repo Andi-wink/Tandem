@@ -236,6 +236,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
   useEffect(() => {
     logger.log('Setting up recording event listeners');
+    let cancelled = false;
     let unsubscribes: (() => void)[] = [];
 
     const setupListeners = async () => {
@@ -307,11 +308,18 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           setSpeechDetected(true);
         });
 
-        unsubscribes = [
+        const newUnsubscribes = [
           transcriptErrorUnsubscribe,
           transcriptionErrorUnsubscribe,
           speechDetectedUnsubscribe
         ];
+
+        if (cancelled) {
+          // Effect cleaned up while setting up — tear down immediately
+          newUnsubscribes.forEach(fn => fn());
+          return;
+        }
+        unsubscribes = newUnsubscribes;
         logger.log('Recording event listeners set up successfully');
       } catch (error) {
         console.error('Failed to set up recording event listeners:', error);
@@ -321,6 +329,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     setupListeners();
 
     return () => {
+      cancelled = true;
       logger.log('Cleaning up recording event listeners');
       unsubscribes.forEach(unsubscribe => {
         if (unsubscribe && typeof unsubscribe === 'function') {

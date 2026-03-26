@@ -150,8 +150,8 @@ export default function RootLayout({
               </ErrorBoundary>
             </div>
           )}
-        </ComposeProviders>
         <Toaster position="bottom-center" richColors closeButton />
+        </ComposeProviders>
       </body>
     </html>
   )

@@ -157,6 +157,7 @@ export function useVoiceCommand(options: UseVoiceCommandOptions = {}) {
     window.addEventListener('keyup', handleKeyUp);
 
     return () => {
+      clearTimers();
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };

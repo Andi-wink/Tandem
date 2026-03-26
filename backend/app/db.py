@@ -411,14 +411,16 @@ class DatabaseManager:
                                      summary: str = "", action_items: str = "", key_points: str = "",
                                      audio_start_time: float = None, audio_end_time: float = None, duration: float = None):
         """Save a transcript for a meeting with optional recording-relative timestamps"""
+        import uuid as _uuid
         try:
+            transcript_id = str(_uuid.uuid4())
             async with self._get_connection() as conn:
                 await conn.execute("""
                     INSERT INTO transcripts (
-                        meeting_id, transcript, timestamp, summary, action_items, key_points,
+                        id, meeting_id, transcript, timestamp, summary, action_items, key_points,
                         audio_start_time, audio_end_time, duration
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (meeting_id, transcript, timestamp, summary, action_items, key_points,
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (transcript_id, meeting_id, transcript, timestamp, summary, action_items, key_points,
                       audio_start_time, audio_end_time, duration))
 
                 await conn.commit()

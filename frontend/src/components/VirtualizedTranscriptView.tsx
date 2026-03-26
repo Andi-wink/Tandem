@@ -431,7 +431,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                 }
             },
             {
-                root: null,
+                root: scrollRef.current,
                 rootMargin: '100px',
                 threshold: 0,
             }

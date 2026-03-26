@@ -59,6 +59,22 @@ export function useHandoffExport(): UseHandoffExportReturn {
   const folderPathRef = useRef<string>('');
   const meetingNameRef = useRef<string>('');
 
+  // M23: Refs for snapshot-only values — prevents triggerHandoff recreation on every change
+  const screenshotsRef = useRef(screenshots);
+  screenshotsRef.current = screenshots;
+  const clipboardItemsRef = useRef(clipboardItems);
+  clipboardItemsRef.current = clipboardItems;
+  const conversationRef = useRef(conversation);
+  conversationRef.current = conversation;
+  const entityMapRef = useRef(entityMap);
+  entityMapRef.current = entityMap;
+  const recordingDurationRef = useRef(recordingDuration);
+  recordingDurationRef.current = recordingDuration;
+  const meetingIdRef = useRef(meetingId);
+  meetingIdRef.current = meetingId;
+  const apiKeyRef = useRef(apiKey);
+  apiKeyRef.current = apiKey;
+
   // Resolve function for the Promise returned by triggerHandoff —
   // called when the dialog is confirmed or cancelled so callers can await it.
   const dialogResolveRef = useRef<(() => void) | null>(null);
@@ -95,13 +111,13 @@ export function useHandoffExport(): UseHandoffExportReturn {
     // Snapshot all data NOW — before clearTranscripts() wipes it after 2s
     snapshotRef.current = {
       transcripts: [...transcriptsRef.current],
-      screenshots: [...screenshots],
-      clipboardItems: [...clipboardItems],
-      conversation: [...conversation],
-      recordingDuration,
-      meetingId,
-      entityMap: entityMap ? { ...entityMap } : entityMap,
-      apiKey,
+      screenshots: [...screenshotsRef.current],
+      clipboardItems: [...clipboardItemsRef.current],
+      conversation: [...conversationRef.current],
+      recordingDuration: recordingDurationRef.current,
+      meetingId: meetingIdRef.current,
+      entityMap: entityMapRef.current ? { ...entityMapRef.current } : entityMapRef.current,
+      apiKey: apiKeyRef.current,
     };
 
     // Check PII health
@@ -125,7 +141,7 @@ export function useHandoffExport(): UseHandoffExportReturn {
     return new Promise<void>((resolve) => {
       dialogResolveRef.current = resolve;
     });
-  }, [anonymizationEnabled, transcriptsRef, screenshots, clipboardItems, conversation, recordingDuration, meetingId, entityMap, apiKey]);
+  }, [anonymizationEnabled, transcriptsRef]);
 
   // ─── Register window function ────────────────────────────────────────────
 

@@ -250,9 +250,11 @@ mod tests {
     #[test]
     fn test_hardware_detection() {
         let profile = HardwareProfile::detect();
-        assert!(profile.cpu_cores > 0);
-        // Performance optimization: remove println! from tests
-        log::debug!("Detected profile: {:?}", profile);
+        assert!(profile.cpu_cores > 0, "should detect at least 1 CPU core");
+        assert!(
+            matches!(profile.performance_tier, PerformanceTier::Low | PerformanceTier::Medium | PerformanceTier::High | PerformanceTier::Ultra),
+            "should assign a valid performance tier"
+        );
     }
 
     #[test]
@@ -262,18 +264,28 @@ mod tests {
 
         assert!(config.beam_size >= 1 && config.beam_size <= 5);
         assert!(config.temperature >= 0.0 && config.temperature <= 1.0);
-
-        // Performance optimization: remove println! from tests
-        log::debug!("Generated config: {:?}", config);
     }
 
     #[test]
-    fn test_performance_tier_logic() {
-        // Test different hardware combinations
-        let low_tier = HardwareProfile::calculate_performance_tier(2, &GpuType::None, 4);
-        assert_eq!(low_tier, PerformanceTier::Low);
+    fn test_performance_tier_all_levels() {
+        // Low: weak CPU, no GPU, low memory
+        let low = HardwareProfile::calculate_performance_tier(2, &GpuType::None, 4);
+        assert_eq!(low, PerformanceTier::Low);
 
-        let high_tier = HardwareProfile::calculate_performance_tier(8, &GpuType::Metal, 16);
-        assert_eq!(high_tier, PerformanceTier::Ultra);
+        // Medium: strong CPU, no GPU, high memory
+        let medium = HardwareProfile::calculate_performance_tier(8, &GpuType::None, 16);
+        assert_eq!(medium, PerformanceTier::Medium);
+
+        // High: Vulkan GPU with adequate CPU/memory
+        let high = HardwareProfile::calculate_performance_tier(6, &GpuType::Vulkan, 12);
+        assert_eq!(high, PerformanceTier::High);
+
+        // Ultra: Metal GPU with strong CPU and memory
+        let ultra = HardwareProfile::calculate_performance_tier(8, &GpuType::Metal, 16);
+        assert_eq!(ultra, PerformanceTier::Ultra);
+
+        // Ultra: CUDA GPU with strong CPU and memory
+        let ultra_cuda = HardwareProfile::calculate_performance_tier(8, &GpuType::Cuda, 16);
+        assert_eq!(ultra_cuda, PerformanceTier::Ultra);
     }
 }

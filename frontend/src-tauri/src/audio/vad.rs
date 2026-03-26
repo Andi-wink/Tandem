@@ -5,6 +5,10 @@ use std::collections::VecDeque;
 use std::time::Duration;
 use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 
+/// C06: VAD always processes at 16kHz regardless of input sample rate.
+/// Must use this (not self.sample_rate) for timestamp math on resampled samples.
+const VAD_SAMPLE_RATE: u32 = 16000;
+
 /// Represents a complete speech segment detected by VAD
 #[derive(Debug, Clone)]
 pub struct SpeechSegment {
@@ -35,8 +39,7 @@ pub struct ContinuousVadProcessor {
 
 impl ContinuousVadProcessor {
     pub fn new(input_sample_rate: u32, redemption_time_ms: u32) -> Result<Self> {
-        // Silero VAD MUST use 16kHz - this is hardcoded requirement
-        const VAD_SAMPLE_RATE: u32 = 16000;
+        // Silero VAD MUST use 16kHz — uses module-level VAD_SAMPLE_RATE constant
 
         // Use STRICT settings to prevent silence from reaching Whisper
         let mut config = VadConfig::default();
@@ -242,8 +245,9 @@ impl ContinuousVadProcessor {
 
         // Force end any ongoing speech
         if self.in_speech && !self.current_speech.is_empty() {
-            let start_ms = (self.speech_start_sample as f64 / self.sample_rate as f64) * 1000.0;
-            let end_ms = (self.processed_samples as f64 / self.sample_rate as f64) * 1000.0;
+            // C06: Use VAD_SAMPLE_RATE (16kHz) — processed_samples counts post-resample samples
+            let start_ms = (self.speech_start_sample as f64 / VAD_SAMPLE_RATE as f64) * 1000.0;
+            let end_ms = (self.processed_samples as f64 / VAD_SAMPLE_RATE as f64) * 1000.0;
 
             let segment = SpeechSegment {
                 samples: self.current_speech.clone(),
@@ -282,7 +286,8 @@ impl ContinuousVadProcessor {
                             self.last_logged_state = true;
                         }
                         self.in_speech = true;
-                        self.speech_start_sample = self.processed_samples + (timestamp_ms * self.sample_rate as usize / 1000);
+                        // C06: Use VAD_SAMPLE_RATE (16kHz) — processed_samples counts post-resample samples
+                        self.speech_start_sample = self.processed_samples + (timestamp_ms * VAD_SAMPLE_RATE as usize / 1000);
                         self.current_speech.clear();
                     }
                     // If already in_speech, ignore duplicate SpeechStart

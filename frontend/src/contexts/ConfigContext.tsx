@@ -331,6 +331,13 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     return () => { cancelled = true; };
   }, []);
 
+  // C09: Ref to avoid stale closure — updateProviderApiKey is defined later in the
+  // component but its identity is stable (empty deps). The ref lets the listener
+  // always call the current version without a dependency ordering issue.
+  const updateProviderApiKeyRef = useRef<(provider: string, apiKey: string | null) => void>(
+    (provider, apiKey) => setProviderApiKeys(prev => ({ ...prev, [provider]: apiKey }))
+  );
+
   // Listen for model config updates from other components
   useEffect(() => {
     const setupListener = async () => {
@@ -341,7 +348,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
 
         // Update provider-specific key when config changes
         if (event.payload.apiKey && event.payload.provider !== 'custom-openai') {
-          updateProviderApiKey(event.payload.provider, event.payload.apiKey);
+          updateProviderApiKeyRef.current(event.payload.provider, event.payload.apiKey);
         }
       });
       return unlisten;
@@ -400,7 +407,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Calculate model options based on available models
-  const modelOptions: Record<ModelConfig['provider'], string[]> = {
+  const modelOptions = useMemo<Record<ModelConfig['provider'], string[]>>(() => ({
     ollama: models.map(model => model.name),
     claude: ['claude-3-5-sonnet-latest'],
     groq: ['llama-3.3-70b-versatile'],
@@ -408,7 +415,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     openai: ['gpt-4', 'gpt-4-turbo', 'gpt-3.5-turbo'],
     'builtin-ai': [],
     'custom-openai': [],
-  };
+  }), [models]);
 
   // Toggle confidence indicator with localStorage persistence
   const toggleConfidenceIndicator = useCallback((checked: boolean) => {

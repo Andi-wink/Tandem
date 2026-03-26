@@ -241,6 +241,16 @@ export function ClaudePanel() {
 
   // F047: Feed new transcript segments into voice command capture while listening
   const { transcripts } = useTranscripts();
+
+  // M18: Refs for writeCodeHandoff to avoid stale closures in the useEffect
+  const transcriptsRef_handoff = useRef(transcripts);
+  transcriptsRef_handoff.current = transcripts;
+  const contextBasketRef = useRef(contextBasket);
+  contextBasketRef.current = contextBasket;
+  const meetingTitleRef = useRef(meetingTitle);
+  meetingTitleRef.current = meetingTitle;
+  const meetingIdRef = useRef(meetingId);
+  meetingIdRef.current = meetingId;
   const lastFedTranscriptIdRef = useRef<string | null>(null);
   const prevIsListeningRef = useRef(false);
 
@@ -363,13 +373,13 @@ export function ClaudePanel() {
   // F054: Write task handoff file for Claude Code /loop (fire-and-forget)
   const writeCodeHandoff = async (taskDescription: string) => {
     try {
-      const recentTranscripts = getRecentTranscripts(transcripts, HANDOFF_TRANSCRIPT_WINDOW_SECS);
+      const recentTranscripts = getRecentTranscripts(transcriptsRef_handoff.current, HANDOFF_TRANSCRIPT_WINDOW_SECS);
       const data: TaskHandoffData = {
         taskDescription,
-        meetingTitle: meetingTitle || 'Meeting',
-        meetingId: meetingId || 'unknown',
+        meetingTitle: meetingTitleRef.current || 'Meeting',
+        meetingId: meetingIdRef.current || 'unknown',
         transcripts: recentTranscripts,
-        contextItems: [...contextBasket],
+        contextItems: [...contextBasketRef.current],
         timestamp: new Date(),
       };
       const filePath = await writeTaskHandoff(projectDir!, data);

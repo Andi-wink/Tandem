@@ -2109,6 +2109,61 @@
         "Optional: detect if Claude Code is already running and warn"
       ],
       "passes": false
+    },
+    {
+      "id": "F058",
+      "category": "infrastructure",
+      "name": "Dockerized Claude Code Autonomous Runner",
+      "description": "Run Claude Code CLI in a Docker container that polls .tandem/tasks/ for handoff files and executes them autonomously. Eliminates manual terminal setup — one 'docker compose up' starts the loop. Uses a polling entrypoint script (not interactive /loop) for Docker-native lifecycle: clean restarts, failure isolation, structured logs. Failed tasks move to .tandem/tasks/failed/ instead of retrying. Mounts project directory and .claude/ settings for allow/deny guardrails.",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Create Dockerfile.claude-code: node:20 base, npm install -g @anthropic-ai/claude-code, git/python/curl/jq",
+        "Create claude-code-entrypoint.sh: polling loop checking .tandem/tasks/*.md every 60s, claude -p per task, failed tasks moved to failed/ dir",
+        "Create docker-compose.claude-code.yml: mount project dir + .claude/ (read-only), ANTHROPIC_API_KEY via env, restart unless-stopped, 2GB mem limit",
+        "Update CLAUDE.md with Docker usage instructions (already partially done)",
+        "Test: docker compose build, docker compose up, create test task file, verify pickup + execution + deletion"
+      ],
+      "files": [
+        "Dockerfile.claude-code",
+        "claude-code-entrypoint.sh",
+        "docker-compose.claude-code.yml",
+        "CLAUDE.md"
+      ],
+      "dependencies": [
+        "F054"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F059",
+      "category": "integration",
+      "name": "Manus MCP Integration",
+      "description": "Expose Tandem backend endpoints as MCP tools that Manus AI can call remotely. Enables Manus to autonomously perform multi-step tasks using meeting data — e.g. 'analyze all meetings from last week and create a summary report'. Requires HTTPS-accessible backend (via Cloudflare Tunnel or public deploy) since Manus only supports cloud-to-server MCP over HTTPS. Separate Manus subscription required ($39-199/mo).",
+      "priority": "low",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Design MCP tool schema: list_meetings, get_transcript, get_summary, search_meetings, get_meeting_tasks",
+        "Implement MCP server endpoint in backend (FastAPI route or standalone server) conforming to Model Context Protocol spec",
+        "Add API key authentication for remote MCP access (Bearer token or custom auth)",
+        "Set up Cloudflare Tunnel or similar for HTTPS exposure of local backend",
+        "Register custom MCP server in Manus (Settings → Integrations → Custom MCP Servers)",
+        "Test end-to-end: Manus agent calls Tandem MCP tools to retrieve and analyze meeting data",
+        "Document setup instructions (tunnel config, Manus registration, API key management)"
+      ],
+      "files": [
+        "backend/app/mcp_server.py",
+        "backend/app/mcp_auth.py",
+        "backend/app/main.py"
+      ],
+      "dependencies": [
+        "F007"
+      ],
+      "passes": false
     }
   ]
 }

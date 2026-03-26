@@ -164,7 +164,8 @@ export default function Home() {
         await refetchMeetings();
 
         // If no more recoverable meetings, clear session flag so dialog can show again
-        if (recoverableMeetings.length === 0) {
+        const remaining = recoverableMeetings.filter(m => m.meetingId !== meetingId);
+        if (remaining.length === 0) {
           sessionStorage.removeItem('recovery_dialog_shown');
         }
 
@@ -262,7 +263,7 @@ export default function Home() {
         />
 
         {/* Recording controls - only show when permissions are granted or already recording and not showing status messages */}
-        {(hasMicrophone || isRecording) &&
+        {(hasMicrophone || recordingState.isRecording) &&
           status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
           status !== RecordingStatus.SAVING && (
             <div className="fixed bottom-12 left-0 right-0 z-10 transition-[right] duration-200" style={{ right: isPanelOpen ? `${panelWidth}px` : '0' }}>

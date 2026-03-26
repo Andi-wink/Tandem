@@ -118,7 +118,7 @@ impl ModelMetadataCache {
 const DEFAULT_CONTEXT_SIZES: &[(&str, usize)] = &[
     ("llama", 4096),
     ("mistral", 8192),
-    ("phi", 2048),
+    ("phi", 16384),
     ("qwen", 8192),
     ("gemma", 8192),
     ("codellama", 16384),
@@ -361,6 +361,6 @@ mod tests {
     #[test]
     fn test_fallback_metadata_phi() {
         let metadata = get_fallback_metadata("phi4:latest");
-        assert_eq!(metadata.context_size, 2048);
+        assert_eq!(metadata.context_size, 16384);
     }
 }

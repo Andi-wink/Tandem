@@ -1,7 +1,8 @@
 use std::sync::Arc;
+use std::sync::mpsc as std_mpsc;
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, StreamTrait};
-use cpal::{Device, Stream, SupportedStreamConfig};
+use cpal::{Device, SupportedStreamConfig};
 use log::{error, info, warn};
 use tokio::sync::mpsc;
 
@@ -13,10 +14,19 @@ use super::capture::{AudioCaptureBackend, get_current_backend};
 #[cfg(target_os = "macos")]
 use super::capture::CoreAudioCapture;
 
-/// Stream backend implementation
+/// Stream backend implementation.
+///
+/// The cpal::Stream is !Send by design (platform audio handles are thread-local).
+/// Instead of using `unsafe impl Send`, the Cpal variant keeps the Stream on a
+/// dedicated OS thread and communicates via channels (which are Send-safe).
 pub enum StreamBackend {
-    /// CPAL-based stream (ScreenCaptureKit or default)
-    Cpal(Stream),
+    /// CPAL-based stream running on a dedicated OS thread.
+    /// The cpal::Stream never crosses thread boundaries — only the stop channel
+    /// and thread handle are stored here (both are naturally Send).
+    Cpal {
+        stop_tx: Option<std_mpsc::Sender<()>>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    },
     /// Core Audio direct implementation (macOS only)
     #[cfg(target_os = "macos")]
     CoreAudio {
@@ -24,9 +34,10 @@ pub enum StreamBackend {
     },
 }
 
-// SAFETY: While Stream doesn't implement Send, we ensure it's only accessed
-// from the same thread context by using spawn_blocking for operations that cross thread boundaries
-unsafe impl Send for StreamBackend {}
+// No unsafe impl Send needed:
+// - std_mpsc::Sender<()> is Send
+// - std::thread::JoinHandle<()> is Send
+// - tokio::task::JoinHandle<()> is Send
 
 /// Simplified audio stream wrapper with multi-backend support
 pub struct AudioStream {
@@ -34,8 +45,7 @@ pub struct AudioStream {
     backend: StreamBackend,
 }
 
-// SAFETY: AudioStream contains StreamBackend which we've marked as Send
-unsafe impl Send for AudioStream {}
+// No unsafe impl Send needed — all fields are naturally Send
 
 impl AudioStream {
     /// Create a new audio stream for the given device
@@ -102,7 +112,11 @@ impl AudioStream {
         Self::create_cpal_stream(device, state, device_type, recording_sender).await
     }
 
-    /// Create a CPAL-based stream (ScreenCaptureKit on macOS)
+    /// Create a CPAL-based stream on a dedicated OS thread.
+    ///
+    /// The cpal::Stream is created, played, and eventually dropped entirely on the
+    /// dedicated thread. This avoids the need for `unsafe impl Send` since the
+    /// !Send Stream never crosses thread boundaries.
     async fn create_cpal_stream(
         device: Arc<AudioDevice>,
         state: Arc<RecordingState>,
@@ -111,13 +125,14 @@ impl AudioStream {
     ) -> Result<Self> {
         info!("Creating CPAL stream for device: {}", device.name);
 
-        // Get the underlying cpal device and config
+        // Resolve the cpal device and config in the async context first.
+        // get_device_and_config is async but performs only synchronous cpal operations.
         let (cpal_device, config) = get_device_and_config(&device).await?;
 
         info!("Audio config - Sample rate: {}, Channels: {}, Format: {:?}",
               config.sample_rate().0, config.channels(), config.sample_format());
 
-        // Create audio capture processor
+        // Create audio capture processor (Send-safe, can cross thread boundary)
         let capture = AudioCapture::new(
             device.clone(),
             state.clone(),
@@ -127,16 +142,65 @@ impl AudioStream {
             recording_sender,
         );
 
-        // Build the appropriate stream based on sample format
-        let stream = Self::build_stream(&cpal_device, &config, capture.clone())?;
+        // Channels for thread lifecycle management
+        let (stop_tx, stop_rx) = std_mpsc::channel::<()>();
+        let (result_tx, result_rx) = std_mpsc::channel::<Result<()>>();
 
-        // Start the stream
-        stream.play()?;
+        let device_name = device.name.clone();
+
+        // Spawn a dedicated OS thread for the cpal::Stream.
+        // The Stream is created, played, and dropped entirely on this thread.
+        //
+        // We use `spawn_blocking` so the stream thread is managed by tokio's
+        // blocking thread pool, which keeps it alive as long as the runtime exists.
+        // The cpal::Device is moved into this thread — it only needs to be valid
+        // on the thread where it's used to build the stream.
+        let thread = std::thread::Builder::new()
+            .name(format!("cpal-{}", device_name))
+            .spawn(move || {
+                // Build the stream on this thread (cpal::Stream stays here forever)
+                let stream = match Self::build_stream(&cpal_device, &config, capture) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let _ = result_tx.send(Err(e));
+                        return;
+                    }
+                };
+
+                // Start playback
+                if let Err(e) = stream.play() {
+                    let _ = result_tx.send(Err(anyhow::anyhow!("Failed to play stream: {}", e)));
+                    return;
+                }
+
+                // Signal success to the caller
+                let _ = result_tx.send(Ok(()));
+
+                // Block until stop signal (or channel disconnect on Drop)
+                let _ = stop_rx.recv();
+
+                // Clean up: pause then drop the stream on its creation thread
+                if let Err(e) = stream.pause() {
+                    warn!("Failed to pause stream before drop: {}", e);
+                }
+                info!("CPAL stream stopped on dedicated thread for: {}", device_name);
+                drop(stream);
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to spawn audio thread: {}", e))?;
+
+        // Wait for the stream to be created and started
+        let creation_result = result_rx.recv()
+            .map_err(|_| anyhow::anyhow!("Audio thread died during stream creation"))?;
+        creation_result?;
+
         info!("CPAL stream started for device: {}", device.name);
 
         Ok(Self {
             device,
-            backend: StreamBackend::Cpal(stream),
+            backend: StreamBackend::Cpal {
+                stop_tx: Some(stop_tx),
+                thread: Some(thread),
+            },
         })
     }
 
@@ -242,7 +306,7 @@ impl AudioStream {
         device: &Device,
         config: &SupportedStreamConfig,
         capture: AudioCapture,
-    ) -> Result<Stream> {
+    ) -> Result<cpal::Stream> {
         let config_copy = config.clone();
 
         let stream = match config.sample_format() {
@@ -325,15 +389,18 @@ impl AudioStream {
         info!("Stopping audio stream for device: {}", self.device.name);
 
         match self.backend {
-            StreamBackend::Cpal(stream) => {
-                // CRITICAL: Pause the stream first to stop callbacks immediately
-                // This ensures closures stop executing before we drop the stream,
-                // allowing Arc references captured in callbacks to be released
-                if let Err(e) = stream.pause() {
-                    warn!("Failed to pause stream before drop: {}", e);
+            StreamBackend::Cpal { stop_tx, thread } => {
+                // Signal the dedicated audio thread to stop
+                if let Some(tx) = stop_tx {
+                    let _ = tx.send(());
                 }
-                info!("Stream paused, now dropping to release callbacks");
-                drop(stream);
+                // Wait for the thread to finish (stream pause + drop happens there)
+                if let Some(handle) = thread {
+                    handle.join().map_err(|_| {
+                        anyhow::anyhow!("Audio thread panicked during shutdown")
+                    })?;
+                }
+                info!("Stream thread joined, stream fully stopped");
             }
             #[cfg(target_os = "macos")]
             StreamBackend::CoreAudio { task } => {
@@ -363,8 +430,7 @@ pub struct AudioStreamManager {
     state: Arc<RecordingState>,
 }
 
-// SAFETY: AudioStreamManager contains AudioStream which we've marked as Send
-unsafe impl Send for AudioStreamManager {}
+// No unsafe impl Send needed — AudioStream fields are all naturally Send now
 
 impl AudioStreamManager {
     pub fn new(state: Arc<RecordingState>) -> Self {

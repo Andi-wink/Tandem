@@ -5,10 +5,10 @@ interface ConfidenceIndicatorProps {
   showIndicator?: boolean;
 }
 
-export const ConfidenceIndicator: React.FC<ConfidenceIndicatorProps> = ({
+export const ConfidenceIndicator = ({
   confidence,
   showIndicator = true,
-}) => {
+}: ConfidenceIndicatorProps) => {
   // Don't render if preference is disabled
   if (!showIndicator) {
     return null;

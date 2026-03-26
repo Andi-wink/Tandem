@@ -105,6 +105,9 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
   // F020: Access recording duration for timestamping AI messages
   // B040: Also watch isRecording to auto-initialize meeting context for voice commands
   const { recordingDuration, isRecording } = useRecordingState();
+  // M11: Use ref so sendMessage always gets latest value without dep array churn
+  const recordingDurationRef = useRef(recordingDuration);
+  recordingDurationRef.current = recordingDuration;
 
   // R009: Basket state now lives in ContextBasketContext
   const { contextBasket, addToBasket, removeFromBasket, clearBasket, updateItem } = useContextBasket();
@@ -168,7 +171,8 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
             body: JSON.stringify({ provider: 'claude' }),
           });
           if (!cancelled && res.ok) {
-            const key = await res.json();
+            const data = await res.json();
+            const key = data?.api_key;
             if (key && typeof key === 'string' && key.length > 0) {
               setState(prev => ({ ...prev, apiKey: key }));
             }
@@ -600,14 +604,14 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       contextSummary: contextSummary
         ? contextSummary + (anonymizedCount > 0 ? ` (${anonymizedCount} PII entities anonymized)` : '')
         : (anonymizedCount > 0 ? `(${anonymizedCount} PII entities anonymized)` : undefined),
-      recording_elapsed_secs: recordingDuration ?? undefined, // F020
+      recording_elapsed_secs: recordingDurationRef.current ?? undefined, // F020
     };
 
     const assistantMsg: ClaudeMessage = {
       id: `assistant-${crypto.randomUUID()}`,
       role: 'assistant',
       text: '',
-      recording_elapsed_secs: recordingDuration ?? undefined, // F020
+      recording_elapsed_secs: recordingDurationRef.current ?? undefined, // F020
     };
 
     streamingTextRef.current = '';
