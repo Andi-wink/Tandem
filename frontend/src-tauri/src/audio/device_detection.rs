@@ -476,29 +476,30 @@ mod tests {
     #[test]
     fn test_calculate_buffer_timeout_bluetooth() {
         // AirPods: 3840 frames at 48kHz = 80ms base
-        // With 2x headroom = 160ms
-        // Should clamp to 80-200ms range
+        // With 2x headroom via mul_f32(2.0) ≈ 160ms
+        // Clamped to [80ms, 200ms] → within range
         let timeout = calculate_buffer_timeout(
             InputDeviceKind::Bluetooth,
             3840,
             48000,
         );
-        assert_eq!(timeout, Duration::from_millis(160));
+        // Use same calculation as production code to avoid f32 precision mismatch
+        let expected = Duration::from_secs_f64(3840.0 / 48000.0).mul_f32(2.0);
+        assert_eq!(timeout, expected);
     }
 
     #[test]
     fn test_calculate_buffer_timeout_wired() {
-        // Built-in: 512 frames at 48kHz = 10.67ms base
-        // With 2x headroom = 21.3ms
-        // Should clamp to 20-50ms range
+        // Built-in: 512 frames at 48kHz = 10.667ms base
+        // With 2x headroom via mul_f32(2.0) ≈ 21.3ms
+        // Clamped to [20ms, 50ms] → within range
         let timeout = calculate_buffer_timeout(
             InputDeviceKind::Wired,
             512,
             48000,
         );
-        // 21.33ms rounds to 21ms
-        assert!(timeout >= Duration::from_millis(20));
-        assert!(timeout <= Duration::from_millis(50));
+        let expected = Duration::from_secs_f64(512.0 / 48000.0).mul_f32(2.0);
+        assert_eq!(timeout, expected);
     }
 
     #[test]

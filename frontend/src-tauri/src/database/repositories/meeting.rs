@@ -411,6 +411,15 @@ mod tests {
 
         let meetings = MeetingsRepository::get_meetings(&pool).await.unwrap();
         assert!(meetings.is_empty());
+
+        // Verify transcript rows were also cascade-deleted
+        let transcript_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM transcripts WHERE meeting_id = ?")
+                .bind(&meeting_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(transcript_count.0, 0, "transcripts should be cascade-deleted");
     }
 
     #[tokio::test]

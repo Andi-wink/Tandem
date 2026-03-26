@@ -5,6 +5,10 @@ use std::collections::VecDeque;
 use std::time::Duration;
 use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 
+/// C06: VAD always processes at 16kHz regardless of input sample rate.
+/// Must use this (not self.sample_rate) for timestamp math on resampled samples.
+const VAD_SAMPLE_RATE: u32 = 16000;
+
 /// Represents a complete speech segment detected by VAD
 #[derive(Debug, Clone)]
 pub struct SpeechSegment {
@@ -35,8 +39,7 @@ pub struct ContinuousVadProcessor {
 
 impl ContinuousVadProcessor {
     pub fn new(input_sample_rate: u32, redemption_time_ms: u32) -> Result<Self> {
-        // Silero VAD MUST use 16kHz - this is hardcoded requirement
-        const VAD_SAMPLE_RATE: u32 = 16000;
+        // Silero VAD MUST use 16kHz — uses module-level VAD_SAMPLE_RATE constant
 
         // Use STRICT settings to prevent silence from reaching Whisper
         let mut config = VadConfig::default();
@@ -52,8 +55,12 @@ impl ContinuousVadProcessor {
         // Previous: capped at 400ms, causing VAD to fragment 5-second speech into 40ms segments
         // New: Use full redemption_time from pipeline (2000ms) to bridge natural pauses
         config.redemption_time = Duration::from_millis(redemption_time_ms as u64);
-        config.pre_speech_pad = Duration::from_millis(500);   // Increased from 300ms: capture speech onset more reliably
-        config.post_speech_pad = Duration::from_millis(600);  // Increased from 400ms: capture trailing words
+        config.pre_speech_pad = Duration::from_millis(300);
+        // CRITICAL: post_speech_pad MUST be < redemption_time or silero-rs panics:
+        // it indexes session_audio at (speech_end + post_speech_pad) which is only
+        // guaranteed to be in-buffer when post_speech_pad ≤ redemption_time.
+        // redemption_time is 400ms on Windows / 900ms on macOS — use 200ms to be safe on all platforms.
+        config.post_speech_pad = Duration::from_millis(200);
 
         // CRITICAL FIX: Increased min_speech_time to prevent tiny 40ms fragments
         // Previous: 100ms allowed too-short segments that Whisper rejects
@@ -238,8 +245,9 @@ impl ContinuousVadProcessor {
 
         // Force end any ongoing speech
         if self.in_speech && !self.current_speech.is_empty() {
-            let start_ms = (self.speech_start_sample as f64 / self.sample_rate as f64) * 1000.0;
-            let end_ms = (self.processed_samples as f64 / self.sample_rate as f64) * 1000.0;
+            // C06: Use VAD_SAMPLE_RATE (16kHz) — processed_samples counts post-resample samples
+            let start_ms = (self.speech_start_sample as f64 / VAD_SAMPLE_RATE as f64) * 1000.0;
+            let end_ms = (self.processed_samples as f64 / VAD_SAMPLE_RATE as f64) * 1000.0;
 
             let segment = SpeechSegment {
                 samples: self.current_speech.clone(),
@@ -262,21 +270,27 @@ impl ContinuousVadProcessor {
     }
 
     fn process_chunk(&mut self, chunk: &[f32]) -> Result<()> {
-        let transitions = self.session.process(chunk)
+        // Silero VAD requires samples in [-1.0, 1.0]. Sinc resampler overshoot can
+        // push values slightly outside this range — clamp before session.process.
+        let clamped: Vec<f32> = chunk.iter().map(|&s| s.clamp(-1.0, 1.0)).collect();
+        let transitions = self.session.process(&clamped)
             .map_err(|e| anyhow!("VAD processing failed: {}", e))?;
 
         // Handle VAD transitions
         for transition in transitions {
             match transition {
                 VadTransition::SpeechStart { timestamp_ms } => {
-                    // Only log if state changed
-                    if !self.last_logged_state {
-                        info!("VAD: Speech started at {}ms", timestamp_ms);
-                        self.last_logged_state = true;
+                    if !self.in_speech {
+                        if !self.last_logged_state {
+                            info!("VAD: Speech started at {}ms", timestamp_ms);
+                            self.last_logged_state = true;
+                        }
+                        self.in_speech = true;
+                        // C06: Use VAD_SAMPLE_RATE (16kHz) — processed_samples counts post-resample samples
+                        self.speech_start_sample = self.processed_samples + (timestamp_ms * VAD_SAMPLE_RATE as usize / 1000);
+                        self.current_speech.clear();
                     }
-                    self.in_speech = true;
-                    self.speech_start_sample = self.processed_samples + (timestamp_ms * self.sample_rate as usize / 1000);
-                    self.current_speech.clear();
+                    // If already in_speech, ignore duplicate SpeechStart
                 }
                 VadTransition::SpeechEnd { start_timestamp_ms, end_timestamp_ms, samples } => {
                     // Only log if we were previously in speech state
@@ -324,6 +338,10 @@ impl ContinuousVadProcessor {
 
 /// Legacy function for backward compatibility - now uses the optimized approach
 pub fn extract_speech_16k(samples_mono_16k: &[f32]) -> Result<Vec<f32>> {
+    if samples_mono_16k.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let mut processor = ContinuousVadProcessor::new(16000, 400)?;
 
     // Process all audio

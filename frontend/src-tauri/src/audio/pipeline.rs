@@ -164,8 +164,7 @@ impl ProfessionalAudioMixer {
             // Pre-scale system audio to 70% to leave headroom
             // This prevents constant soft scaling which can cause pumping artifacts
             // Mic is normalized to -16 LUFS (voice/podcast standard), system needs reduction
-            let sys_scaled = sys * 1.0;
-            let _mic_scaled = mic * 0.8;  // Reserved for future mic scaling
+            let sys_scaled = sys * 0.7;
 
             // Sum without ducking - mic stays at full volume, system slightly reduced
             let sum = mic + sys_scaled;
@@ -880,7 +879,7 @@ impl AudioPipeline {
                             // STEP 4: Send mixed audio for recording (WAV file)
                             if let Some(ref sender) = self.recording_sender_for_mixed {
                                 let recording_chunk = AudioChunk {
-                                    data: mixed_with_gain.clone(),
+                                    data: mixed_with_gain,
                                     sample_rate: self.sample_rate,
                                     timestamp: chunk.timestamp,
                                     chunk_id: self.chunk_id_counter,
@@ -922,13 +921,15 @@ impl AudioPipeline {
         Ok(())
     }
 
-    /// Minimum samples before sending to Whisper (3 seconds at 16kHz).
-    /// Whisper performs poorly on chunks shorter than ~3 seconds.
-    const MIN_TRANSCRIPTION_SAMPLES: usize = 48000;
+    /// Minimum samples before sending to Whisper (1.5 seconds at 16kHz).
+    /// VAD upstream enforces 250ms min_speech_time so buffers always contain real speech.
+    /// Reduced from 3s to improve transcription responsiveness for short sentences.
+    const MIN_TRANSCRIPTION_SAMPLES: usize = 24000;
 
     /// Maximum silence gap (seconds) before flushing a partial buffer.
-    /// If no new VAD speech arrives within this window, send what we have.
-    const SILENCE_GAP_FLUSH_SECS: f64 = 2.0;
+    /// 1.2s catches natural end-of-sentence pauses without cutting mid-utterance.
+    /// Reduced from 2.0s for faster transcript appearance.
+    const SILENCE_GAP_FLUSH_SECS: f64 = 1.2;
 
     /// Send accumulated transcription buffer to Whisper and reset.
     /// Called when buffer >= MIN_TRANSCRIPTION_SAMPLES, on silence gap, or on recording stop.
@@ -954,10 +955,10 @@ impl AudioPipeline {
             device_type: DeviceType::Microphone,
         };
 
+        self.chunk_id_counter += 1; // Increment before send to avoid duplicate IDs on error
+
         if let Err(e) = self.transcription_sender.send(chunk) {
             warn!("Failed to send buffered transcription chunk: {}", e);
-        } else {
-            self.chunk_id_counter += 1;
         }
 
         self.transcription_buffer_start_ts = 0.0;

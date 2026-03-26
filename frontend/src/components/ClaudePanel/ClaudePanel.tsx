@@ -241,6 +241,16 @@ export function ClaudePanel() {
 
   // F047: Feed new transcript segments into voice command capture while listening
   const { transcripts } = useTranscripts();
+
+  // M18: Refs for writeCodeHandoff to avoid stale closures in the useEffect
+  const transcriptsRef_handoff = useRef(transcripts);
+  transcriptsRef_handoff.current = transcripts;
+  const contextBasketRef = useRef(contextBasket);
+  contextBasketRef.current = contextBasket;
+  const meetingTitleRef = useRef(meetingTitle);
+  meetingTitleRef.current = meetingTitle;
+  const meetingIdRef = useRef(meetingId);
+  meetingIdRef.current = meetingId;
   const lastFedTranscriptIdRef = useRef<string | null>(null);
   const prevIsListeningRef = useRef(false);
 
@@ -284,6 +294,16 @@ export function ClaudePanel() {
     handleInputForCommands(value);
   };
 
+  // F020: Shared handoff trigger — extracted from 3 duplicate call sites
+  const invokeHandoff = useCallback(async () => {
+    const folderPath = await invoke<string | null>('get_meeting_folder_path').catch(() => null);
+    if (folderPath && window.triggerHandoff) {
+      window.triggerHandoff(folderPath, meetingTitle || 'Meeting');
+    } else if (window.triggerHandoff) {
+      toast.error('No active recording folder. Start a recording first.');
+    }
+  }, [meetingTitle]);
+
   const handleSend = async () => {
     const text = inputText.trim();
     if (!text) return;
@@ -298,13 +318,7 @@ export function ClaudePanel() {
     if (activeCommand?.type === 'action' && activeCommand.action === 'handoff') {
       cancelCommand();
       setInputText('');
-      // Trigger handoff via window function (registered by useHandoffExport in page.tsx)
-      const folderPath = await invoke<string | null>('get_meeting_folder_path').catch(() => null);
-      if (folderPath && window.triggerHandoff) {
-        window.triggerHandoff(folderPath, meetingTitle || 'Meeting');
-      } else if (window.triggerHandoff) {
-        toast.error('No active recording folder. Start a recording first.');
-      }
+      invokeHandoff();
       return;
     }
 
@@ -359,13 +373,13 @@ export function ClaudePanel() {
   // F054: Write task handoff file for Claude Code /loop (fire-and-forget)
   const writeCodeHandoff = async (taskDescription: string) => {
     try {
-      const recentTranscripts = getRecentTranscripts(transcripts, HANDOFF_TRANSCRIPT_WINDOW_SECS);
+      const recentTranscripts = getRecentTranscripts(transcriptsRef_handoff.current, HANDOFF_TRANSCRIPT_WINDOW_SECS);
       const data: TaskHandoffData = {
         taskDescription,
-        meetingTitle: meetingTitle || 'Meeting',
-        meetingId: meetingId || 'unknown',
+        meetingTitle: meetingTitleRef.current || 'Meeting',
+        meetingId: meetingIdRef.current || 'unknown',
         transcripts: recentTranscripts,
-        contextItems: [...contextBasket],
+        contextItems: [...contextBasketRef.current],
         timestamp: new Date(),
       };
       const filePath = await writeTaskHandoff(projectDir!, data);
@@ -434,15 +448,7 @@ export function ClaudePanel() {
           if (cmd.type === 'action' && cmd.action === 'handoff') {
             dismissAutocomplete();
             setInputText('');
-            invoke<string | null>('get_meeting_folder_path').then(folderPath => {
-              if (folderPath && window.triggerHandoff) {
-                window.triggerHandoff(folderPath, meetingTitle || 'Meeting');
-              } else if (window.triggerHandoff) {
-                toast.error('No active recording folder. Start a recording first.');
-              }
-            }).catch(() => {
-              toast.error('Failed to get meeting folder path');
-            });
+            invokeHandoff();
             return;
           }
           const newText = activateCommand(cmd);
@@ -458,15 +464,7 @@ export function ClaudePanel() {
           if (cmd.type === 'action' && cmd.action === 'handoff') {
             dismissAutocomplete();
             setInputText('');
-            invoke<string | null>('get_meeting_folder_path').then(folderPath => {
-              if (folderPath && window.triggerHandoff) {
-                window.triggerHandoff(folderPath, meetingTitle || 'Meeting');
-              } else if (window.triggerHandoff) {
-                toast.error('No active recording folder. Start a recording first.');
-              }
-            }).catch(() => {
-              toast.error('Failed to get meeting folder path');
-            });
+            invokeHandoff();
             return;
           }
           // Select the command (don't send yet)
@@ -648,6 +646,7 @@ export function ClaudePanel() {
             )}
             <button
               onClick={closePanel}
+              aria-label="Close AI panel"
               className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
             >
               <X className="w-4 h-4" />

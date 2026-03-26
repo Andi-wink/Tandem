@@ -83,9 +83,12 @@ impl WhisperEngine {
     pub fn new_with_models_dir(models_dir: Option<PathBuf>) -> Result<Self> {
         // PERFORMANCE: Suppress verbose whisper.cpp and Metal logs
         // These C library logs bypass Rust logging and clutter output
-        // Set environment variables to reduce C library verbosity
-        std::env::set_var("GGML_METAL_LOG_LEVEL", "1"); // 0=off, 1=error, 2=warn, 3=info
-        std::env::set_var("WHISPER_LOG_LEVEL", "1");    // Reduce whisper.cpp verbosity
+        // Note: set_var becomes unsafe in Rust edition 2024. Using Once for thread safety.
+        static INIT_ENV: std::sync::Once = std::sync::Once::new();
+        INIT_ENV.call_once(|| {
+            std::env::set_var("GGML_METAL_LOG_LEVEL", "1"); // 0=off, 1=error, 2=warn, 3=info
+            std::env::set_var("WHISPER_LOG_LEVEL", "1");    // Reduce whisper.cpp verbosity
+        });
 
         let models_dir = if let Some(dir) = models_dir {
             // Use provided directory (for production with app_data_dir)
@@ -1044,6 +1047,7 @@ impl WhisperEngine {
         let mut downloaded = 0u64;
         let mut last_progress_report = 0u8;
         let mut last_report_time = std::time::Instant::now();
+        let mut download_error: Option<anyhow::Error> = None;
 
         // Emit initial 0% progress immediately
         if let Some(ref callback) = progress_callback {
@@ -1056,18 +1060,23 @@ impl WhisperEngine {
                 let cancel_flag = self.cancel_download_flag.read().await;
                 if cancel_flag.as_ref() == Some(&model_name.to_string()) {
                     log::info!("Download cancelled for {}", model_name);
-                    // Remove from active downloads on cancellation
-                    let mut active = self.active_downloads.write().await;
-                    active.remove(model_name);
-                    return Err(anyhow!("Download cancelled by user"));
+                    download_error = Some(anyhow!("Download cancelled by user"));
+                    break;
                 }
             }
 
-            let chunk = chunk_result
-                .map_err(|e| anyhow!("Failed to read chunk: {}", e))?;
+            let chunk = match chunk_result {
+                Ok(c) => c,
+                Err(e) => {
+                    download_error = Some(anyhow!("Failed to read chunk: {}", e));
+                    break;
+                }
+            };
 
-            file.write_all(&chunk).await
-                .map_err(|e| anyhow!("Failed to write chunk to file: {}", e))?;
+            if let Err(e) = file.write_all(&chunk).await {
+                download_error = Some(anyhow!("Failed to write chunk to file: {}", e));
+                break;
+            }
 
             downloaded += chunk.len() as u64;
 
@@ -1104,8 +1113,24 @@ impl WhisperEngine {
             }
         }
 
+        // Always remove from active downloads
+        {
+            let mut active = self.active_downloads.write().await;
+            active.remove(model_name);
+        }
+
+        // Handle download failure — clean up partial file and reset status
+        if let Some(err) = download_error {
+            let _ = tokio::fs::remove_file(&file_path).await;
+            let mut models = self.available_models.write().await;
+            if let Some(model_info) = models.get_mut(model_name) {
+                model_info.status = ModelStatus::Missing;
+            }
+            return Err(err);
+        }
+
         log::info!("Streaming download completed: {} bytes", downloaded);
-        
+
         // Ensure 100% progress is always reported
         {
             let mut models = self.available_models.write().await;
@@ -1113,16 +1138,22 @@ impl WhisperEngine {
                 model_info.status = ModelStatus::Downloading { progress: 100 };
             }
         }
-        
+
         if let Some(ref callback) = progress_callback {
             callback(100);
         }
-        
-        file.flush().await
-            .map_err(|e| anyhow!("Failed to flush file: {}", e))?;
-        
+
+        if let Err(e) = file.flush().await {
+            let _ = tokio::fs::remove_file(&file_path).await;
+            let mut models = self.available_models.write().await;
+            if let Some(model_info) = models.get_mut(model_name) {
+                model_info.status = ModelStatus::Missing;
+            }
+            return Err(anyhow!("Failed to flush file: {}", e));
+        }
+
         log::info!("Download completed for model: {}", model_name);
-        
+
         // Update model status to available
         {
             let mut models = self.available_models.write().await;
@@ -1130,12 +1161,6 @@ impl WhisperEngine {
                 model_info.status = ModelStatus::Available;
                 model_info.path = file_path.clone();
             }
-        }
-
-        // Remove from active downloads on completion
-        {
-            let mut active = self.active_downloads.write().await;
-            active.remove(model_name);
         }
 
         Ok(())

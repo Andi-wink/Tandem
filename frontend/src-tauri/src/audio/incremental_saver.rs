@@ -181,10 +181,10 @@ impl IncrementalAudioSaver {
         command.args(&[
             "-f", "concat",          // Use concat demuxer
             "-safe", "0",            // Allow absolute paths
-            "-i", list_file.to_str().unwrap(),
+            "-i", &list_file.to_string_lossy(),
             "-c", "copy",            // Copy codec - no re-encoding!
             "-y",                    // Overwrite output file
-            output.to_str().unwrap()
+            &output.to_string_lossy()
         ]);
 
         // Hide console window on Windows to prevent CMD popup during finalization
@@ -468,8 +468,11 @@ mod tests {
         ).unwrap();
 
         // Try to finalize without adding any chunks
-        let result = saver.finalize().await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No audio checkpoints"));
+        let err = saver.finalize().await.expect_err("should fail with no checkpoints");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No audio checkpoints"),
+            "expected 'No audio checkpoints' error, got: {msg}"
+        );
     }
 }

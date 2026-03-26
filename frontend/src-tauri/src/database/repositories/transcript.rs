@@ -366,6 +366,22 @@ mod tests {
         let transcript = "This is a long text that contains the word 'important' somewhere in the middle of it";
         let context = TranscriptsRepository::get_match_context(transcript, "important");
         assert!(context.contains("important"));
+        // Input is short enough to fit within ±100 char window — no ellipsis expected
+        assert!(!context.starts_with("..."), "short text should not be truncated");
+        assert_eq!(context, transcript, "entire text should be returned when it fits in the window");
+    }
+
+    #[tokio::test]
+    async fn test_get_match_context_windowing() {
+        // Build a transcript >200 chars with the match near the end to exercise windowing
+        let prefix = "A".repeat(150);
+        let suffix = "B".repeat(150);
+        let transcript = format!("{prefix} TARGET {suffix}");
+        let context = TranscriptsRepository::get_match_context(&transcript, "TARGET");
+        assert!(context.contains("TARGET"), "match must be in the window");
+        assert!(context.starts_with("..."), "long text should have leading ellipsis");
+        assert!(context.ends_with("..."), "long text should have trailing ellipsis");
+        assert!(context.len() < transcript.len(), "context should be shorter than full transcript");
     }
 
     #[tokio::test]

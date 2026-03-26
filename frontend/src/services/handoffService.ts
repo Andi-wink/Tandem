@@ -7,6 +7,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { sep as pathSep } from '@tauri-apps/api/path';
 import { Transcript, ScreenshotData } from '@/types';
 import { ContextBasketItem } from '@/contexts/ContextBasketContext';
 
@@ -22,12 +23,6 @@ export const LIVE_TRANSCRIPT_WINDOW_SECS = 1800; // 30 minutes
 export const LIVE_TRANSCRIPT_DEBOUNCE_MS = 10_000; // 10 seconds
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-function formatSecs(secs: number): string {
-  const m = Math.floor(secs / 60);
-  const s = Math.floor(secs % 60);
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
 
 function formatTimestamp(secs: number): string {
   const h = Math.floor(secs / 3600);
@@ -78,7 +73,7 @@ export function generateTaskMarkdown(data: TaskHandoffData, projectDir?: string)
 
   // Project file paths (so Claude Code knows where to find/save things)
   if (projectDir) {
-    const sep = projectDir.includes('\\') ? '\\' : '/';
+    const sep = pathSep();
     lines.push('## Project Files');
     lines.push(`- **Project dir**: ${projectDir}`);
     lines.push(`- **Screenshots**: ${projectDir}${sep}screenshots${sep}  (PNG files named screenshot_YYYYMMDD_HHmmss_*.png)`);
@@ -126,13 +121,18 @@ export function generateTaskMarkdown(data: TaskHandoffData, projectDir?: string)
  * Returns the written file path.
  */
 export async function writeTaskHandoff(projectDir: string, data: TaskHandoffData): Promise<string> {
-  const sep = projectDir.includes('\\') ? '\\' : '/';
+  const sep = pathSep();
   const tasksDir = `${projectDir}${sep}.tandem${sep}tasks`;
   const filename = `task-${Date.now()}.md`;
   const filePath = `${tasksDir}${sep}${filename}`;
   const content = generateTaskMarkdown(data, projectDir);
 
-  await invoke('save_transcript', { filePath, content });
+  try {
+    await invoke('save_transcript', { filePath, content });
+  } catch (err) {
+    console.error('Failed to write task handoff:', filePath, err);
+    throw new Error(`Could not save to ${filePath}: ${err}`);
+  }
   return filePath;
 }
 
@@ -183,9 +183,14 @@ Or pre-approve common commands in \`.claude/settings.local.json\`.
  * Called when the project directory is configured. Safe to overwrite (static content).
  */
 export async function ensureTandemClaudeMd(projectDir: string): Promise<void> {
-  const sep = projectDir.includes('\\') ? '\\' : '/';
+  const sep = pathSep();
   const filePath = `${projectDir}${sep}.tandem${sep}CLAUDE.md`;
-  await invoke('save_transcript', { filePath, content: TANDEM_CLAUDE_MD });
+  try {
+    await invoke('save_transcript', { filePath, content: TANDEM_CLAUDE_MD });
+  } catch (err) {
+    console.error('Failed to write CLAUDE.md:', filePath, err);
+    throw new Error(`Could not save to ${filePath}: ${err}`);
+  }
 }
 
 // ─── Live Screenshots File ──────────────────────────────────────────────────
@@ -243,7 +248,7 @@ export function generateLiveTranscriptMarkdown(
 
   // Project file paths — so Claude Code knows where to find context
   if (projectDir) {
-    const sep = projectDir.includes('\\') ? '\\' : '/';
+    const sep = pathSep();
     lines.push('## Project Files');
     lines.push(`- **Project dir**: ${projectDir}`);
     lines.push(`- **Screenshots**: ${projectDir}${sep}screenshots${sep}`);
@@ -277,9 +282,14 @@ export async function writeLiveTranscript(
   transcripts: Transcript[],
   meetingTitle: string,
 ): Promise<void> {
-  const sep = projectDir.includes('\\') ? '\\' : '/';
+  const sep = pathSep();
   const filePath = `${projectDir}${sep}.tandem${sep}live-transcript.md`;
   const content = generateLiveTranscriptMarkdown(transcripts, meetingTitle, projectDir);
 
-  await invoke('save_transcript', { filePath, content });
+  try {
+    await invoke('save_transcript', { filePath, content });
+  } catch (err) {
+    console.error('Failed to write live transcript:', filePath, err);
+    throw new Error(`Could not save to ${filePath}: ${err}`);
+  }
 }

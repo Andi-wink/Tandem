@@ -63,7 +63,7 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onCancel(); }}>
-      <DialogContent className="max-w-[420px] gap-0 p-0">
+      <DialogContent className="max-w-[500px] gap-0 p-0">
         <DialogHeader className="px-4 py-3 border-b border-border">
           <DialogTitle className="text-sm">AI Assistant — Setup</DialogTitle>
           <DialogDescription className="sr-only">
@@ -116,7 +116,7 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
                 type="radio"
                 name="dir"
                 checked={useDefault}
-                onChange={() => { setUseDefault(true); setSelectedDir(defaultDir); }}
+                onChange={() => { setUseDefault(true); if (defaultDir) setSelectedDir(defaultDir); }}
                 className="mt-0.5"
               />
               <div className="flex-1 min-w-0">
@@ -142,7 +142,7 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
               />
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium">Existing repository</div>
-                <div className="flex items-center gap-2 mt-1">
+                <div className="flex items-center gap-2 mt-1 min-w-0">
                   <div className="text-xs text-muted-foreground truncate flex-1">
                     {!useDefault ? selectedDir : 'Select a folder...'}
                   </div>

@@ -63,35 +63,6 @@ export function PermissionWarning({
               {!hasMicrophone && !hasSystemAudio ? 'Permissions Required' : !hasMicrophone ? 'Microphone Permission Required' : 'System Audio Permission Required'}
             </div>
           </AlertTitle>
-          {/* Action Buttons */}
-          <div className="mt-4 flex flex-wrap gap-2">
-            {isMacOS && !hasMicrophone && (
-              <button
-                onClick={openMicrophoneSettings}
-                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-warning-foreground bg-warning hover:bg-warning/90 rounded-md transition-colors"
-              >
-                <Mic className="h-4 w-4" />
-                Open Microphone Settings
-              </button>
-            )}
-            {isMacOS && !hasSystemAudio && (
-              <button
-                onClick={openScreenRecordingSettings}
-                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-brand-foreground bg-brand hover:bg-brand-hover rounded-md transition-colors"
-              >
-                <Speaker className="h-4 w-4" />
-                Open Screen Recording Settings
-              </button>
-            )}
-            <button
-              onClick={onRecheck}
-              disabled={isRechecking}
-              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-warning-foreground bg-warning-muted hover:bg-warning/20 rounded-md transition-colors disabled:opacity-50"
-            >
-              <RefreshCw className={`h-4 w-4 ${isRechecking ? 'animate-spin' : ''}`} />
-              Recheck
-            </button>
-          </div>
           <AlertDescription className="text-warning-foreground mt-2">
             {/* Microphone Warning */}
             {!hasMicrophone && (
@@ -130,9 +101,36 @@ export function PermissionWarning({
                 )}
               </>
             )}
-
-
           </AlertDescription>
+          {/* Action Buttons */}
+          <div className="mt-3 flex flex-wrap gap-2">
+            {isMacOS && !hasMicrophone && (
+              <button
+                onClick={openMicrophoneSettings}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-warning-foreground bg-warning hover:bg-warning/90 rounded-md transition-colors"
+              >
+                <Mic className="h-4 w-4" />
+                Open Microphone Settings
+              </button>
+            )}
+            {isMacOS && !hasSystemAudio && (
+              <button
+                onClick={openScreenRecordingSettings}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-brand-foreground bg-brand hover:bg-brand-hover rounded-md transition-colors"
+              >
+                <Speaker className="h-4 w-4" />
+                Open Screen Recording Settings
+              </button>
+            )}
+            <button
+              onClick={onRecheck}
+              disabled={isRechecking}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-warning-foreground bg-warning-muted hover:bg-warning/20 rounded-md transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={`h-4 w-4 ${isRechecking ? 'animate-spin' : ''}`} />
+              Recheck
+            </button>
+          </div>
         </Alert>
       )}
     </div>

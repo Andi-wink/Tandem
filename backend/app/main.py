@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -10,7 +10,6 @@ import logging
 from dotenv import load_dotenv
 from db import DatabaseManager
 import json
-from threading import Lock
 from transcript_processor import TranscriptProcessor
 import time
 import uuid
@@ -240,6 +239,8 @@ async def delete_meeting(data: DeleteMeetingRequest):
             return {"message": "Meeting deleted successfully"}
         else:
             raise HTTPException(status_code=500, detail="Failed to delete meeting")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error deleting meeting: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -330,7 +331,7 @@ async def process_transcript_background(process_id: str, transcript: TranscriptR
 
         # Save final result
         if all_json_data:
-            await processor.db.update_process(process_id, status="completed", result=json.dumps(final_summary))
+            await processor.db.update_process(process_id, status="completed", result=final_summary)  # C03: pass dict directly — db.py handles json.dumps
             logger.info(f"Background processing completed for process_id: {process_id}")
         else:
             error_msg = "Summary generation failed: No chunks were processed successfully. Check logs for specific errors."
@@ -581,7 +582,7 @@ async def get_model_config():
     model_config = await db.get_model_config()
     if model_config:
         api_key = await db.get_api_key(model_config["provider"])
-        if api_key != None:
+        if api_key is not None:
             model_config["apiKey"] = api_key
     return model_config
 
@@ -589,7 +590,7 @@ async def get_model_config():
 async def save_model_config(request: SaveModelConfigRequest):
     """Save the model configuration"""
     await db.save_model_config(request.provider, request.model, request.whisperModel)
-    if request.apiKey != None:
+    if request.apiKey is not None:
         await db.save_api_key(request.apiKey, request.provider)
     return {"status": "success", "message": "Model configuration saved successfully"}  
 
@@ -599,7 +600,7 @@ async def get_transcript_config():
     transcript_config = await db.get_transcript_config()
     if transcript_config:
         transcript_api_key = await db.get_transcript_api_key(transcript_config["provider"])
-        if transcript_api_key != None:
+        if transcript_api_key is not None:
             transcript_config["apiKey"] = transcript_api_key
     return transcript_config
 
@@ -607,7 +608,7 @@ async def get_transcript_config():
 async def save_transcript_config(request: SaveTranscriptConfigRequest):
     """Save the transcript configuration"""
     await db.save_transcript_config(request.provider, request.model)
-    if request.apiKey != None:
+    if request.apiKey is not None:
         await db.save_transcript_api_key(request.apiKey, request.provider)
     return {"status": "success", "message": "Transcript configuration saved successfully"}
 
@@ -621,7 +622,8 @@ class SaveApiKeyRequest(BaseModel):
 @app.post("/get-api-key")
 async def get_api_key(request: GetApiKeyRequest):
     try:
-        return await db.get_api_key(request.provider)
+        key = await db.get_api_key(request.provider)
+        return {"api_key": key}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -636,7 +638,8 @@ async def save_api_key(request: SaveApiKeyRequest):
 @app.post("/get-transcript-api-key")
 async def get_transcript_api_key(request: GetApiKeyRequest):
     try:
-        return await db.get_transcript_api_key(request.provider)
+        key = await db.get_transcript_api_key(request.provider)
+        return {"api_key": key}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -921,8 +924,13 @@ notification_bus = NotificationBus()
 
 
 @app.post("/api/notify")
-async def notify(req: IncomingNotification):
-    """Receive a notification and fan out to all SSE subscribers."""
+async def notify(req: IncomingNotification, request: Request):
+    """Receive a notification and fan out to all SSE subscribers.
+    Restricted to localhost to prevent unauthorized notification injection."""
+    client_host = request.client.host if request.client else None
+    allowed_hosts = ("127.0.0.1", "::1", "localhost")
+    if client_host not in allowed_hosts:
+        raise HTTPException(status_code=403, detail="Notifications can only be sent from localhost")
     event_id = str(uuid.uuid4())
     event = {
         "id": event_id,

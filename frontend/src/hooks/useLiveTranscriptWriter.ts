@@ -34,6 +34,19 @@ export function useLiveTranscriptWriter() {
   const lastWrittenCountRef = useRef<number>(0);
   const responsePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // M26: Refs to avoid stale closures in the flush effect
+  const projectDirRef = useRef(projectDir);
+  projectDirRef.current = projectDir;
+  const transcriptsLocalRef = useRef(transcripts);
+  transcriptsLocalRef.current = transcripts;
+  const meetingTitleLocalRef = useRef(meetingTitle);
+  meetingTitleLocalRef.current = meetingTitle;
+
+  // M25: Reset counter when project dir changes
+  useEffect(() => {
+    lastWrittenCountRef.current = 0;
+  }, [projectDir]);
+
   // Debounced write on transcript changes during recording
   useEffect(() => {
     if (!isRecording || !projectDir || transcripts.length === 0) return;
@@ -60,17 +73,15 @@ export function useLiveTranscriptWriter() {
     };
   }, [transcripts, screenshots, isRecording, projectDir, meetingTitle]);
 
-  // Final flush when recording stops
+  // Final flush when recording stops (uses refs to avoid stale closures)
   useEffect(() => {
-    if (!isRecording && lastWrittenCountRef.current > 0 && projectDir && transcripts.length > 0) {
-      const recentTranscripts = getRecentTranscripts(transcripts, LIVE_TRANSCRIPT_WINDOW_SECS);
+    if (!isRecording && lastWrittenCountRef.current > 0 && projectDirRef.current && transcriptsLocalRef.current.length > 0) {
+      const recentTranscripts = getRecentTranscripts(transcriptsLocalRef.current, LIVE_TRANSCRIPT_WINDOW_SECS);
       if (recentTranscripts.length > 0) {
-        writeLiveTranscript(projectDir, recentTranscripts, meetingTitle || 'Meeting').catch(() => {});
+        writeLiveTranscript(projectDirRef.current, recentTranscripts, meetingTitleLocalRef.current || 'Meeting').catch(() => {});
       }
       lastWrittenCountRef.current = 0;
     }
-    // Only react to isRecording going from true→false
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isRecording]);
 
   // Bug 8: Poll .tandem/response.md for Claude Code responses

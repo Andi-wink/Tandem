@@ -75,6 +75,14 @@ export default {
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",
       },
+      fontFamily: {
+        sans: ['var(--font-source-sans-3)', 'system-ui', '-apple-system', 'sans-serif'],
+      },
+      borderRadius: {
+        lg: 'var(--radius)',
+        md: 'calc(var(--radius) - 2px)',
+        sm: 'calc(var(--radius) - 4px)',
+      },
       fontSize: {
         'display': ['32px', { lineHeight: '1.2', fontWeight: '700' }],
         'h1': ['24px', { lineHeight: '1.3', fontWeight: '600' }],

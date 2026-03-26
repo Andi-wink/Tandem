@@ -987,7 +987,11 @@ fn extract_folder_timestamp_suffix(folder_name: &str) -> Option<&str> {
     if folder_name.len() < 17 {
         return None;
     }
-    let suffix = &folder_name[folder_name.len() - 17..];
+    let start = folder_name.len() - 17;
+    if !folder_name.is_char_boundary(start) {
+        return None; // Multi-byte character at boundary — can't extract timestamp
+    }
+    let suffix = &folder_name[start..];
     let bytes = suffix.as_bytes();
     // Validate pattern: _DDDD-DD-DD_DD-DD
     if bytes[0] != b'_'
@@ -1314,12 +1318,24 @@ pub async fn debug_backend_connection<R: Runtime>(app: AppHandle<R>) -> Result<S
 pub async fn open_external_url(url: String) -> Result<(), String> {
     use std::process::Command;
 
+    // C01: Validate URL scheme — only allow http/https
+    let lower = url.to_lowercase();
+    if !lower.starts_with("http://") && !lower.starts_with("https://") {
+        return Err(format!("Only http:// and https:// URLs are allowed, got: {}", url));
+    }
+
+    // C01: Reject shell metacharacters to prevent command injection on Windows
+    const SHELL_META: &[char] = &['&', '|', ';', '>', '<', '^', '%', '!', '(', ')', '"', '`', '\n', '\r'];
+    if url.contains(SHELL_META) {
+        return Err("URL contains invalid characters".to_string());
+    }
+
     let result = if cfg!(target_os = "windows") {
-        Command::new("cmd").args(&["/C", "start", &url]).output()
+        // Empty "" title prevents `start` from interpreting the URL as a window title
+        Command::new("cmd").args(&["/C", "start", "", &url]).output()
     } else if cfg!(target_os = "macos") {
         Command::new("open").arg(&url).output()
     } else {
-        // Linux and other Unix-like systems
         Command::new("xdg-open").arg(&url).output()
     };
 

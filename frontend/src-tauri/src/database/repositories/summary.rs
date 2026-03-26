@@ -285,6 +285,12 @@ mod tests {
         assert_eq!(process.status, "completed");
         assert_eq!(process.chunk_count, 3);
         assert!(process.error.is_none());
+        // Verify result was stored with correct content
+        let result_str = process.result.expect("result should be Some after completion");
+        let result_json: serde_json::Value = serde_json::from_str(&result_str)
+            .expect("result should be valid JSON");
+        assert_eq!(result_json["title"], "Summary");
+        assert_eq!(result_json["blocks"], json!([]));
         // Backup cleared on completion
         assert!(process.result_backup.is_none());
     }

@@ -250,14 +250,16 @@ pub async fn select_recording_folder<R: Runtime>(
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
-    let mut dialog = app.dialog().file().set_title("Select project directory");
-    if let Some(dir) = starting_dir {
-        let path = std::path::PathBuf::from(&dir);
-        if path.exists() {
-            dialog = dialog.set_directory(path);
+    let folder = tokio::task::spawn_blocking(move || {
+        let mut dialog = app.dialog().file().set_title("Select project directory");
+        if let Some(dir) = starting_dir {
+            let path = std::path::PathBuf::from(&dir);
+            if path.exists() {
+                dialog = dialog.set_directory(path);
+            }
         }
-    }
-    let folder = dialog.blocking_pick_folder();
+        dialog.blocking_pick_folder()
+    }).await.map_err(|e| format!("Dialog task failed: {e}"))?;
 
     match folder {
         Some(file_path) => {

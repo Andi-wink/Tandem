@@ -131,8 +131,9 @@ async def cancel_session(meeting_id: str) -> bool:
     return False
 
 
-def _cleanup_expired_sessions() -> None:
-    """R012: Remove sessions inactive for more than _SESSION_TTL_SECS."""
+async def _cleanup_expired_sessions() -> None:
+    """R012: Remove sessions inactive for more than _SESSION_TTL_SECS.
+    C05: Must be called while holding _sessions_lock."""
     now = time.monotonic()
     expired = [mid for mid, s in _sessions.items()
                if now - s.last_active > _SESSION_TTL_SECS]
@@ -143,8 +144,9 @@ def _cleanup_expired_sessions() -> None:
             logger.info("Expired inactive session for meeting %s", mid)
 
 
-def _evict_lru_sessions_if_needed() -> None:
-    """R012: If sessions exceed max size, evict the least recently used."""
+async def _evict_lru_sessions_if_needed() -> None:
+    """R012: If sessions exceed max size, evict the least recently used.
+    C05: Must be called while holding _sessions_lock."""
     while len(_sessions) > _SESSION_MAX_SIZE:
         oldest_mid = min(_sessions, key=lambda mid: _sessions[mid].last_active)
         session = _sessions.pop(oldest_mid, None)
@@ -157,8 +159,26 @@ def _evict_lru_sessions_if_needed() -> None:
 # CLAUDE.md generation (ported from Rust session.rs)
 # ---------------------------------------------------------------------------
 
+def _validate_project_dir(project_dir: str) -> str:
+    """C02: Validate project_dir to prevent path traversal.
+
+    Returns the resolved absolute path, or raises ValueError if the path
+    is relative, contains traversal, or targets a system directory.
+    """
+    if not os.path.isabs(project_dir):
+        raise ValueError(f"project_dir must be absolute: {project_dir}")
+    resolved = os.path.realpath(project_dir)
+    # Block known system directories
+    _lower = resolved.lower().replace("\\", "/")
+    blocked = ["/windows/", "/system32", "/etc/", "/usr/", "/bin/", "/sbin/"]
+    if any(seg in _lower for seg in blocked):
+        raise ValueError(f"project_dir targets a system directory: {resolved}")
+    return resolved
+
+
 def generate_claude_md(meeting_id: str, meeting_title: str, project_dir: str) -> None:
     """Create a CLAUDE.md in the project directory if it doesn't already exist."""
+    project_dir = _validate_project_dir(project_dir)  # C02: path traversal guard
     claude_md_path = os.path.join(project_dir, "CLAUDE.md")
     if os.path.exists(claude_md_path):
         logger.info("CLAUDE.md already exists at %s, skipping", claude_md_path)
@@ -259,11 +279,8 @@ _STREAM_END = object()
 def _run_query_in_proactor(
     prompt: str, options: ClaudeAgentOptions, q: queue.Queue, cancel: Event,
 ) -> None:
-    """Thread target: run SDK query() on a ProactorEventLoop (Windows subprocess support)."""
-    if sys.platform == "win32":
-        loop = asyncio.ProactorEventLoop()
-    else:
-        loop = asyncio.new_event_loop()
+    """Thread target: run SDK query() on a new event loop (Windows gets ProactorEventLoop by default)."""
+    loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
     async def _collect():
@@ -467,21 +484,26 @@ async def stream_session(
     Handles both new sessions and session resume automatically.
     If resume fails, automatically falls back to a fresh session.
     """
-    # B034: Validate model parameter
+    # B034: Warn on unknown model but don't block — let the API validate
     if model not in _VALID_MODELS:
-        yield _make_event(
-            meeting_id,
-            event_type="error",
-            text=f"Invalid model: {model}. Valid models: {', '.join(sorted(_VALID_MODELS))}",
-        )
+        logger.warning("Model %s not in known list %s — proceeding anyway", model, sorted(_VALID_MODELS))
+
+    # C02: Validate project_dir to prevent path traversal
+    try:
+        project_dir = _validate_project_dir(project_dir)
+    except ValueError as e:
+        logger.warning("Invalid project_dir: %s", e)
+        yield {"event_type": "error", "text": f"Invalid project directory: {e}",
+               "meeting_id": meeting_id, "session_id": None, "cost_usd": None,
+               "tool_name": None, "tool_input": None, "tool_output": None}
         return
 
-    # R012: Clean up expired and LRU sessions on each request
-    _cleanup_expired_sessions()
-    _evict_lru_sessions_if_needed()
-
-    # B007: Lock to prevent concurrent session creation for same meeting_id
+    # C05+B007: Lock to prevent concurrent session creation and race on cleanup
     async with _sessions_lock:
+        # R012: Clean up expired and LRU sessions while holding lock
+        await _cleanup_expired_sessions()
+        await _evict_lru_sessions_if_needed()
+
         session = _sessions.get(meeting_id)
         if session is None:
             session = SessionState(meeting_id=meeting_id, project_dir=project_dir)
