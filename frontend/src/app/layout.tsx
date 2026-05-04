@@ -30,6 +30,7 @@ import { ClaudePanel } from '@/components/ClaudePanel'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ThemeProvider } from 'next-themes'
 import { ComposeProviders } from '@/components/ComposeProviders'
+import { SoloModeProvider } from '@/contexts/SoloModeContext'
 import { logger } from '@/lib/logger'
 
 const sourceSans3 = Source_Sans_3({
@@ -126,6 +127,7 @@ export default function RootLayout({
           [ClipboardProvider],
           [ScreenshotProvider],
           [SelectionProvider],
+          [SoloModeProvider],
           [ContextBasketProvider],  // R009: Must be above ClaudeProvider
           [ClaudeProvider],
         ]}>

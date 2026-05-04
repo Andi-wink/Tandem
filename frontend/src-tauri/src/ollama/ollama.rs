@@ -474,6 +474,68 @@ pub async fn delete_ollama_model(
     Ok(())
 }
 
+/// Chat with an Ollama model and get structured JSON output.
+/// Used by Solo Mode routing engine to detect project switches and tasks.
+#[command]
+pub async fn ollama_chat_json(
+    model: String,
+    system_prompt: String,
+    user_prompt: String,
+    endpoint: Option<String>,
+) -> Result<String, String> {
+    let client = Client::new();
+    let base_url = endpoint.as_deref().unwrap_or("http://localhost:11434");
+    let url = format!("{}/v1/chat/completions", base_url);
+
+    let payload = serde_json::json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": system_prompt },
+            { "role": "user", "content": user_prompt }
+        ],
+        "response_format": { "type": "json_object" },
+        "temperature": 0.1,
+        "stream": false
+    });
+
+    let response = match timeout(
+        Duration::from_secs(60),
+        client.post(&url).json(&payload).send(),
+    )
+    .await
+    {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(e)) => {
+            return Err(format!("Ollama request failed: {}", e));
+        }
+        Err(_) => {
+            return Err("Ollama request timed out after 60 seconds".to_string());
+        }
+    };
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(format!("Ollama HTTP {}: {}", status, error_text));
+    }
+
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Ollama response: {}", e))?;
+
+    // Extract the content from OpenAI-compatible response format
+    let content = body
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .ok_or_else(|| "Unexpected response format from Ollama".to_string())?;
+
+    Ok(content.to_string())
+}
+
 /// Get the context size for a specific Ollama model
 ///
 /// This command fetches model metadata and returns the context size.

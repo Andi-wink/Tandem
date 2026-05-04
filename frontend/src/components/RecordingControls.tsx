@@ -3,7 +3,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 import { useCallback, useEffect, useState, useRef } from 'react';
-import { Play, Pause, Square, Mic, AlertCircle, X, Loader2 } from 'lucide-react';
+import { Play, Pause, Square, Mic, AlertCircle, X, Loader2, ChevronDown, Users, User } from 'lucide-react';
 import { ProcessRequest, SummaryResponse } from '@/types/summary';
 import { listen } from '@tauri-apps/api/event';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -12,7 +12,15 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { logger } from '@/lib/logger';
 import { MIN_RECORDING_DURATION_MS } from '@/lib/constants';
 import Analytics from '@/lib/analytics';
-import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { useRecordingState, RecordingMode } from '@/contexts/RecordingStateContext';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { useSoloMode } from '@/contexts/SoloModeContext';
 
 interface RecordingControlsProps {
   isRecording: boolean;
@@ -49,6 +57,8 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   // Use global recording state context for pause state (syncs with tray operations)
   const recordingState = useRecordingState();
   const isPaused = recordingState.isPaused;
+  const { recordingMode, setRecordingMode } = recordingState;
+  const soloMode = useSoloMode();
 
   const [recordingPath, setRecordingPath] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<string>('');
@@ -365,43 +375,82 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
               >
                 <AnimatePresence mode="wait">
                   {!isRecording ? (
-                    // Start recording button
+                    // Start recording button with mode selector
                     <motion.div
                       key="start"
                       initial={{ opacity: 0, scale: 0.9 }}
                       animate={{ opacity: 1, scale: 1 }}
                       exit={{ opacity: 0, scale: 0.9 }}
                       transition={{ duration: 0.2 }}
+                      className="flex flex-col items-center gap-1"
                     >
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            onClick={() => {
-                              Analytics.trackButtonClick('start_recording', 'recording_controls');
-                              if (onBeforeRecord) {
-                                onBeforeRecord(handleStartRecording);
-                              } else {
-                                handleStartRecording();
-                              }
-                            }}
-                            disabled={isStarting || isProcessing || isRecordingDisabled || isValidatingModel}
-                            className={`w-12 h-12 flex items-center justify-center ${
-                              isStarting || isProcessing || isValidatingModel
-                                ? 'bg-muted-foreground'
-                                : 'bg-recording hover:bg-recording-hover hover:brightness-110'
-                            } rounded-full text-recording-foreground transition-[background-color,transform] duration-150 relative`}
-                          >
-                            {isValidatingModel ? (
-                              <Loader2 className="h-5 w-5 animate-spin text-recording-foreground" />
-                            ) : (
-                              <Mic size={20} />
-                            )}
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p>Start recording</p>
-                        </TooltipContent>
-                      </Tooltip>
+                      <div className="flex items-center">
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              onClick={() => {
+                                Analytics.trackButtonClick('start_recording', 'recording_controls');
+                                if (onBeforeRecord) {
+                                  onBeforeRecord(handleStartRecording);
+                                } else {
+                                  handleStartRecording();
+                                }
+                              }}
+                              disabled={isStarting || isProcessing || isRecordingDisabled || isValidatingModel}
+                              className={`w-12 h-12 flex items-center justify-center ${
+                                isStarting || isProcessing || isValidatingModel
+                                  ? 'bg-muted-foreground'
+                                  : 'bg-recording hover:bg-recording-hover hover:brightness-110'
+                              } ${recordingMode === 'solo' ? 'rounded-l-full' : 'rounded-full'} text-recording-foreground transition-[background-color,transform] duration-150 relative`}
+                            >
+                              {isValidatingModel ? (
+                                <Loader2 className="h-5 w-5 animate-spin text-recording-foreground" />
+                              ) : (
+                                <Mic size={20} />
+                              )}
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p>Start {recordingMode === 'solo' ? 'solo' : ''} recording</p>
+                          </TooltipContent>
+                        </Tooltip>
+
+                        {/* Mode dropdown trigger */}
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              disabled={isStarting || isProcessing || isRecordingDisabled}
+                              className={`h-12 w-7 flex items-center justify-center ${
+                                isStarting || isProcessing
+                                  ? 'bg-muted-foreground'
+                                  : 'bg-recording hover:bg-recording-hover hover:brightness-110'
+                              } rounded-r-full text-recording-foreground border-l border-recording-foreground/20 transition-[background-color] duration-150`}
+                            >
+                              <ChevronDown size={14} />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="center" sideOffset={8}>
+                            <DropdownMenuRadioGroup
+                              value={recordingMode}
+                              onValueChange={(v) => setRecordingMode(v as RecordingMode)}
+                            >
+                              <DropdownMenuRadioItem value="meeting" className="flex items-center gap-2">
+                                <Users size={14} /> Meeting
+                              </DropdownMenuRadioItem>
+                              <DropdownMenuRadioItem value="solo" className="flex items-center gap-2">
+                                <User size={14} /> Solo
+                              </DropdownMenuRadioItem>
+                            </DropdownMenuRadioGroup>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+
+                      {/* Mode label + active project indicator */}
+                      {recordingMode === 'solo' && (
+                        <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">
+                          Solo Mode
+                        </span>
+                      )}
                     </motion.div>
                   ) : (
                     // Recording controls (pause/resume + stop)
@@ -488,6 +537,20 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                     />
                   ))}
                 </div>
+
+                {/* Solo Mode: Active project indicator */}
+                {isRecording && recordingMode === 'solo' && (
+                  <div className="flex items-center gap-1.5 ml-2 px-2 py-0.5 rounded-full bg-muted/50">
+                    <div className={`w-2 h-2 rounded-full ${
+                      soloMode.activeProject ? 'bg-green-500' : 'bg-amber-500'
+                    } animate-pulse`} />
+                    <span className="text-[11px] text-muted-foreground font-medium truncate max-w-[120px]">
+                      {soloMode.activeProject
+                        ? soloMode.activeProject.name
+                        : 'Say a project name'}
+                    </span>
+                  </div>
+                )}
               </motion.div>
             )}
           </AnimatePresence>

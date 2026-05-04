@@ -843,6 +843,12 @@ impl AudioPipeline {
                             // enough acoustic context for accurate transcription.
                             match self.vad_processor.process_audio(&vad_input) {
                                 Ok(speech_segments) => {
+                                    // Publish audio-elapsed time so screenshot/clipboard
+                                    // timestamps stay aligned with transcript timestamps
+                                    // (both now share the same VAD audio clock).
+                                    crate::audio::recording_commands::update_audio_elapsed_secs(
+                                        self.vad_processor.audio_elapsed_secs(),
+                                    );
                                     for segment in speech_segments {
                                         let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
 

@@ -6,10 +6,10 @@ use tauri_plugin_store::StoreExt;
 
 use crate::{
     database::{
-        models::MeetingModel,
+        models::{MeetingModel, ProjectModel},
         repositories::{
-            meeting::MeetingsRepository, setting::SettingsRepository,
-            transcript::TranscriptsRepository,
+            meeting::MeetingsRepository, project::ProjectRepository,
+            setting::SettingsRepository, transcript::TranscriptsRepository,
         },
     },
     onboarding::load_onboarding_status,
@@ -1663,5 +1663,157 @@ pub async fn api_test_custom_openai_connection<R: Runtime>(
                 Err(format!("Connection failed: {}", e))
             }
         }
+    }
+}
+
+// ===== PROJECT MANAGEMENT COMMANDS (Solo Mode) =====
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ScannedProject {
+    pub name: String,
+    pub path: String,
+}
+
+#[tauri::command]
+pub async fn project_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<ProjectModel>, String> {
+    let pool = state.db_manager.pool();
+    ProjectRepository::list_projects(pool)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn project_create(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    path: String,
+    aliases: String,
+) -> Result<ProjectModel, String> {
+    let pool = state.db_manager.pool();
+    ProjectRepository::create_project(pool, &name, &path, &aliases, false)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn project_update(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    name: String,
+    path: String,
+    aliases: String,
+) -> Result<(), String> {
+    let pool = state.db_manager.pool();
+    ProjectRepository::update_project(pool, &id, &name, &path, &aliases)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn project_delete(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let pool = state.db_manager.pool();
+    ProjectRepository::delete_project(pool, &id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn project_import_scanned(
+    state: tauri::State<'_, AppState>,
+    projects: Vec<ScannedProject>,
+) -> Result<Vec<ProjectModel>, String> {
+    let pool = state.db_manager.pool();
+    let mut imported = Vec::new();
+
+    for scanned in projects {
+        // Skip if path already registered
+        if let Ok(Some(_)) = ProjectRepository::find_by_path(pool, &scanned.path).await {
+            continue;
+        }
+        match ProjectRepository::create_project(pool, &scanned.name, &scanned.path, "[]", true)
+            .await
+        {
+            Ok(project) => imported.push(project),
+            Err(e) => log_warn!("Failed to import project {}: {}", scanned.name, e),
+        }
+    }
+
+    Ok(imported)
+}
+
+#[tauri::command]
+pub async fn project_scan_directory(parent_dir: String) -> Result<Vec<ScannedProject>, String> {
+    let parent = std::path::Path::new(&parent_dir);
+    if !parent.is_dir() {
+        return Err(format!("Not a directory: {}", parent_dir));
+    }
+
+    let mut projects = Vec::new();
+    let entries = std::fs::read_dir(parent).map_err(|e| e.to_string())?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        // Check for project markers
+        let has_git = path.join(".git").exists();
+        let has_package_json = path.join("package.json").exists();
+        let has_cargo_toml = path.join("Cargo.toml").exists();
+        let has_pyproject = path.join("pyproject.toml").exists();
+        let has_go_mod = path.join("go.mod").exists();
+
+        if has_git || has_package_json || has_cargo_toml || has_pyproject || has_go_mod {
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            projects.push(ScannedProject {
+                name,
+                path: path.to_string_lossy().to_string(),
+            });
+        }
+    }
+
+    projects.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(projects)
+}
+
+#[tauri::command]
+pub async fn project_pick_directory<R: Runtime>(
+    app: AppHandle<R>,
+    starting_dir: Option<String>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let folder = tokio::task::spawn_blocking(move || {
+        let mut dialog = app
+            .dialog()
+            .file()
+            .set_title("Select project directory");
+        if let Some(dir) = starting_dir {
+            let path = std::path::PathBuf::from(&dir);
+            if path.exists() {
+                dialog = dialog.set_directory(path);
+            }
+        }
+        dialog.blocking_pick_folder()
+    })
+    .await
+    .map_err(|e| format!("Dialog task failed: {e}"))?;
+
+    match folder {
+        Some(file_path) => match file_path.into_path() {
+            Ok(path) => Ok(Some(path.to_string_lossy().to_string())),
+            Err(_) => Ok(None),
+        },
+        None => Ok(None),
     }
 }

@@ -103,3 +103,9 @@ export async function saveAnnotatedScreenshot(
 ): Promise<ScreenshotData> {
   return invoke<ScreenshotData>('save_annotated_screenshot', { imageBase64 });
 }
+
+/** Tell Rust which Solo Mode project is active so screenshot files land in
+ *  `{path}/.tandem/screenshots/`. Pass null to clear (returns to meeting-folder routing). */
+export async function setActiveSoloProject(path: string | null): Promise<void> {
+  return invoke<void>('set_active_solo_project', { path });
+}
