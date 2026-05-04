@@ -7,7 +7,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { Transcript, ScreenshotData } from '@/types';
+import { Transcript, ScreenshotData, ClipboardData } from '@/types';
 import { ContextBasketItem } from '@/contexts/ContextBasketContext';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -122,36 +122,51 @@ export async function writeTaskHandoff(projectDir: string, data: TaskHandoffData
 
 // ─── Tandem CLAUDE.md (written once per project dir) ────────────────────────
 
-const TANDEM_CLAUDE_MD = `# Tandem Integration
+const TANDEM_CLAUDE_MD = `# Tandem Integration (Solo Mode)
 
-This project has Tandem meeting integration. During meetings, Tandem writes files here:
+Tandem streams everything happening in a session — transcript, screenshots, clipboard, project switches — into a single append-only feed. You decide what's actionable.
 
-## Task Files (\`.tandem/tasks/*.md\`)
-When the user says \`@code <task>\` during a meeting, Tandem creates a task file.
-Each file contains the task description, recent transcript context, and any attached items.
+## The Feed (\`.tandem/feed.md\`)
+Chronological entries, newest appended at the bottom. Entry types:
 
-**To process:**
-1. Read the task file
-2. Execute it against this codebase
-3. Move the file to \`.tandem/tasks/done/\` (do NOT delete — avoids permission prompts)
-4. Write a brief result summary to \`.tandem/response.md\` so Tandem can display it
+- \`intent\` — Gemma-classified actionable speech (task requests, decisions, plans)
+- \`note\` — substantive talk worth remembering but not actionable on its own
+- \`screenshot\` — file path, dimensions, and an embedded image reference. **Use your Read tool on the \`file:\` path to view the actual image** (annotations are baked in). Don't treat it as "a screenshot happened" — look at what's on screen.
+- \`clipboard\` — text or image reference captured via Alt+Shift+V
+- \`project_switch\` — user switched active project mid-session
+- \`revoke\` — the user retracted the most recent intent ("ignore that"). **When you see this, treat the nearest preceding \`intent\` entry as cancelled** — do not act on it and do not queue it as a task.
+- \`transcript\` — raw speech chunks (context only, don't act on these)
 
-## Live Transcript (\`.tandem/live-transcript.md\`)
-Updated every 10 seconds during recording with a rolling 30-minute window.
-Scan for lines containing \`@code\` or \`Tandem,\` that were added since your last check.
-If you find a new spoken request, act on it and write a result to \`.tandem/response.md\`.
+Related events cluster together in time. If you see an \`intent\` followed by a \`screenshot\` within a minute, they're almost certainly the same request — use the screenshot as reference material.
 
-**Track your position:** Record the last timestamp or line count you processed to avoid duplicates.
+## Cursor (\`.tandem/loop-state.json\`)
+Tandem seeds this file with \`{ "last_processed_line": 0 }\` when a Solo session starts on this project, so it always exists when you run /loop. Read it, process feed entries after that line, then overwrite the file with the new line count. Example after processing up to line 247:
+\`\`\`json
+{ "last_processed_line": 247 }
+\`\`\`
+
+## Your Job
+
+1. Read \`.tandem/feed.md\` from your last cursor position.
+2. Cluster related entries (an \`intent\` plus any \`screenshot\`/\`clipboard\` within ~60s on either side).
+3. For each actionable cluster, decide:
+   - **Act now** if it's clear and self-contained → do the work, write result to \`.tandem/response.md\`.
+   - **Queue for later** if it needs more context, more speech, or you're mid-task → create \`.tandem/tasks/task-{timestamp}.md\` with the cluster contents.
+   - **Ignore** if it's just narration, a dead-end idea, or already covered.
+4. Update \`loop-state.json\` with the new line count.
 
 ## Response File (\`.tandem/response.md\`)
-After completing any task, write a short (1-3 sentence) summary here.
-Tandem polls this file every 10 seconds and shows your response in the AI panel.
-**Clear the file after writing** by writing an empty string, or Tandem will clear it after reading.
+Short (1–3 sentence) summary of what you did. Tandem polls every 10s and shows it to the user. Clear after writing.
+
+## What NOT to do
+
+- Don't act on raw \`transcript\` entries. Gemma already filtered them into \`intent\`/\`note\` — trust that.
+- Don't reprocess entries before your cursor.
+- Don't treat every \`intent\` as a must-do; some are brainstorms. Use judgment.
 
 ## Quick Start
-Run this in Claude Code to start polling:
 \`\`\`
-/loop 1m Check .tandem/tasks/ for new .md files. If found, read the task, execute it, move the file to .tandem/tasks/done/, then write a brief result to .tandem/response.md. Also scan .tandem/live-transcript.md for new lines containing "@code" or "Tandem," since last check. Track what you have already processed.
+/loop 1m Read .tandem/feed.md from the line after .tandem/loop-state.json's last_processed_line. Cluster related entries by time. For any screenshot entries in the cluster, Read the file path to actually view the image. Act on clear tasks immediately (write to .tandem/response.md); queue ambiguous ones as .tandem/tasks/task-{timestamp}.md. Update loop-state.json with the new line count.
 \`\`\`
 `;
 
@@ -207,9 +222,15 @@ export async function writeLiveScreenshots(
 
 // ─── Live Transcript File ───────────────────────────────────────────────────
 
+function basenameOf(filePath: string): string {
+  const idx = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
+  return idx >= 0 ? filePath.slice(idx + 1) : filePath;
+}
+
 export function generateLiveTranscriptMarkdown(
   transcripts: Transcript[],
   meetingTitle: string,
+  screenshots: ScreenshotData[] = [],
 ): string {
   const lines: string[] = [];
 
@@ -217,30 +238,178 @@ export function generateLiveTranscriptMarkdown(
   lines.push(`Updated: ${new Date().toISOString()}`);
   lines.push('');
 
-  for (const t of transcripts) {
-    if (!t.text.trim()) continue;
-    const ts = t.audio_start_time != null ? `[${formatTimestamp(t.audio_start_time)}]` : `[${t.timestamp}]`;
-    lines.push(`${ts} ${t.text.trim()}`);
-  }
-
   if (transcripts.length === 0) {
     lines.push('*(No transcript segments yet)*');
+    return lines.join('\n');
+  }
+
+  // Time range covered by this transcript window
+  const startTimes = transcripts
+    .map(t => t.audio_start_time)
+    .filter((t): t is number => t != null);
+  const minTime = startTimes.length > 0 ? Math.min(...startTimes) : 0;
+  const maxTime = startTimes.length > 0 ? Math.max(...startTimes) : Number.POSITIVE_INFINITY;
+
+  // Only include screenshots that fall inside this transcript's time window
+  // (small ±5s slack so screenshots taken right at the edge don't get dropped).
+  const relevantScreenshots = screenshots.filter(ss =>
+    ss.recording_elapsed_secs != null &&
+    ss.recording_elapsed_secs >= minTime - 5 &&
+    ss.recording_elapsed_secs <= maxTime + 60,
+  );
+
+  type TimelineEntry =
+    | { kind: 'transcript'; time: number; line: string }
+    | { kind: 'screenshot'; time: number; line: string };
+
+  const timeline: TimelineEntry[] = [];
+
+  for (const t of transcripts) {
+    if (!t.text.trim()) continue;
+    const time = t.audio_start_time ?? 0;
+    const ts = t.audio_start_time != null
+      ? `[${formatTimestamp(t.audio_start_time)}]`
+      : `[${t.timestamp}]`;
+    timeline.push({ kind: 'transcript', time, line: `${ts} ${t.text.trim()}` });
+  }
+
+  for (const ss of relevantScreenshots) {
+    const time = ss.recording_elapsed_secs ?? 0;
+    const filename = basenameOf(ss.file_path);
+    const label = ss.capture_mode === 'region' ? 'Region' : 'Fullscreen';
+    timeline.push({
+      kind: 'screenshot',
+      time,
+      line: `[${formatTimestamp(time)}] 📸 ${filename} — ${label} ${ss.width}×${ss.height}`,
+    });
+  }
+
+  // Sort by time; on ties, screenshot precedes the transcript line
+  // (most natural reading: "snapshot of screen" then "what was being said").
+  timeline.sort((a, b) => {
+    if (a.time !== b.time) return a.time - b.time;
+    if (a.kind === b.kind) return 0;
+    return a.kind === 'screenshot' ? -1 : 1;
+  });
+
+  for (const entry of timeline) {
+    lines.push(entry.line);
   }
 
   return lines.join('\n');
 }
 
 /**
- * Write the live transcript to {projectDir}/.tandem/live-transcript.md
+ * Write the live transcript to {projectDir}/.tandem/live-transcript.md.
+ * Screenshots taken during the transcript window are interleaved by time so a
+ * post-meeting reader can see which screenshot belongs to which moment.
  */
 export async function writeLiveTranscript(
   projectDir: string,
   transcripts: Transcript[],
   meetingTitle: string,
+  screenshots: ScreenshotData[] = [],
 ): Promise<void> {
   const sep = projectDir.includes('\\') ? '\\' : '/';
   const filePath = `${projectDir}${sep}.tandem${sep}live-transcript.md`;
-  const content = generateLiveTranscriptMarkdown(transcripts, meetingTitle);
+  const content = generateLiveTranscriptMarkdown(transcripts, meetingTitle, screenshots);
 
   await invoke('save_transcript', { filePath, content });
+}
+
+// ─── Feed (append-only chronological event stream) ──────────────────────────
+
+export type FeedEntryType =
+  | 'intent'
+  | 'note'
+  | 'screenshot'
+  | 'clipboard'
+  | 'project_switch'
+  | 'session_start'
+  | 'session_end'
+  | 'revoke';
+
+export interface FeedEntry {
+  type: FeedEntryType;
+  timestamp: Date;
+  /** Human-readable body — markdown, 1-N lines */
+  body: string;
+  /** Optional metadata rendered as a details block */
+  meta?: Record<string, string | number | boolean>;
+}
+
+function formatFeedEntry(entry: FeedEntry): string {
+  const ts = entry.timestamp.toISOString();
+  const lines: string[] = [];
+  lines.push(`## ${ts} — ${entry.type}`);
+  lines.push(entry.body.trim());
+  if (entry.meta && Object.keys(entry.meta).length > 0) {
+    lines.push('');
+    for (const [k, v] of Object.entries(entry.meta)) {
+      lines.push(`- ${k}: ${v}`);
+    }
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
+/**
+ * Append one entry to {projectDir}/.tandem/feed.md.
+ * Creates the file with a header if it doesn't exist.
+ */
+export async function appendFeedEntry(projectDir: string, entry: FeedEntry): Promise<void> {
+  const sep = projectDir.includes('\\') ? '\\' : '/';
+  const filePath = `${projectDir}${sep}.tandem${sep}feed.md`;
+  const chunk = formatFeedEntry(entry);
+  const existing = await invoke<string | null>('read_file_if_exists', { path: filePath });
+  const next = existing && existing.length > 0
+    ? `${existing.trimEnd()}\n\n${chunk}`
+    : `# Tandem Feed\n\n${chunk}`;
+  await invoke('save_transcript', { filePath, content: next });
+}
+
+/**
+ * Initialize {projectDir}/.tandem/loop-state.json with a zeroed cursor.
+ * Called when a Solo session starts for a project so Claude Code's /loop
+ * can always read-then-update the file without a missing-file code path.
+ * No-op if the file already exists (preserves cursor across sessions).
+ */
+export async function ensureLoopState(projectDir: string): Promise<void> {
+  const sep = projectDir.includes('\\') ? '\\' : '/';
+  const filePath = `${projectDir}${sep}.tandem${sep}loop-state.json`;
+  const existing = await invoke<string | null>('read_file_if_exists', { path: filePath });
+  if (existing && existing.trim().length > 0) return;
+  const content = JSON.stringify({ last_processed_line: 0 }, null, 2);
+  await invoke('save_transcript', { filePath, content });
+}
+
+export function buildScreenshotFeedEntry(ss: ScreenshotData): FeedEntry {
+  // Normalize to forward-slash path so markdown image syntax works on Windows
+  const normalized = ss.file_path.replace(/\\/g, '/');
+  const label = ss.capture_mode === 'region' ? 'Region' : 'Fullscreen';
+  return {
+    type: 'screenshot',
+    timestamp: new Date(),
+    body: `${label} screenshot — ${ss.width}×${ss.height}\n\n![screenshot](${normalized})`,
+    meta: {
+      file: ss.file_path,
+      recording_elapsed_secs: ss.recording_elapsed_secs ?? 'n/a',
+    },
+  };
+}
+
+export function buildClipboardFeedEntry(clip: ClipboardData): FeedEntry {
+  const preview = clip.content_type === 'text'
+    ? (clip.text ?? '').slice(0, 400)
+    : `[image ${clip.width ?? '?'}×${clip.height ?? '?'}]`;
+  return {
+    type: 'clipboard',
+    timestamp: new Date(),
+    body: preview,
+    meta: {
+      content_type: clip.content_type,
+      ...(clip.file_path ? { file: clip.file_path } : {}),
+      recording_elapsed_secs: clip.recording_elapsed_secs ?? 'n/a',
+    },
+  };
 }

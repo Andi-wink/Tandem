@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
-import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, Terminal } from 'lucide-react';
+import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, Terminal, FolderGit2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'framer-motion';
@@ -10,6 +10,7 @@ import { RecordingSettings } from '@/components/RecordingSettings';
 import { PreferenceSettings } from '@/components/PreferenceSettings';
 import { SummaryModelSettings } from '@/components/SummaryModelSettings';
 import { CommandSettings } from '@/components/CommandSettings';
+import { ProjectSettings } from '@/components/ProjectSettings';
 import { useConfig } from '@/contexts/ConfigContext';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 
@@ -20,6 +21,7 @@ const TABS = [
   { value: 'Transcriptionmodels', label: 'Transcription', icon: DatabaseIcon },
   { value: 'summaryModels', label: 'Summary', icon: SparkleIcon },
   { value: 'commands', label: 'Commands', icon: Terminal },
+  { value: 'projects', label: 'Projects', icon: FolderGit2 },
 ] as const;
 
 export default function SettingsPage() {
@@ -126,6 +128,9 @@ export default function SettingsPage() {
             </TabsContent>
             <TabsContent value="commands">
               <CommandSettings />
+            </TabsContent>
+            <TabsContent value="projects">
+              <ProjectSettings />
             </TabsContent>
           </Tabs>
         </div>

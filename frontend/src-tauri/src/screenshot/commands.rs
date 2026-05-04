@@ -1,10 +1,28 @@
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::{LazyLock, Mutex};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use super::capture;
 use super::types::{CaptureMode, ScreenshotData};
+
+/// Solo Mode's active project directory. When set, screenshots route into
+/// `{path}/.tandem/screenshots/` instead of the meeting folder.
+static ACTIVE_SOLO_PROJECT_DIR: LazyLock<Mutex<Option<PathBuf>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+/// Set or clear the active Solo Mode project. Called from the frontend when
+/// the user switches projects or stops the solo session.
+#[tauri::command]
+pub async fn set_active_solo_project(path: Option<String>) -> Result<(), String> {
+    let mut guard = ACTIVE_SOLO_PROJECT_DIR
+        .lock()
+        .map_err(|e| format!("Lock poisoned: {}", e))?;
+    *guard = path.map(PathBuf::from);
+    info!("Active solo project: {:?}", *guard);
+    Ok(())
+}
 
 /// Return the pre-captured JPEG preview as raw bytes (no base64 overhead).
 /// The frontend receives an ArrayBuffer and creates a blob URL.
@@ -391,8 +409,14 @@ pub async fn save_annotated_screenshot<R: Runtime>(
 }
 
 /// Determine the screenshots directory.
-/// Uses the current meeting folder if recording, otherwise app_data_dir/screenshots.
+/// Priority: active Solo project → current meeting folder → app_data_dir.
 fn get_screenshots_dir<R: Runtime>(app: &AppHandle<R>) -> Result<std::path::PathBuf, String> {
+    if let Ok(guard) = ACTIVE_SOLO_PROJECT_DIR.lock() {
+        if let Some(project_dir) = guard.as_ref() {
+            return Ok(project_dir.join(".tandem").join("screenshots"));
+        }
+    }
+
     let meeting_folder = {
         crate::audio::recording_commands::get_current_meeting_folder()
     };

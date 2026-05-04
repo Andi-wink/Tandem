@@ -24,6 +24,8 @@ export enum RecordingStatus {
   ERROR = 'error'                         // Error occurred
 }
 
+export type RecordingMode = 'meeting' | 'solo';
+
 interface RecordingState {
   isRecording: boolean;           // Is a recording session active
   isPaused: boolean;              // Is the recording paused
@@ -34,11 +36,15 @@ interface RecordingState {
   // NEW: Lifecycle status
   status: RecordingStatus;
   statusMessage?: string;  // Optional message for current status
+
+  // Solo Mode: recording mode selector
+  recordingMode: RecordingMode;
 }
 
 interface RecordingStateContextType extends RecordingState {
   // NEW: Setters for status management
   setStatus: (status: RecordingStatus, message?: string) => void;
+  setRecordingMode: (mode: RecordingMode) => void;
 
   // Computed helpers (derived from status)
   isStopping: boolean;
@@ -63,8 +69,11 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
     isActive: false,
     recordingDuration: null,
     activeDuration: null,
-    status: RecordingStatus.IDLE,  // NEW: Initialize with IDLE status
-    statusMessage: undefined,       // NEW: No message initially
+    status: RecordingStatus.IDLE,
+    statusMessage: undefined,
+    recordingMode: (typeof window !== 'undefined'
+      ? (localStorage.getItem('tandem-recording-mode') as RecordingMode) ?? 'meeting'
+      : 'meeting') as RecordingMode,
   });
 
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -79,6 +88,11 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
         statusMessage: message,
       };
     });
+  }, []);
+
+  const setRecordingMode = useCallback((mode: RecordingMode) => {
+    localStorage.setItem('tandem-recording-mode', mode);
+    setState(prev => ({ ...prev, recordingMode: mode }));
   }, []);
 
   /**
@@ -226,14 +240,15 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
     syncWithBackend();
   }, []);
 
-  // NEW: Computed helpers from status
+  // Computed helpers from status
   const contextValue = useMemo(() => ({
     ...state,
     setStatus,
+    setRecordingMode,
     isStopping: state.status === RecordingStatus.STOPPING,
     isProcessing: state.status === RecordingStatus.PROCESSING_TRANSCRIPTS,
     isSaving: state.status === RecordingStatus.SAVING,
-  }), [state, setStatus]);
+  }), [state, setStatus, setRecordingMode]);
 
   return (
     <RecordingStateContext.Provider value={contextValue}>

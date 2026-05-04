@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { FolderOpen, X, Key, ExternalLink } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { useClaude } from '@/contexts/ClaudeContext';
+import { listProjects, createProject } from '@/services/projectService';
 
 interface ProjectDirModalProps {
   defaultDir: string;
@@ -16,6 +18,8 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
   const [selectedDir, setSelectedDir] = useState(defaultDir);
   const [useDefault, setUseDefault] = useState(true);
   const [keyInput, setKeyInput] = useState(apiKey || '');
+  const [registerForSolo, setRegisterForSolo] = useState(false);
+  const [alreadyRegistered, setAlreadyRegistered] = useState(false);
 
   // Resolve actual meeting folder path when no defaultDir is provided
   useEffect(() => {
@@ -34,6 +38,20 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
         .catch(() => {});
     }
   }, [defaultDir]);
+
+  // Check if the selected directory is already registered as a Solo project
+  useEffect(() => {
+    if (!selectedDir.trim()) {
+      setAlreadyRegistered(false);
+      return;
+    }
+    listProjects()
+      .then(projects => {
+        const norm = (p: string) => p.replace(/[\\/]+/g, '/').replace(/\/$/, '').toLowerCase();
+        setAlreadyRegistered(projects.some(p => norm(p.path) === norm(selectedDir)));
+      })
+      .catch(() => setAlreadyRegistered(false));
+  }, [selectedDir]);
 
   const isKeyValid = keyInput.trim().startsWith('sk-ant-') && keyInput.trim().length > 20;
   const keyAlreadySet = !!(apiKey && apiKey.startsWith('sk-ant-') && apiKey.length > 20);
@@ -54,9 +72,21 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
     }
   };
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
     if (!isKeyValid && !keyAlreadySet) return;
     if (!keyAlreadySet) setApiKey(keyInput.trim());
+
+    if (registerForSolo && !alreadyRegistered && selectedDir.trim()) {
+      const name = selectedDir.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() || 'Project';
+      try {
+        await createProject(name, selectedDir, []);
+        toast.success(`Registered "${name}" for Solo mode`);
+      } catch (err) {
+        toast.error('Failed to register for Solo mode', { description: String(err) });
+        // Don't block the meeting flow — continue to onConfirm
+      }
+    }
+
     onConfirm(selectedDir);
   };
 
@@ -169,6 +199,27 @@ export function ProjectDirModal({ defaultDir, meetingTitle, onConfirm, onCancel 
                 </div>
               </div>
             </label>
+
+            {/* Solo mode registration opt-in */}
+            {hasDirSelected && !alreadyRegistered && (
+              <label className="flex items-start gap-2 px-1 pt-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={registerForSolo}
+                  onChange={(e) => setRegisterForSolo(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-foreground">Also register for Solo Mode</div>
+                  <div className="text-xs text-muted-foreground">Route tasks here by voice in future solo sessions.</div>
+                </div>
+              </label>
+            )}
+            {hasDirSelected && alreadyRegistered && (
+              <div className="text-xs text-muted-foreground px-1 pt-1">
+                ✓ Already registered for Solo Mode
+              </div>
+            )}
           </div>
         </div>
 

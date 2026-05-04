@@ -28,6 +28,8 @@ import { Bot } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ProjectDirModal } from '@/components/ClaudePanel/ProjectDirModal';
+import { useSoloMode } from '@/contexts/SoloModeContext';
+import { useSoloModeRouter } from '@/hooks/useSoloModeRouter';
 
 export default function Home() {
   // Local page state (not moved to contexts)
@@ -79,6 +81,10 @@ export default function Home() {
 
   // F054: Write live transcript to .tandem/live-transcript.md during recording
   useLiveTranscriptWriter();
+
+  // Solo Mode: routing engine + session management
+  const soloMode = useSoloMode();
+  useSoloModeRouter();
 
   // Recovery hook
   const {
@@ -218,7 +224,31 @@ export default function Home() {
   }, [recordingState.isRecording]);
 
   // Pre-record modal handlers
-  const handleBeforeRecord = (startFn: () => void) => {
+  const handleBeforeRecord = async (startFn: () => void) => {
+    // Solo mode: check model availability, skip project dir modal
+    if (recordingState.recordingMode === 'solo') {
+      try {
+        const models = await invoke<Array<{ name: string }>>('get_ollama_models', { endpoint: null });
+        const modelName = soloMode.routingModel;
+        const hasModel = models.some(m => m.name === modelName || m.name.startsWith(modelName.split(':')[0]));
+        if (!hasModel) {
+          toast.warning(`Routing model "${modelName}" not found`, {
+            description: `Pull it with: ollama pull ${modelName}`,
+            duration: 8000,
+          });
+        }
+      } catch {
+        toast.warning('Ollama not reachable — solo routing will be limited', {
+          description: 'Ensure Ollama is running for project routing.',
+        });
+      }
+
+      soloMode.startSoloSession();
+      startFn();
+      return;
+    }
+
+    // Meeting mode: show project directory modal as before
     pendingStartRef.current = startFn;
     pendingTitleRef.current = `Meeting ${new Date().toLocaleDateString('en-GB').replace(/\//g, '_')}`;
     setShowPreRecordModal(true);
@@ -306,7 +336,10 @@ export default function Home() {
                   <div className="bg-card rounded-full shadow-lg flex items-center">
                     <RecordingControls
                       isRecording={recordingState.isRecording}
-                      onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}
+                      onRecordingStop={(callApi = true) => {
+                        if (soloMode.isActive) soloMode.stopSoloSession();
+                        handleRecordingStop(callApi);
+                      }}
                       onRecordingStart={handleRecordingStart}
                       onTranscriptReceived={() => { }} // Not actually used by RecordingControls
                       onStopInitiated={() => setIsStopping(true)}

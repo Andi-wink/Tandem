@@ -44,6 +44,18 @@ static IS_RECORDING: AtomicBool = AtomicBool::new(false);
 // Tracks when recording started (for screenshot elapsed-time calculation)
 static RECORDING_START_TIME: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
+// Tracks audio time (milliseconds) that has flowed through the VAD pipeline.
+// Source of truth for transcript timestamps — screenshots/clipboard read this
+// so their timestamps align with transcripts instead of drifting on wall-clock.
+// AtomicU64 is used to allow lock-free reads from the audio hot path.
+static AUDIO_ELAPSED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Update the latest audio-elapsed time. Called by the audio pipeline as it processes audio.
+pub fn update_audio_elapsed_secs(secs: f64) {
+    let ms = (secs * 1000.0).max(0.0) as u64;
+    AUDIO_ELAPSED_MS.store(ms, Ordering::Relaxed);
+}
+
 // C07: Global recording manager — uses tokio::sync::Mutex because it's held across .await points
 static RECORDING_MANAGER: Lazy<tokio::sync::Mutex<Option<RecordingManager>>> =
     Lazy::new(|| tokio::sync::Mutex::new(None));
@@ -303,6 +315,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     if let Ok(mut start_time) = RECORDING_START_TIME.lock() {
         *start_time = Some(std::time::Instant::now());
     }
+    AUDIO_ELAPSED_MS.store(0, Ordering::Relaxed);
     reset_speech_detected_flag(); // Reset for new recording session
 
     // Start optimized parallel transcription task and store handle
@@ -477,6 +490,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     if let Ok(mut start_time) = RECORDING_START_TIME.lock() {
         *start_time = Some(std::time::Instant::now());
     }
+    AUDIO_ELAPSED_MS.store(0, Ordering::Relaxed);
     reset_speech_detected_flag(); // Reset for new recording session
 
     // Start optimized parallel transcription task and store handle
@@ -918,6 +932,7 @@ pub async fn stop_recording<R: Runtime>(
     if let Ok(mut start_time) = RECORDING_START_TIME.lock() {
         *start_time = None;
     }
+    AUDIO_ELAPSED_MS.store(0, Ordering::Relaxed);
 
     // Step 4.5: Prepare metadata for frontend (NO database save)
     // NOTE: We do NOT save to database here. The frontend will save after all transcripts are displayed.
@@ -1290,6 +1305,14 @@ pub async fn attempt_device_reconnect(
 pub fn get_recording_elapsed_secs() -> Option<f64> {
     if !IS_RECORDING.load(Ordering::Relaxed) {
         return None;
+    }
+    // Use audio-elapsed time so screenshot/clipboard timestamps align with
+    // transcripts (which are sourced from the same VAD audio clock).
+    // Falls back to wall-clock if no audio has been processed yet (briefly,
+    // right at the start of a recording).
+    let audio_ms = AUDIO_ELAPSED_MS.load(Ordering::Relaxed);
+    if audio_ms > 0 {
+        return Some(audio_ms as f64 / 1000.0);
     }
     RECORDING_START_TIME
         .lock()

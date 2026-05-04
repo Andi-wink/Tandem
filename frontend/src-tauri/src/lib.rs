@@ -765,6 +765,7 @@ pub fn run() {
             ollama::pull_ollama_model,
             ollama::delete_ollama_model,
             ollama::get_ollama_model_context,
+            ollama::ollama_chat_json,
             openai::openai::get_openai_models,
             anthropic::anthropic::get_anthropic_models,
             groq::groq::get_groq_models,
@@ -801,6 +802,14 @@ pub fn run() {
             api::api_save_custom_openai_config,
             api::api_get_custom_openai_config,
             api::api_test_custom_openai_connection,
+            // Project management commands (Solo Mode)
+            api::project_list,
+            api::project_create,
+            api::project_update,
+            api::project_delete,
+            api::project_import_scanned,
+            api::project_scan_directory,
+            api::project_pick_directory,
             // Summary commands
             summary::api_process_transcript,
             summary::api_get_summary,
@@ -870,6 +879,7 @@ pub fn run() {
             screenshot::commands::save_screenshots_json,
             screenshot::commands::load_screenshots_json,
             screenshot::commands::save_annotated_screenshot,
+            screenshot::commands::set_active_solo_project,
             // Clipboard capture commands
             clipboard::commands::read_clipboard_content,
             clipboard::commands::save_clipboard_json,

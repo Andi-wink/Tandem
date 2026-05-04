@@ -133,6 +133,14 @@ impl ContinuousVadProcessor {
         })
     }
 
+    /// Total audio time (in seconds) that has flowed through this VAD processor.
+    /// This advances as audio is processed and is the same clock used for
+    /// transcript timestamps — so other recording-relative timestamps
+    /// (screenshots, clipboard) should source from here to stay aligned.
+    pub fn audio_elapsed_secs(&self) -> f64 {
+        self.processed_samples as f64 / VAD_SAMPLE_RATE as f64
+    }
+
     /// Process incoming audio samples and return any complete speech segments
     /// Handles resampling from input sample rate to 16kHz for VAD processing
     pub fn process_audio(&mut self, samples: &[f32]) -> Result<Vec<SpeechSegment>> {
