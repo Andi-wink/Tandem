@@ -656,6 +656,20 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     setState(prev => ({ ...prev, conversation: [...prev.conversation, msg] }));
   }, []);
 
+  // Listen for backend notifications with show_in_panel=true (dispatched by NotificationContext)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail) return;
+      const title = detail.title ? `**${detail.title}**\n\n` : '';
+      const source = detail.source && detail.source !== 'unknown' ? ` _(from ${detail.source})_` : '';
+      const text = `${title}${detail.body || ''}${source}`;
+      injectExternalMessage(text);
+    };
+    window.addEventListener('tandem-notification', handler);
+    return () => window.removeEventListener('tandem-notification', handler);
+  }, [injectExternalMessage]);
+
   const value = useMemo<ClaudeContextValue>(() => ({
     ...state,
     // R009: Basket fields from ContextBasketContext (backward compat)

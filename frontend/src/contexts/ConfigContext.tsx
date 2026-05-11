@@ -157,6 +157,8 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   const [isLoadingPreferences, setIsLoadingPreferences] = useState(false);
   const preferencesLoadedRef = useRef(false);
   const isLoadingRef = useRef(false);
+  // C09: Ref to avoid stale closure — updateProviderApiKey is declared after the useEffect that needs it
+  const updateProviderApiKeyRef = useRef<(provider: string, apiKey: string | null) => void>(() => {});
 
   // Load Ollama models (uses saved endpoint, re-runs when endpoint changes after config load)
   useEffect(() => {
@@ -296,9 +298,9 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
         console.log('[ConfigContext] Received model-config-updated event:', event.payload);
         setModelConfig(event.payload);
 
-        // Update provider-specific key when config changes
+        // C09: Use ref to avoid stale closure (updateProviderApiKey declared after this useEffect)
         if (event.payload.apiKey && event.payload.provider !== 'custom-openai') {
-          updateProviderApiKey(event.payload.provider, event.payload.apiKey);
+          updateProviderApiKeyRef.current(event.payload.provider, event.payload.apiKey);
         }
       });
       return unlisten;
@@ -381,6 +383,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   const updateProviderApiKey = useCallback((provider: string, apiKey: string | null) => {
     setProviderApiKeys(prev => ({ ...prev, [provider]: apiKey }));
   }, []);
+  updateProviderApiKeyRef.current = updateProviderApiKey;
 
   // Lazy load preference settings (only loads if not already cached)
   const loadPreferences = useCallback(async () => {

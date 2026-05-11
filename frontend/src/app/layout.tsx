@@ -27,6 +27,7 @@ import { ClaudeProvider } from '@/contexts/ClaudeContext'
 import { ContextBasketProvider } from '@/contexts/ContextBasketContext'
 import { SelectionProvider } from '@/contexts/SelectionContext'
 import { ClaudePanel } from '@/components/ClaudePanel'
+import { NotificationProvider } from '@/contexts/NotificationContext'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ThemeProvider } from 'next-themes'
 import { ComposeProviders } from '@/components/ComposeProviders'
@@ -127,6 +128,7 @@ export default function RootLayout({
           [ClipboardProvider],
           [ScreenshotProvider],
           [SelectionProvider],
+          [NotificationProvider],  // SSE connection to backend /api/notify/stream
           [SoloModeProvider],
           [ContextBasketProvider],  // R009: Must be above ClaudeProvider
           [ClaudeProvider],

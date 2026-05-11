@@ -4,7 +4,9 @@ import {
   appendFeedEntry,
   buildScreenshotFeedEntry,
   buildClipboardFeedEntry,
+  buildSessionFolderName,
   ensureLoopState,
+  tandemDirFor,
   FeedEntry,
 } from './handoffService';
 import { ScreenshotData, ClipboardData } from '@/types';
@@ -167,6 +169,79 @@ describe('appendFeedEntry', () => {
 
     const saveCall = mockInvoke.mock.calls.find(c => c[0] === 'save_transcript');
     expect((saveCall![1] as { filePath: string }).filePath).toBe('/home/u/X/.tandem/feed.md');
+  });
+});
+
+describe('tandemDirFor (session folder)', () => {
+  it('returns .tandem root when no session folder is given', () => {
+    expect(tandemDirFor('D:\\Proj')).toBe('D:\\Proj\\.tandem');
+    expect(tandemDirFor('/home/u/p')).toBe('/home/u/p/.tandem');
+  });
+
+  it('nests under the session folder when one is given', () => {
+    expect(tandemDirFor('D:\\Proj', 'Meeting_2026-05-08_14-30-15')).toBe(
+      'D:\\Proj\\.tandem\\Meeting_2026-05-08_14-30-15',
+    );
+    expect(tandemDirFor('/home/u/p', 'Meeting_2026-05-08_14-30-15')).toBe(
+      '/home/u/p/.tandem/Meeting_2026-05-08_14-30-15',
+    );
+  });
+
+  it('treats null/undefined sessionFolder as no session folder', () => {
+    expect(tandemDirFor('D:\\Proj', null)).toBe('D:\\Proj\\.tandem');
+    expect(tandemDirFor('D:\\Proj', undefined)).toBe('D:\\Proj\\.tandem');
+  });
+});
+
+describe('buildSessionFolderName', () => {
+  const fixedDate = new Date('2026-05-08T14:30:15');
+
+  it('combines sanitized title with date_time stamp', () => {
+    expect(buildSessionFolderName('Discovery Call', fixedDate)).toMatch(
+      /^Discovery Call_2026-05-08_14-30-15$/,
+    );
+  });
+
+  it('replaces filesystem-unsafe characters', () => {
+    const name = buildSessionFolderName('a/b\\c:d*e?f"g<h>i|j', fixedDate);
+    expect(name).toBe('a-b-c-d-e-f-g-h-i-j_2026-05-08_14-30-15');
+  });
+
+  it('falls back to "Solo" prefix when title is empty or whitespace', () => {
+    expect(buildSessionFolderName('', fixedDate)).toBe('Solo_2026-05-08_14-30-15');
+    expect(buildSessionFolderName('   ', fixedDate)).toBe('Solo_2026-05-08_14-30-15');
+  });
+
+  it('truncates very long titles to 80 chars', () => {
+    const long = 'A'.repeat(200);
+    const name = buildSessionFolderName(long, fixedDate);
+    const prefix = name.split('_')[0];
+    expect(prefix.length).toBe(80);
+  });
+});
+
+describe('appendFeedEntry with session folder', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('writes feed.md inside the session subfolder when given', async () => {
+    mockInvoke.mockImplementation(async (cmd) => {
+      if (cmd === 'read_file_if_exists') return null;
+      return undefined;
+    });
+
+    const entry: FeedEntry = {
+      type: 'intent',
+      timestamp: new Date('2026-05-08T14:30:15Z'),
+      body: 'Refactor login',
+    };
+    await appendFeedEntry('D:\\Proj', entry, 'MyMeeting_2026-05-08_14-30-15');
+
+    const saveCall = mockInvoke.mock.calls.find(c => c[0] === 'save_transcript');
+    expect((saveCall![1] as { filePath: string }).filePath).toBe(
+      'D:\\Proj\\.tandem\\MyMeeting_2026-05-08_14-30-15\\feed.md',
+    );
   });
 });
 

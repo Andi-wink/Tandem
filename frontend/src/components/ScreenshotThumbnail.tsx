@@ -31,7 +31,7 @@ export const ScreenshotThumbnail = memo(function ScreenshotThumbnail({
     type: 'screenshot',
     label: `Screenshot ${timeLabel}`,
     preview: `${screenshot.capture_mode} capture (${screenshot.width}x${screenshot.height})`,
-    fullContent: `[Screenshot taken at ${timeLabel} — ${screenshot.capture_mode} capture, ${screenshot.width}x${screenshot.height}]\nImage file path: ${screenshot.file_path}\nPlease use the Read tool to view this image file.`,
+    fullContent: `[Screenshot taken at ${timeLabel} — ${screenshot.capture_mode} capture, ${screenshot.width}x${screenshot.height}]\nImage file: .tandem/screenshots/${screenshot.file_path.split(/[/\\]/).pop() || 'screenshot.png'}\nPlease use the Read tool to view this image file.`,
     timestamp: screenshot.recording_elapsed_secs,
   }), [screenshot, timeLabel, inBasket]);
 

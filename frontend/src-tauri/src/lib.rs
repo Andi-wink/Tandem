@@ -242,6 +242,20 @@ async fn save_transcript(file_path: String, content: String) -> Result<(), Strin
     Ok(())
 }
 
+/// Copy a file from source to destination, creating parent directories as needed.
+#[tauri::command]
+async fn copy_file(source: String, destination: String) -> Result<(), String> {
+    if let Some(parent) = std::path::Path::new(&destination).parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directory: {}", e))?;
+        }
+    }
+    std::fs::copy(&source, &destination)
+        .map_err(|e| format!("Failed to copy file: {}", e))?;
+    Ok(())
+}
+
 /// Read a file if it exists and has non-empty content.
 /// Returns None if the file is missing, unreadable, or empty.
 #[tauri::command]
@@ -666,6 +680,7 @@ pub fn run() {
             get_transcription_status,
             read_audio_file,
             save_transcript,
+            copy_file,
             read_file_if_exists,
             analytics::commands::init_analytics,
             analytics::commands::disable_analytics,

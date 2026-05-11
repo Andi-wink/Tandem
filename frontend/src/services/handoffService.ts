@@ -38,6 +38,35 @@ function formatTimestamp(secs: number): string {
 }
 
 /**
+ * Build the directory where Solo Mode artifacts live for a project + session.
+ * - With sessionFolder: `{projectDir}/.tandem/{sessionFolder}` — per-session subdir,
+ *   intended to be archivable as a unit when the session ends.
+ * - Without sessionFolder (legacy / Meeting mode): `{projectDir}/.tandem`.
+ */
+export function tandemDirFor(projectDir: string, sessionFolder?: string | null): string {
+  const sep = projectDir.includes('\\') ? '\\' : '/';
+  const base = `${projectDir}${sep}.tandem`;
+  return sessionFolder ? `${base}${sep}${sessionFolder}` : base;
+}
+
+/**
+ * Build a session folder name: `{sanitized-meeting-title}_{YYYY-MM-DD_HH-mm-ss}`.
+ * Sanitizes characters disallowed on Windows filesystems.
+ */
+export function buildSessionFolderName(meetingTitle: string, when: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const stamp =
+    `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}` +
+    `_${pad(when.getHours())}-${pad(when.getMinutes())}-${pad(when.getSeconds())}`;
+  const cleanTitle = (meetingTitle ?? '').trim()
+    .replace(/[\\/:*?"<>|]/g, '-')
+    .replace(/\s+/g, ' ')
+    .slice(0, 80);
+  const prefix = cleanTitle.length > 0 ? cleanTitle : 'Solo';
+  return `${prefix}_${stamp}`;
+}
+
+/**
  * Filter transcripts to a rolling window ending at the latest segment.
  * If no segments have audio_start_time, returns all transcripts.
  */
@@ -106,12 +135,17 @@ export function generateTaskMarkdown(data: TaskHandoffData): string {
 }
 
 /**
- * Write a task handoff file to {projectDir}/.tandem/tasks/task-{timestamp}.md
+ * Write a task handoff file to {tandemDir}/tasks/task-{timestamp}.md
  * Returns the written file path.
  */
-export async function writeTaskHandoff(projectDir: string, data: TaskHandoffData): Promise<string> {
+export async function writeTaskHandoff(
+  projectDir: string,
+  data: TaskHandoffData,
+  sessionFolder?: string | null,
+): Promise<string> {
   const sep = projectDir.includes('\\') ? '\\' : '/';
-  const tasksDir = `${projectDir}${sep}.tandem${sep}tasks`;
+  const tandemDir = tandemDirFor(projectDir, sessionFolder);
+  const tasksDir = `${tandemDir}${sep}tasks`;
   const filename = `task-${Date.now()}.md`;
   const filePath = `${tasksDir}${sep}${filename}`;
   const content = generateTaskMarkdown(data);
@@ -126,7 +160,9 @@ const TANDEM_CLAUDE_MD = `# Tandem Integration (Solo Mode)
 
 Tandem streams everything happening in a session — transcript, screenshots, clipboard, project switches — into a single append-only feed. You decide what's actionable.
 
-## The Feed (\`.tandem/feed.md\`)
+All files for this session live in \`__SESSION_DIR__/\` so the entire session can be archived as one folder when it ends.
+
+## The Feed (\`__SESSION_DIR__/feed.md\`)
 Chronological entries, newest appended at the bottom. Entry types:
 
 - \`intent\` — Gemma-classified actionable speech (task requests, decisions, plans)
@@ -139,23 +175,32 @@ Chronological entries, newest appended at the bottom. Entry types:
 
 Related events cluster together in time. If you see an \`intent\` followed by a \`screenshot\` within a minute, they're almost certainly the same request — use the screenshot as reference material.
 
-## Cursor (\`.tandem/loop-state.json\`)
-Tandem seeds this file with \`{ "last_processed_line": 0 }\` when a Solo session starts on this project, so it always exists when you run /loop. Read it, process feed entries after that line, then overwrite the file with the new line count. Example after processing up to line 247:
+## Cursor (\`__SESSION_DIR__/loop-state.json\`)
+Tandem seeds this file with \`{ "last_processed_line": 0 }\` when a Solo session starts, so it always exists when you run /loop. Read it, process feed entries after that line, then overwrite the file with the new line count. Example after processing up to line 247:
 \`\`\`json
 { "last_processed_line": 247 }
 \`\`\`
 
 ## Your Job
 
-1. Read \`.tandem/feed.md\` from your last cursor position.
+1. Read \`__SESSION_DIR__/feed.md\` from your last cursor position.
 2. Cluster related entries (an \`intent\` plus any \`screenshot\`/\`clipboard\` within ~60s on either side).
 3. For each actionable cluster, decide:
-   - **Act now** if it's clear and self-contained → do the work, write result to \`.tandem/response.md\`.
-   - **Queue for later** if it needs more context, more speech, or you're mid-task → create \`.tandem/tasks/task-{timestamp}.md\` with the cluster contents.
+   - **Act now** if it's clear and self-contained → do the work, write result to \`__SESSION_DIR__/response.md\`.
+   - **Queue for later** if it needs more context, more speech, or you're mid-task → create \`__SESSION_DIR__/tasks/task-{timestamp}.md\` with the cluster contents.
    - **Ignore** if it's just narration, a dead-end idea, or already covered.
-4. Update \`loop-state.json\` with the new line count.
+4. Update \`__SESSION_DIR__/loop-state.json\` with the new line count.
 
-## Response File (\`.tandem/response.md\`)
+## Screenshots (\`__SESSION_DIR__/screenshots/\`)
+PNG files copied from the meeting folder into the session directory.
+\`__SESSION_DIR__/screenshots.md\` is an index with timestamps, dimensions, and relative file paths.
+Use the Read tool to view any \`__SESSION_DIR__/screenshots/*.png\` image file.
+
+## Clipboard Captures (\`__SESSION_DIR__/clipboard.md\` + \`__SESSION_DIR__/clipboard/\`)
+Text clips are inlined in \`__SESSION_DIR__/clipboard.md\`. Image clips are saved as PNGs in \`__SESSION_DIR__/clipboard/\`.
+The markdown file indexes both text and image captures with timestamps.
+
+## Response File (\`__SESSION_DIR__/response.md\`)
 Short (1–3 sentence) summary of what you did. Tandem polls every 10s and shows it to the user. Clear after writing.
 
 ## What NOT to do
@@ -166,18 +211,28 @@ Short (1–3 sentence) summary of what you did. Tandem polls every 10s and shows
 
 ## Quick Start
 \`\`\`
-/loop 1m Read .tandem/feed.md from the line after .tandem/loop-state.json's last_processed_line. Cluster related entries by time. For any screenshot entries in the cluster, Read the file path to actually view the image. Act on clear tasks immediately (write to .tandem/response.md); queue ambiguous ones as .tandem/tasks/task-{timestamp}.md. Update loop-state.json with the new line count.
+/loop 1m Read __SESSION_DIR__/feed.md from the line after __SESSION_DIR__/loop-state.json's last_processed_line. Cluster related entries by time. For any screenshot entries in the cluster, Read the file path to actually view the image. Act on clear tasks immediately (write to __SESSION_DIR__/response.md); queue ambiguous ones as __SESSION_DIR__/tasks/task-{timestamp}.md. Update __SESSION_DIR__/loop-state.json with the new line count.
 \`\`\`
 `;
 
 /**
- * Write .tandem/CLAUDE.md with integration instructions for Claude Code.
- * Called when the project directory is configured. Safe to overwrite (static content).
+ * Write CLAUDE.md with integration instructions for Claude Code into the
+ * session folder (or .tandem root if no session folder). Path placeholders in
+ * the template are replaced with the actual session-relative paths so the
+ * /loop quickstart is copy-pasteable.
  */
-export async function ensureTandemClaudeMd(projectDir: string): Promise<void> {
+export async function ensureTandemClaudeMd(
+  projectDir: string,
+  sessionFolder?: string | null,
+): Promise<void> {
   const sep = projectDir.includes('\\') ? '\\' : '/';
-  const filePath = `${projectDir}${sep}.tandem${sep}CLAUDE.md`;
-  await invoke('save_transcript', { filePath, content: TANDEM_CLAUDE_MD });
+  const tandemDir = tandemDirFor(projectDir, sessionFolder);
+  const filePath = `${tandemDir}${sep}CLAUDE.md`;
+  // Substitute __SESSION_DIR__ with the project-root-relative dir so /loop
+  // commands work from project root regardless of session folder name.
+  const sessionRel = sessionFolder ? `.tandem/${sessionFolder}` : '.tandem';
+  const content = TANDEM_CLAUDE_MD.replace(/__SESSION_DIR__/g, sessionRel);
+  await invoke('save_transcript', { filePath, content });
 }
 
 // ─── Live Screenshots File ──────────────────────────────────────────────────
@@ -198,8 +253,10 @@ export function generateLiveScreenshotsMarkdown(screenshots: ScreenshotData[]): 
     const ts = ss.recording_elapsed_secs != null
       ? `[${formatTimestamp(ss.recording_elapsed_secs)}]`
       : `[${ss.timestamp}]`;
+    const filename = ss.file_path.split(/[/\\]/).pop() || 'screenshot.png';
     lines.push(`## ${ts} ${ss.capture_mode === 'region' ? 'Region' : 'Fullscreen'} — ${ss.width}×${ss.height}`);
-    lines.push(`File: ${ss.file_path}`);
+    lines.push(`File: .tandem/screenshots/${filename}`);
+    lines.push(`Original: ${ss.file_path}`);
     lines.push('');
   }
 
@@ -207,15 +264,17 @@ export function generateLiveScreenshotsMarkdown(screenshots: ScreenshotData[]): 
 }
 
 /**
- * Write screenshots index to {projectDir}/.tandem/screenshots.md
+ * Write screenshots index to {tandemDir}/screenshots.md
  */
 export async function writeLiveScreenshots(
   projectDir: string,
   screenshots: ScreenshotData[],
+  sessionFolder?: string | null,
 ): Promise<void> {
   if (screenshots.length === 0) return;
   const sep = projectDir.includes('\\') ? '\\' : '/';
-  const filePath = `${projectDir}${sep}.tandem${sep}screenshots.md`;
+  const tandemDir = tandemDirFor(projectDir, sessionFolder);
+  const filePath = `${tandemDir}${sep}screenshots.md`;
   const content = generateLiveScreenshotsMarkdown(screenshots);
   await invoke('save_transcript', { filePath, content });
 }
@@ -309,12 +368,83 @@ export async function writeLiveTranscript(
   transcripts: Transcript[],
   meetingTitle: string,
   screenshots: ScreenshotData[] = [],
+  sessionFolder?: string | null,
 ): Promise<void> {
   const sep = projectDir.includes('\\') ? '\\' : '/';
-  const filePath = `${projectDir}${sep}.tandem${sep}live-transcript.md`;
+  const tandemDir = tandemDirFor(projectDir, sessionFolder);
+  const filePath = `${tandemDir}${sep}live-transcript.md`;
   const content = generateLiveTranscriptMarkdown(transcripts, meetingTitle, screenshots);
 
   await invoke('save_transcript', { filePath, content });
+}
+
+// ─── File Copy (for mirroring media into .tandem/) ──────────────────────────
+
+async function copyFile(source: string, destination: string): Promise<void> {
+  await invoke('copy_file', { source, destination });
+}
+
+/**
+ * Copy screenshot PNGs into {tandemDir}/screenshots/ so Claude Code
+ * can access them without leaving the project directory.
+ */
+export async function syncScreenshotsToTandemDir(
+  projectDir: string,
+  screenshots: ScreenshotData[],
+  sessionFolder?: string | null,
+): Promise<void> {
+  if (screenshots.length === 0) return;
+  const sep = projectDir.includes('\\') ? '\\' : '/';
+  const tandemDir = tandemDirFor(projectDir, sessionFolder);
+  const destDir = `${tandemDir}${sep}screenshots`;
+
+  for (const ss of screenshots) {
+    // Skip if the source is already inside .tandem
+    if (ss.file_path.includes('.tandem')) continue;
+    const filename = ss.file_path.split(/[/\\]/).pop();
+    if (!filename) continue;
+    const destPath = `${destDir}${sep}${filename}`;
+    try {
+      await copyFile(ss.file_path, destPath);
+    } catch {
+      console.warn('[F054] Failed to copy screenshot:', ss.file_path);
+    }
+  }
+}
+
+// ─── Live Clipboard File ───────────────────────────────────────────────────
+
+export function generateLiveClipboardMarkdown(clipboardItems: ClipboardData[]): string {
+  const lines: string[] = [];
+
+  lines.push('# Clipboard Captures');
+  lines.push(`Updated: ${new Date().toISOString()}`);
+  lines.push('');
+
+  if (clipboardItems.length === 0) {
+    lines.push('*(No clipboard captures yet)*');
+    return lines.join('\n');
+  }
+
+  for (const clip of clipboardItems) {
+    const ts = clip.recording_elapsed_secs != null
+      ? `[${formatTimestamp(clip.recording_elapsed_secs)}]`
+      : `[${clip.timestamp}]`;
+
+    if (clip.content_type === 'text' && clip.text) {
+      lines.push(`## ${ts} Text Clip`);
+      lines.push(clip.text);
+      lines.push('');
+    } else if (clip.content_type === 'image') {
+      const filename = (clip.file_path || '').split(/[/\\]/).pop() || 'image.png';
+      const dims = clip.width && clip.height ? ` — ${clip.width}x${clip.height}` : '';
+      lines.push(`## ${ts} Image Clip${dims}`);
+      lines.push(`File: .tandem/clipboard/${filename}`);
+      lines.push('');
+    }
+  }
+
+  return lines.join('\n');
 }
 
 // ─── Feed (append-only chronological event stream) ──────────────────────────
@@ -354,12 +484,50 @@ function formatFeedEntry(entry: FeedEntry): string {
 }
 
 /**
- * Append one entry to {projectDir}/.tandem/feed.md.
+ * Write clipboard.md and copy image PNGs to {tandemDir}/clipboard/
+ */
+export async function writeLiveClipboard(
+  projectDir: string,
+  clipboardItems: ClipboardData[],
+  sessionFolder?: string | null,
+): Promise<void> {
+  if (clipboardItems.length === 0) return;
+  const sep = projectDir.includes('\\') ? '\\' : '/';
+  const tandemDir = tandemDirFor(projectDir, sessionFolder);
+
+  // Write the clipboard index markdown
+  const filePath = `${tandemDir}${sep}clipboard.md`;
+  const content = generateLiveClipboardMarkdown(clipboardItems);
+  await invoke('save_transcript', { filePath, content });
+
+  // Copy image PNGs into clipboard/ next to clipboard.md
+  const destDir = `${tandemDir}${sep}clipboard`;
+  for (const clip of clipboardItems) {
+    if (clip.content_type !== 'image' || !clip.file_path) continue;
+    if (clip.file_path.includes('.tandem')) continue;
+    const filename = clip.file_path.split(/[/\\]/).pop();
+    if (!filename) continue;
+    const destPath = `${destDir}${sep}${filename}`;
+    try {
+      await copyFile(clip.file_path, destPath);
+    } catch {
+      console.warn('[F054] Failed to copy clipboard image:', clip.file_path);
+    }
+  }
+}
+
+/**
+ * Append one entry to {tandemDir}/feed.md.
  * Creates the file with a header if it doesn't exist.
  */
-export async function appendFeedEntry(projectDir: string, entry: FeedEntry): Promise<void> {
+export async function appendFeedEntry(
+  projectDir: string,
+  entry: FeedEntry,
+  sessionFolder?: string | null,
+): Promise<void> {
   const sep = projectDir.includes('\\') ? '\\' : '/';
-  const filePath = `${projectDir}${sep}.tandem${sep}feed.md`;
+  const tandemDir = tandemDirFor(projectDir, sessionFolder);
+  const filePath = `${tandemDir}${sep}feed.md`;
   const chunk = formatFeedEntry(entry);
   const existing = await invoke<string | null>('read_file_if_exists', { path: filePath });
   const next = existing && existing.length > 0
@@ -369,14 +537,18 @@ export async function appendFeedEntry(projectDir: string, entry: FeedEntry): Pro
 }
 
 /**
- * Initialize {projectDir}/.tandem/loop-state.json with a zeroed cursor.
+ * Initialize {tandemDir}/loop-state.json with a zeroed cursor.
  * Called when a Solo session starts for a project so Claude Code's /loop
  * can always read-then-update the file without a missing-file code path.
  * No-op if the file already exists (preserves cursor across sessions).
  */
-export async function ensureLoopState(projectDir: string): Promise<void> {
+export async function ensureLoopState(
+  projectDir: string,
+  sessionFolder?: string | null,
+): Promise<void> {
   const sep = projectDir.includes('\\') ? '\\' : '/';
-  const filePath = `${projectDir}${sep}.tandem${sep}loop-state.json`;
+  const tandemDir = tandemDirFor(projectDir, sessionFolder);
+  const filePath = `${tandemDir}${sep}loop-state.json`;
   const existing = await invoke<string | null>('read_file_if_exists', { path: filePath });
   if (existing && existing.trim().length > 0) return;
   const content = JSON.stringify({ last_processed_line: 0 }, null, 2);

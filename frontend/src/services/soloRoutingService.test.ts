@@ -38,6 +38,7 @@ describe('matchProjectByName', () => {
     mkProject({ id: '1', name: 'Tandem', aliases: ['the meeting app'] }),
     mkProject({ id: '2', name: 'Jos', aliases: ['joss', 'jos project'] }),
     mkProject({ id: '3', name: 'Website', aliases: [] }),
+    mkProject({ id: '4', name: 'Hirepath_IQ', aliases: ['Hirepath'] }),
   ];
 
   it('returns null for null input', () => {
@@ -63,8 +64,24 @@ describe('matchProjectByName', () => {
     expect(matchProjectByName('tande', projects)?.id).toBe('1');
   });
 
+  it('fuzzy-matches "higher path" → Hirepath (real STT garble case)', () => {
+    expect(matchProjectByName('higher path', projects)?.id).toBe('4');
+  });
+
+  it('fuzzy-matches "the higher path project" → Hirepath (filler words stripped)', () => {
+    expect(matchProjectByName('the higher path project', projects)?.id).toBe('4');
+  });
+
+  it('fuzzy-matches "high pat" → Hirepath (short garble within edit threshold)', () => {
+    expect(matchProjectByName('hire pat', projects)?.id).toBe('4');
+  });
+
   it('returns null when no match', () => {
     expect(matchProjectByName('CompletelyUnknown', projects)).toBeNull();
+  });
+
+  it('returns null for unrelated word that exceeds fuzzy threshold', () => {
+    expect(matchProjectByName('bicycle', projects)).toBeNull();
   });
 });
 

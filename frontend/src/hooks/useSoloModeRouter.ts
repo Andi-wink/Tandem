@@ -29,6 +29,7 @@ import {
   buildScreenshotFeedEntry,
   buildClipboardFeedEntry,
   ensureLoopState,
+  buildSessionFolderName,
 } from '@/services/handoffService';
 import { invoke } from '@tauri-apps/api/core';
 import { useScreenshots } from '@/contexts/ScreenshotContext';
@@ -56,7 +57,9 @@ export function useSoloModeRouter() {
     activeProject,
     routingModel,
     projectHistory,
+    sessionFolder,
     switchProject,
+    setSessionFolder,
     addTask,
     getActiveProjectHistory,
   } = useSoloMode();
@@ -67,6 +70,9 @@ export function useSoloModeRouter() {
 
   const activeProjectRef = useRef(activeProject);
   activeProjectRef.current = activeProject;
+
+  const sessionFolderRef = useRef(sessionFolder);
+  sessionFolderRef.current = sessionFolder;
 
   const routingModelRef = useRef(routingModel);
   routingModelRef.current = routingModel;
@@ -163,12 +169,21 @@ export function useSoloModeRouter() {
       }
 
       console.log('[SoloRouter] Decision:', {
-        switch: decision.project_switch,
+        switch_detected: decision.project_switch.detected,
+        switch_name: decision.project_switch.project_name,
+        switch_confidence: decision.project_switch.confidence,
         intents: decision.intents.length,
         notes: decision.notes.length,
         revoke_last: decision.revoke_last,
         stop: decision.stop_detected,
       });
+
+      // Compute / resolve the per-session subfolder name. Lazy-init on the first
+      // project switch so meetingTitle has a chance to be set first. Once set,
+      // it's reused across the rest of this Solo session — even if the user
+      // switches projects, each project's `.tandem/{folder}/` mirrors the same
+      // session folder name so the user can grep / archive by name.
+      let activeSessionFolder = sessionFolderRef.current;
 
       // Project switch — capture switched-to project locally so later appends in THIS cycle go to it
       let switchedTo: Project | null = null;
@@ -177,9 +192,17 @@ export function useSoloModeRouter() {
         if (matched && matched.id !== activeProjectRef.current?.id) {
           const previousProject = activeProjectRef.current;
           switchProject(matched, currentTranscripts.length);
+
+          if (!activeSessionFolder) {
+            activeSessionFolder = buildSessionFolderName(meetingTitleRef.current || 'Solo');
+            setSessionFolder(activeSessionFolder);
+            sessionFolderRef.current = activeSessionFolder;
+            toast.info(`Session folder: .tandem/${activeSessionFolder}`, { duration: 6000 });
+          }
+
           toast.success(`Switched to ${matched.name}`);
-          await ensureTandemClaudeMd(matched.path);
-          await ensureLoopState(matched.path);
+          await ensureTandemClaudeMd(matched.path, activeSessionFolder);
+          await ensureLoopState(matched.path, activeSessionFolder);
           switchedTo = matched;
 
           try {
@@ -188,7 +211,7 @@ export function useSoloModeRouter() {
               timestamp: new Date(),
               body: `Solo session active on ${matched.name}`,
               meta: previousProject ? { switched_from: previousProject.name } : {},
-            });
+            }, activeSessionFolder);
           } catch (err) {
             console.warn('[SoloRouter] Failed to append session_start entry:', err);
           }
@@ -210,7 +233,7 @@ export function useSoloModeRouter() {
             type: 'revoke',
             timestamp: new Date(),
             body: `User retracted the most recent intent: "${revokeTarget.description}"`,
-          });
+          }, activeSessionFolder);
           toast.info(`Revoked: ${revokeTarget.description.slice(0, 60)}`);
         } catch (err) {
           console.error('[SoloRouter] Failed to append revoke entry:', err);
@@ -240,7 +263,7 @@ export function useSoloModeRouter() {
               timestamp: new Date(),
               body: intent.description,
               meta: { confidence: intent.confidence.toFixed(2) },
-            });
+            }, activeSessionFolder);
             lastIntentRef.current = { description: intent.description, projectPath: currentActive.path };
             addTask({
               id: `solo-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -264,7 +287,7 @@ export function useSoloModeRouter() {
               timestamp: new Date(),
               body: note.description,
               meta: { confidence: note.confidence.toFixed(2) },
-            });
+            }, activeSessionFolder);
           } catch (err) {
             console.error('[SoloRouter] Failed to append note:', err);
           }
@@ -277,7 +300,7 @@ export function useSoloModeRouter() {
     } finally {
       isRoutingRef.current = false;
     }
-  }, [switchProject, addTask]);
+  }, [switchProject, setSessionFolder, addTask]);
 
   // ── Routing interval ────────────────────────────────────────────────
   useEffect(() => {
@@ -315,10 +338,11 @@ export function useSoloModeRouter() {
     lastScreenshotCountRef.current = screenshots.length;
     const projectPath = activeProject.path;
 
+    const folder = sessionFolderRef.current;
     (async () => {
       for (const ss of newOnes) {
         try {
-          await appendFeedEntry(projectPath, buildScreenshotFeedEntry(ss));
+          await appendFeedEntry(projectPath, buildScreenshotFeedEntry(ss), folder);
         } catch (err) {
           console.warn('[SoloRouter] Failed to append screenshot entry:', err);
         }
@@ -335,10 +359,11 @@ export function useSoloModeRouter() {
     lastClipboardCountRef.current = clipboardItems.length;
     const projectPath = activeProject.path;
 
+    const folder = sessionFolderRef.current;
     (async () => {
       for (const clip of newOnes) {
         try {
-          await appendFeedEntry(projectPath, buildClipboardFeedEntry(clip));
+          await appendFeedEntry(projectPath, buildClipboardFeedEntry(clip), folder);
         } catch (err) {
           console.warn('[SoloRouter] Failed to append clipboard entry:', err);
         }
@@ -361,13 +386,15 @@ export function useSoloModeRouter() {
         const projectTranscripts = transcriptsRef.current.slice(entry.startIndex);
         const recent = getRecentTranscripts(projectTranscripts, LIVE_TRANSCRIPT_WINDOW_SECS);
 
+        const folder = sessionFolderRef.current;
         await writeLiveTranscript(
           activeProject.path,
           recent,
           meetingTitleRef.current || 'Solo Session',
           screenshotsRef.current,
+          folder,
         );
-        await writeLiveScreenshots(activeProject.path, screenshotsRef.current);
+        await writeLiveScreenshots(activeProject.path, screenshotsRef.current, folder);
         lastTranscriptCountRef.current = transcriptsRef.current.length;
       } catch (err) {
         console.warn('[SoloRouter] Live transcript write failed:', err);
@@ -382,6 +409,7 @@ export function useSoloModeRouter() {
   // ── Final flush + session_end marker when recording stops ───────────
   useEffect(() => {
     if (isActive && !isRecording && activeProject && transcriptsRef.current.length > 0) {
+      const folder = sessionFolderRef.current;
       const entry = getActiveProjectHistory();
       if (entry) {
         const projectTranscripts = transcriptsRef.current.slice(entry.startIndex);
@@ -392,6 +420,7 @@ export function useSoloModeRouter() {
             recent,
             meetingTitleRef.current || 'Solo Session',
             screenshotsRef.current,
+            folder,
           ).catch(() => {});
         }
       }
@@ -399,7 +428,7 @@ export function useSoloModeRouter() {
         type: 'session_end',
         timestamp: new Date(),
         body: `Solo session ended on ${activeProject.name}`,
-      }).catch(() => {});
+      }, folder).catch(() => {});
       lastTranscriptCountRef.current = 0;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

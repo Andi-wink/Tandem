@@ -89,18 +89,21 @@ export function useVoiceCommand(options: UseVoiceCommandOptions = {}) {
     if (!enabled) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore hotkey when an interactive element has focus — Space has native meaning
-      // on buttons/selects/links, and typing in inputs should never trigger voice mode.
-      const target = e.target as HTMLElement;
-      const tag = target?.tagName;
-      if (
-        tag === 'INPUT' ||
-        tag === 'TEXTAREA' ||
-        tag === 'SELECT' ||
-        tag === 'BUTTON' ||
-        tag === 'A' ||
-        target?.isContentEditable
-      ) return;
+      // Skip interactive elements only for unmodified keypresses — bare Space has native
+      // meaning on buttons/selects/links, but Ctrl+Space is a deliberate hotkey combo
+      // that never inserts text, so it should work regardless of focus.
+      if (!e.ctrlKey) {
+        const target = e.target as HTMLElement;
+        const tag = target?.tagName;
+        if (
+          tag === 'INPUT' ||
+          tag === 'TEXTAREA' ||
+          tag === 'SELECT' ||
+          tag === 'BUTTON' ||
+          tag === 'A' ||
+          target?.isContentEditable
+        ) return;
+      }
 
       if (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.code === 'Space' && !e.repeat && !isListeningRef.current) {
         e.preventDefault();

@@ -19,6 +19,7 @@ import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { parseDocument, isSupportedDocument } from '@/services/claudeService';
 import { writeTaskHandoff, getRecentTranscripts, HANDOFF_TRANSCRIPT_WINDOW_SECS, TaskHandoffData, ensureTandemClaudeMd } from '@/services/handoffService';
+import { useSoloMode } from '@/contexts/SoloModeContext';
 import type { ContextBasketItem } from '@/contexts/ContextBasketContext';
 
 export function ClaudePanel() {
@@ -163,6 +164,15 @@ export function ClaudePanel() {
       };
       addToBasket(item);
       toast.success(`Added "${result.filename}" to context`);
+      // Save parsed text to .tandem/documents/ for Claude Code access
+      if (projectDir) {
+        const sep = projectDir.includes('\\') ? '\\' : '/';
+        const destPath = `${projectDir}${sep}.tandem${sep}documents${sep}${file.name}.md`;
+        invoke('save_transcript', {
+          filePath: destPath,
+          content: `# Document: ${result.filename}\nFormat: ${result.format}\n\n${result.text}`,
+        }).catch(() => {});
+      }
     } catch (err) {
       toast.error(`Failed to parse "${file.name}": ${(err as Error).message}`);
     } finally {
@@ -240,6 +250,7 @@ export function ClaudePanel() {
 
   // F047: Feed new transcript segments into voice command capture while listening
   const { transcripts } = useTranscripts();
+  const { sessionFolder } = useSoloMode();
   const lastFedTranscriptIdRef = useRef<string | null>(null);
   const prevIsListeningRef = useRef(false);
 
@@ -263,6 +274,13 @@ export function ClaudePanel() {
       feedTranscript(latest.text);
     }
   }, [isListening, transcripts, feedTranscript]);
+
+  // Blur input when voice listening starts to prevent accidental typing
+  useEffect(() => {
+    if (isListening && inputRef.current) {
+      inputRef.current.blur();
+    }
+  }, [isListening]);
 
   // Auto-focus input when panel opens
   useEffect(() => {
@@ -367,7 +385,7 @@ export function ClaudePanel() {
         contextItems: [...contextBasket],
         timestamp: new Date(),
       };
-      const filePath = await writeTaskHandoff(projectDir!, data);
+      const filePath = await writeTaskHandoff(projectDir!, data, sessionFolder);
       toast.success('Task queued for Claude Code', {
         description: filePath.split(/[/\\]/).pop(),
         action: {
@@ -408,8 +426,9 @@ export function ClaudePanel() {
     if (meetingId && meetingTitle) {
       openPanel(meetingId, meetingTitle, dir);
     }
-    // F054: Write .tandem/CLAUDE.md so Claude Code knows about the integration
-    ensureTandemClaudeMd(dir).catch(() => {});
+    // F054: Write CLAUDE.md so Claude Code knows about the integration.
+    // Routes into the active Solo session folder if one exists, else .tandem root.
+    ensureTandemClaudeMd(dir, sessionFolder).catch(() => {});
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

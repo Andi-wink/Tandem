@@ -13,6 +13,12 @@ interface SoloModeState {
   detectedTasks: SoloTask[];
   isProcessing: boolean;
   routingModel: string;
+  /** Per-session subfolder name (e.g. "MyMeeting_2026-05-08_14-30-15").
+   *  All Solo Mode artifacts for this session are written under
+   *  {projectPath}/.tandem/{sessionFolder}/ so the entire session can be
+   *  archived as a single folder. Computed lazily on first project switch
+   *  from the meeting title + start timestamp. Null until then. */
+  sessionFolder: string | null;
 }
 
 interface SoloModeContextType extends SoloModeState {
@@ -21,12 +27,15 @@ interface SoloModeContextType extends SoloModeState {
   switchProject: (project: Project, transcriptIndex: number) => void;
   addTask: (task: SoloTask) => void;
   setRoutingModel: (model: string) => void;
+  setSessionFolder: (folder: string) => void;
   getActiveProjectHistory: () => ProjectHistoryEntry | null;
 }
 
-const DEFAULT_ROUTING_MODEL = 'gemma4:26b';
-// Bumped 2026-04-15 — reset to default on this version to pick up gemma4:26b again
-const MODEL_VERSION = 'v2';
+const DEFAULT_ROUTING_MODEL = 'gpt-oss:20b';
+// Bumped 2026-05-05 — gemma4:26b returns malformed JSON and fails to detect project switches.
+// gpt-oss:20b reliably detects switches with phonetic matching (e.g. "higher path" → "Hirepath")
+// and uses ~6GB less VRAM, leaving room for Whisper GPU.
+const MODEL_VERSION = 'v3';
 
 const SoloModeContext = createContext<SoloModeContextType | null>(null);
 
@@ -45,6 +54,7 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     projectHistory: [],
     detectedTasks: [],
     isProcessing: false,
+    sessionFolder: null,
     routingModel: (() => {
       if (typeof window === 'undefined') return DEFAULT_ROUTING_MODEL;
       const savedVersion = localStorage.getItem('tandem-solo-routing-model-version');
@@ -70,6 +80,7 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
       projectHistory: [],
       detectedTasks: [],
       isProcessing: false,
+      sessionFolder: null, // computed lazily on first project switch
     }));
     toast.success('Solo Mode active', {
       description: 'Listening for project switches and tasks',
@@ -93,6 +104,7 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
       isActive: false,
       activeProject: null,
       projectHistory: history,
+      sessionFolder: null,
     }));
     setActiveSoloProject(null).catch(err =>
       console.warn('[SoloMode] Failed to clear screenshot routing:', err),
@@ -143,6 +155,10 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     setState(prev => ({ ...prev, routingModel: model }));
   }, []);
 
+  const setSessionFolder = useCallback((folder: string) => {
+    setState(prev => ({ ...prev, sessionFolder: folder }));
+  }, []);
+
   const getActiveProjectHistory = useCallback((): ProjectHistoryEntry | null => {
     const history = historyRef.current;
     if (history.length === 0) return null;
@@ -157,8 +173,9 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     switchProject,
     addTask,
     setRoutingModel,
+    setSessionFolder,
     getActiveProjectHistory,
-  }), [state, startSoloSession, stopSoloSession, switchProject, addTask, setRoutingModel, getActiveProjectHistory]);
+  }), [state, startSoloSession, stopSoloSession, switchProject, addTask, setRoutingModel, setSessionFolder, getActiveProjectHistory]);
 
   return (
     <SoloModeContext.Provider value={contextValue}>

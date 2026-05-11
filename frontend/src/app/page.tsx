@@ -13,6 +13,7 @@ import { SettingsModals } from './_components/SettingsModal';
 import { TranscriptPanel } from './_components/TranscriptPanel';
 import { useModalState } from '@/hooks/useModalState';
 import { useRecordingStateSync } from '@/hooks/useRecordingStateSync';
+import { useAutoMeetingTitle } from '@/hooks/useAutoMeetingTitle';
 import { useRecordingStart } from '@/hooks/useRecordingStart';
 import { useRecordingStop } from '@/hooks/useRecordingStop';
 import { useTranscriptRecovery } from '@/hooks/useTranscriptRecovery';
@@ -45,8 +46,8 @@ export default function Home() {
   const preRecordDirRef = useRef<string>('');
 
   // Use contexts for state management
-  const { meetingTitle } = useTranscripts();
-  const { transcriptModelConfig, selectedDevices } = useConfig();
+  const { meetingTitle, transcriptsRef } = useTranscripts();
+  const { transcriptModelConfig, selectedDevices, modelConfig, providerApiKeys } = useConfig();
   const recordingState = useRecordingState();
 
   // Extract status from global state
@@ -57,7 +58,7 @@ export default function Home() {
 
   // Hooks
   const { hasMicrophone } = usePermissionCheck();
-  const { setIsMeetingActive, isCollapsed: sidebarCollapsed, refetchMeetings } = useSidebar();
+  const { setIsMeetingActive, isCollapsed: sidebarCollapsed, refetchMeetings, currentMeeting, serverAddress } = useSidebar();
   const { modals, messages, showModal, hideModal } = useModalState(transcriptModelConfig);
   const { isRecordingDisabled, setIsRecordingDisabled } = useRecordingStateSync(isRecording, setIsRecordingState, setIsMeetingActive);
   const { handleRecordingStart } = useRecordingStart(isRecording, setIsRecordingState, showModal);
@@ -85,6 +86,24 @@ export default function Home() {
   // Solo Mode: routing engine + session management
   const soloMode = useSoloMode();
   useSoloModeRouter();
+
+  // Auto-rename meeting after 2 min of active recording (e.g. "Meeting with Steph 27.04.2026")
+  useAutoMeetingTitle({
+    activeDuration: recordingState.activeDuration,
+    isRecording: recordingState.isRecording,
+    meetingId: currentMeeting?.id,
+    currentTitle: currentMeeting?.title,
+    serverAddress,
+    provider: modelConfig.provider,
+    modelName: modelConfig.model,
+    apiKey:
+      modelConfig.provider === 'claude' ? providerApiKeys.claude :
+      modelConfig.provider === 'groq' ? providerApiKeys.groq :
+      modelConfig.provider === 'openai' ? providerApiKeys.openai :
+      null,
+    transcriptsRef,
+    onRenamed: () => { void refetchMeetings(); },
+  });
 
   // Recovery hook
   const {

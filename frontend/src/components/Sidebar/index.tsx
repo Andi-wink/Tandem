@@ -31,6 +31,7 @@ import { ComplianceNotification } from '../ComplianceNotification';
 import { Input } from '../ui/input';
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '../ui/input-group';
 import { ThemeToggle } from '../ThemeToggle';
+import { NotificationBell } from '../NotificationBell';
 
 interface SidebarItem {
   id: string;
@@ -493,6 +494,7 @@ const Sidebar: React.FC = () => {
             </TooltipContent>
           </Tooltip>
 
+          <NotificationBell isCollapsed={true} />
           <ThemeToggle isCollapsed={true} />
           <Info isCollapsed={isCollapsed} />
         </div>
@@ -754,6 +756,7 @@ const Sidebar: React.FC = () => {
               <Settings className="w-4 h-4 mr-2" />
               <span>Settings</span>
             </button>
+            <NotificationBell isCollapsed={false} />
             <ThemeToggle isCollapsed={false} />
             <Info isCollapsed={isCollapsed} />
             <div className="w-full flex items-center justify-center px-3 py-1 text-xs text-muted-foreground">

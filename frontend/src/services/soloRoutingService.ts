@@ -25,14 +25,15 @@ ${projectList}
 
 Current active project: ${activeProject ? activeProject.name : 'none'}
 
-Respond with this exact JSON structure:
+Respond with this exact JSON structure (use these EXACT field names — do not rename or add fields):
 {
   "project_switch": { "detected": false, "project_name": null, "confidence": 0 },
-  "intents": [],
-  "notes": [],
+  "intents": [ { "description": "string", "confidence": 0.0 } ],
+  "notes": [ { "description": "string", "confidence": 0.0 } ],
   "stop_detected": false,
   "revoke_last": false
 }
+The intents and notes arrays may be empty. Each entry MUST have keys "description" and "confidence" — never "text", "content", or "note".
 
 Classification rules:
 - intents[] — actionable requests, decisions, plans, or bug reports the developer is making. These are things a coding assistant could take and act on. Phrase as imperative ("Fix X", "Change Y to Z", "Investigate W").
@@ -42,10 +43,16 @@ Classification rules:
 - intents[].confidence and notes[].confidence reflect certainty (0-1). Use >= 0.7 only when truly confident.
 
 Project switch rules:
-- project_switch.detected = true ONLY when the user explicitly says they're switching/starting/moving to a different project ("I'm working on X now", "let's switch to Y", "moving over to Z").
-- Match project_name to the closest registered project name or alias. Use the name as listed above, not the user's phrasing.
-- Speech-to-text garbles short names. Expect variants: extra letters ("Jos" → "Joss"), merged words ("Jos project" → "Josproject"), possessives ("Joss's project"), phonetic slips. If a spoken name is phonetically close to or contains a registered name as a substring, treat it as that project. Return the REGISTERED name (not what was said).
-- Do NOT detect a project switch when the user merely mentions a project in passing.
+- project_switch.detected = true when the user declares what they are working on: "Working on X", "I'm on X today", "I'm working on X (now)", "let's switch to Y", "moving over to Z", "back to X", "today I'm doing X". Repetition strengthens the signal — if they say the project name 2+ times, treat it as a clear declaration.
+- ALWAYS return project_name as the REGISTERED name from the list above (or its alias). Never echo back the user's literal phrasing if it differs.
+- Speech-to-text garbles names heavily. Match phonetically and loosely:
+  • "Jos" → "Joss", "Josproject", "Joss's project" → registered "Jos"
+  • "higher path" / "high pat" → registered "Hirepath" (phonetic: hire ≈ higher)
+  • "I-on" / "Ion" → registered "Iron" (phonetic similarity)
+  • Extra/missing letters, merged words, possessives — all expected. If the spoken name is phonetically close to or contains/is contained in a registered name, treat it as that project.
+- Confidence: 0.8+ when the user clearly states they are working on a registered project (even with garbles). 0.5–0.7 when ambiguous. <0.5 when it's just a passing mention.
+- Do NOT detect a switch when the user merely mentions a project in passing without claiming to work on it.
+- If the spoken name does NOT plausibly match any registered project, set detected=false. Do not invent matches.
 
 Stop rules:
 - stop_detected = true when the user says they're done working or ending the session.
@@ -98,6 +105,14 @@ export async function analyzeTranscript(
 
     const decision: RoutingDecision = JSON.parse(rawJson);
 
+    console.log('[SoloRouting] Gemma raw response:', {
+      project_switch: decision.project_switch,
+      intent_count: decision.intents?.length ?? 0,
+      note_count: decision.notes?.length ?? 0,
+      stop: decision.stop_detected,
+      revoke: decision.revoke_last,
+    });
+
     // Apply confidence threshold to project switch (looser than intents/notes)
     if (decision.project_switch.detected && decision.project_switch.confidence < SWITCH_CONFIDENCE_THRESHOLD) {
       console.log('[SoloRouting] Switch below threshold — dropped:', decision.project_switch);
@@ -141,6 +156,31 @@ export async function warmupModel(model: string, ollamaEndpoint?: string): Promi
   }
 }
 
+/** Levenshtein distance — used as fuzzy fallback for STT garbles. */
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  const m: number[][] = Array.from({ length: b.length + 1 }, () => new Array(a.length + 1).fill(0));
+  for (let i = 0; i <= b.length; i++) m[i][0] = i;
+  for (let j = 0; j <= a.length; j++) m[0][j] = j;
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      const cost = b.charAt(i - 1) === a.charAt(j - 1) ? 0 : 1;
+      m[i][j] = Math.min(m[i - 1][j] + 1, m[i][j - 1] + 1, m[i - 1][j - 1] + cost);
+    }
+  }
+  return m[b.length][a.length];
+}
+
+/** Strip filler words and non-alphanumerics, then concatenate (handles "higher path" → "higherpath"). */
+function normalizeForFuzzy(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/\b(the|a|an|project|projects|app|website|to|for)\b/g, ' ')
+    .replace(/[^a-z0-9]/g, '');
+}
+
 export function matchProjectByName(name: string | null, projects: Project[]): Project | null {
   if (!name) return null;
   const lower = name.toLowerCase();
@@ -160,6 +200,32 @@ export function matchProjectByName(name: string | null, projects: Project[]): Pr
     p.name.toLowerCase().includes(lower) || lower.includes(p.name.toLowerCase()),
   );
   if (substring) return substring;
+
+  // Fuzzy fallback — Levenshtein on stripped/concatenated forms.
+  // Catches STT garbles like "higher path" → "Hirepath" where surface strings share no substring
+  // but the concatenated forms are within ~30% edit distance.
+  const fuzzyKey = normalizeForFuzzy(name);
+  if (fuzzyKey.length >= 3) {
+    let best: { project: Project; distance: number; ratio: number } | null = null;
+    for (const p of projects) {
+      const candidates = [p.name, ...p.aliases]
+        .map(normalizeForFuzzy)
+        .filter(c => c.length >= 3);
+      for (const candidate of candidates) {
+        const d = levenshtein(fuzzyKey, candidate);
+        const maxLen = Math.max(fuzzyKey.length, candidate.length);
+        const ratio = d / maxLen;
+        // Accept if edit ratio ≤ 0.35 AND absolute distance ≤ 4
+        if (ratio <= 0.35 && d <= 4 && (!best || d < best.distance)) {
+          best = { project: p, distance: d, ratio };
+        }
+      }
+    }
+    if (best) {
+      console.log(`[SoloRouting] Fuzzy match: "${name}" → ${best.project.name} (distance=${best.distance}, ratio=${best.ratio.toFixed(2)})`);
+      return best.project;
+    }
+  }
 
   return null;
 }

@@ -111,10 +111,13 @@ impl ParakeetModel {
             regular_name
         };
 
+        // Level2 + serial execution to avoid MLAS dispatching AVX-512 kernels on
+        // CPUs that lack AVX-512 (e.g. AMD Zen 3 / Ryzen 5000). Level3 + parallel
+        // execution intermittently hit STATUS_ILLEGAL_INSTRUCTION mid-stream.
         let mut builder = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_optimization_level(GraphOptimizationLevel::Level2)?
             .with_execution_providers(providers)?
-            .with_parallel_execution(true)?;
+            .with_parallel_execution(false)?;
 
         if let Some(threads) = intra_threads {
             builder = builder

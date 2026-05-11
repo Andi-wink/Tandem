@@ -1,0 +1,5 @@
+# sqlx hashes migration files for drift detection (SHA-384 of file bytes).
+# CRLF conversion changes the hash and breaks "previously applied but modified" checks.
+# Force LF for migrations so the hash is stable across Windows/Linux/macOS checkouts.
+*.sql text eol=lf
+frontend/src-tauri/migrations/** text eol=lf

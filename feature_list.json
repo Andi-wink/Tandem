@@ -2164,6 +2164,51 @@
         "F007"
       ],
       "passes": false
+    },
+    {
+      "id": "F060",
+      "category": "functional",
+      "name": "Video Context Capture (Gemma 4)",
+      "description": "On-demand 30-second screen recording chunks triggered by hotkey (Alt+Shift+G) or toolbar button. Captures frames at 2 FPS via xcap, deduplicates to keyframes, analyzes locally with Gemma 4 via Ollama, and injects structured screen context into transcript timeline and AI context basket. Fully local — no screen data leaves the machine.",
+      "priority": "medium",
+      "status": "planned",
+      "branch": null,
+      "commit": null,
+      "steps": [
+        "Create frontend/src-tauri/src/video_capture/ module (mod.rs, recorder.rs, commands.rs, types.rs)",
+        "Implement 2 FPS frame capture loop using xcap with perceptual hash deduplication",
+        "Add Tauri commands: start_video_capture, stop_video_capture, get_capture_status",
+        "Register Alt+Shift+G hotkey in lib.rs global shortcut handler",
+        "Emit events: video-capture-started, video-capture-stopped",
+        "Add backend/app/video_analyzer.py with Ollama Gemma 4 vision integration",
+        "Add POST /api/video/analyze endpoint with SSE streaming to main.py",
+        "Create VideoChunkContext.tsx mirroring ScreenshotContext pattern",
+        "Add video_chunk type to ContextBasketItem in ContextBasketContext.tsx",
+        "Build VideoCaptureIndicator component (floating pill with countdown)",
+        "Build VideoCaptureButton for recording toolbar",
+        "Build VideoChunkCard for transcript timeline with keyframe thumbnails",
+        "Auto-add analyzed chunks to context basket",
+        "Add capture duration and FPS settings to Settings page",
+        "Add Ollama model selection (default: gemma4) to Settings"
+      ],
+      "files": [
+        "frontend/src-tauri/src/video_capture/mod.rs",
+        "frontend/src-tauri/src/video_capture/recorder.rs",
+        "frontend/src-tauri/src/video_capture/commands.rs",
+        "frontend/src-tauri/src/video_capture/types.rs",
+        "frontend/src-tauri/src/lib.rs",
+        "backend/app/video_analyzer.py",
+        "backend/app/main.py",
+        "frontend/src/contexts/VideoChunkContext.tsx",
+        "frontend/src/contexts/ContextBasketContext.tsx",
+        "frontend/src/components/VideoCaptureIndicator.tsx",
+        "frontend/src/components/VideoChunkCard.tsx"
+      ],
+      "dependencies": [
+        "F002",
+        "F007"
+      ],
+      "passes": false
     }
   ]
 }

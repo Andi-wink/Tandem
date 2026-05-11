@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { recordingService } from '@/services/recordingService';
+import { toast } from 'sonner';
 
 /**
  * Recording state synchronized with backend
@@ -161,6 +162,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
             isActive: true,
             status: RecordingStatus.RECORDING,  // NEW: Set status to RECORDING
           }));
+          toast.success('Recording started', { duration: 2000 });
           startPolling();
         });
         unsubscribers.push(unlistenStarted);
@@ -202,6 +204,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
             isPaused: true,
             isActive: false,
           }));
+          toast.info('Recording paused', { duration: 2000 });
         });
         unsubscribers.push(unlistenPaused);
 
@@ -213,6 +216,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
             isPaused: false,
             isActive: true,
           }));
+          toast.success('Recording resumed', { duration: 2000 });
         });
         unsubscribers.push(unlistenResumed);
 

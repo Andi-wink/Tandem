@@ -15,9 +15,12 @@ import { useClaude } from '@/contexts/ClaudeContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useScreenshots } from '@/contexts/ScreenshotContext';
 import { useSoloMode } from '@/contexts/SoloModeContext';
+import { useClipboard } from '@/contexts/ClipboardContext';
 import {
   writeLiveTranscript,
   writeLiveScreenshots,
+  syncScreenshotsToTandemDir,
+  writeLiveClipboard,
   getRecentTranscripts,
   LIVE_TRANSCRIPT_WINDOW_SECS,
   LIVE_TRANSCRIPT_DEBOUNCE_MS,
@@ -31,6 +34,7 @@ export function useLiveTranscriptWriter() {
   const { isRecording, recordingMode } = useRecordingState();
   const { screenshots } = useScreenshots();
   const soloMode = useSoloMode();
+  const { clipboardItems } = useClipboard();
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastWrittenCountRef = useRef<number>(0);
@@ -54,6 +58,8 @@ export function useLiveTranscriptWriter() {
         const recentTranscripts = getRecentTranscripts(transcripts, LIVE_TRANSCRIPT_WINDOW_SECS);
         await writeLiveTranscript(projectDir, recentTranscripts, meetingTitle || 'Meeting', screenshots);
         await writeLiveScreenshots(projectDir, screenshots);
+        await syncScreenshotsToTandemDir(projectDir, screenshots);
+        await writeLiveClipboard(projectDir, clipboardItems);
         lastWrittenCountRef.current = transcripts.length;
       } catch (err) {
         // Non-blocking — don't toast on every failed write
@@ -64,7 +70,7 @@ export function useLiveTranscriptWriter() {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [transcripts, screenshots, isRecording, projectDir, meetingTitle, recordingMode]);
+  }, [transcripts, screenshots, clipboardItems, isRecording, projectDir, meetingTitle, recordingMode]);
 
   // Final flush when recording stops
   useEffect(() => {

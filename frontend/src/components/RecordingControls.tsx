@@ -16,11 +16,18 @@ import { useRecordingState, RecordingMode } from '@/contexts/RecordingStateConte
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useSoloMode } from '@/contexts/SoloModeContext';
+import { LanguageMenuItems, useLanguageMenuState } from './LanguagePicker';
+import { Globe } from 'lucide-react';
 
 interface RecordingControlsProps {
   isRecording: boolean;
@@ -59,6 +66,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const isPaused = recordingState.isPaused;
   const { recordingMode, setRecordingMode } = recordingState;
   const soloMode = useSoloMode();
+  const lang = useLanguageMenuState();
 
   const [recordingPath, setRecordingPath] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<string>('');
@@ -415,21 +423,29 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                           </TooltipContent>
                         </Tooltip>
 
-                        {/* Mode dropdown trigger */}
-                        <DropdownMenu>
+                        {/* Mode + language dropdown trigger */}
+                        <DropdownMenu onOpenChange={open => { if (open) lang.refreshProvider(); }}>
                           <DropdownMenuTrigger asChild>
                             <button
                               disabled={isStarting || isProcessing || isRecordingDisabled}
-                              className={`h-12 w-7 flex items-center justify-center ${
+                              aria-label="Recording mode and transcription language"
+                              className={`relative h-12 w-7 flex items-center justify-center ${
                                 isStarting || isProcessing
                                   ? 'bg-muted-foreground'
                                   : 'bg-recording hover:bg-recording-hover hover:brightness-110'
                               } rounded-r-full text-recording-foreground border-l border-recording-foreground/20 transition-[background-color] duration-150`}
                             >
                               <ChevronDown size={14} />
+                              {lang.isAutoDetectOnly && (
+                                <span
+                                  className="absolute top-1 right-1 h-2 w-2 rounded-full bg-amber-500 ring-1 ring-recording"
+                                  aria-hidden
+                                />
+                              )}
                             </button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="center" sideOffset={8}>
+                          <DropdownMenuContent align="center" sideOffset={8} className="min-w-[200px]">
+                            <DropdownMenuLabel className="text-xs text-muted-foreground font-normal">Mode</DropdownMenuLabel>
                             <DropdownMenuRadioGroup
                               value={recordingMode}
                               onValueChange={(v) => setRecordingMode(v as RecordingMode)}
@@ -441,6 +457,23 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                                 <User size={14} /> Solo
                               </DropdownMenuRadioItem>
                             </DropdownMenuRadioGroup>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuSub>
+                              <DropdownMenuSubTrigger className="flex items-center gap-2">
+                                <Globe size={14} />
+                                <span>Language</span>
+                                <span className="ml-auto text-xs text-muted-foreground tabular-nums">{lang.current.short}</span>
+                              </DropdownMenuSubTrigger>
+                              <DropdownMenuSubContent className="w-64 max-h-[70vh] overflow-y-auto">
+                                <LanguageMenuItems
+                                  selectedLanguage={lang.selectedLanguage}
+                                  isAutoDetectOnly={lang.isAutoDetectOnly}
+                                  switching={lang.switching}
+                                  onSelect={lang.handleSelect}
+                                  onSwitchToWhisper={lang.handleSwitchToWhisper}
+                                />
+                              </DropdownMenuSubContent>
+                            </DropdownMenuSub>
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </div>

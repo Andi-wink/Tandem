@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 import asyncio
+import os
 import uvicorn
 from typing import Optional, List
 import logging
@@ -107,6 +108,13 @@ class MeetingTitleUpdate(BaseModel):
 
 class DeleteMeetingRequest(BaseModel):
     meeting_id: str
+
+class GenerateTitleRequest(BaseModel):
+    """Auto-title request: send a short transcript snippet, get back a meeting title."""
+    text: str
+    provider: str
+    model_name: str
+    api_key: Optional[str] = None
 
 class SaveTranscriptRequest(BaseModel):
     meeting_title: str
@@ -230,6 +238,104 @@ async def save_meeting_title(data: MeetingTitleUpdate):
         logger.error(f"Error saving meeting title: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/generate-title")
+async def generate_title(data: GenerateTitleRequest):
+    """Generate a short meeting title from a transcript snippet.
+
+    Uses the configured LLM (claude/groq/openai/ollama). Returns a 2-6 word
+    title like "Meeting with Steph" or "Project discussion with Gary".
+    The frontend appends the date.
+    """
+    from pydantic_ai import Agent
+    from pydantic_ai.models.anthropic import AnthropicModel
+    from pydantic_ai.models.groq import GroqModel
+    from pydantic_ai.models.openai import OpenAIModel
+    from pydantic_ai.providers.anthropic import AnthropicProvider
+    from pydantic_ai.providers.groq import GroqProvider
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    if not data.text or not data.text.strip():
+        raise HTTPException(status_code=400, detail="text is required")
+
+    # Resolve API key — prefer the one passed in, else fall back to DB
+    api_key = data.api_key
+    if not api_key and data.provider in ("claude", "groq", "openai"):
+        api_key = await db.get_api_key(data.provider)
+
+    try:
+        if data.provider == "claude":
+            if not api_key:
+                raise HTTPException(status_code=400, detail="Anthropic API key not configured")
+            llm = AnthropicModel(data.model_name, provider=AnthropicProvider(api_key=api_key))
+        elif data.provider == "groq":
+            if not api_key:
+                raise HTTPException(status_code=400, detail="Groq API key not configured")
+            llm = GroqModel(data.model_name, provider=GroqProvider(api_key=api_key))
+        elif data.provider == "openai":
+            if not api_key:
+                raise HTTPException(status_code=400, detail="OpenAI API key not configured")
+            llm = OpenAIModel(data.model_name, provider=OpenAIProvider(api_key=api_key))
+        elif data.provider == "ollama":
+            ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+            llm = OpenAIModel(
+                model_name=data.model_name,
+                provider=OpenAIProvider(base_url=f"{ollama_host}/v1"),
+            )
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported provider: {data.provider}")
+
+        prompt = f"""You generate short, descriptive meeting titles from transcript snippets.
+
+Rules:
+- Output ONLY the title text. No quotes, no preamble, no explanation.
+- 2 to 6 words, no trailing period.
+- Prefer first names if mentioned: e.g. "Meeting with Steph", "Project discussion with Gary", "Sync with Maria".
+- If multiple names, pick the most prominent one or use "Team meeting" / "Client call".
+- If no names, pick a topic-based title: e.g. "Onboarding discussion", "Q3 planning sync".
+- Do NOT include the date — that is added separately.
+
+Transcript snippet:
+---
+{data.text.strip()}
+---
+
+Title:"""
+
+        agent = Agent(llm)
+        result = await agent.run(prompt)
+
+        title = ""
+        if hasattr(result, "output") and isinstance(result.output, str):
+            title = result.output
+        elif hasattr(result, "data") and isinstance(result.data, str):
+            title = result.data
+        else:
+            title = str(result)
+
+        # Strip common LLM noise: surrounding quotes, "Title:" prefix, trailing period
+        title = title.strip().strip('"').strip("'").strip()
+        if title.lower().startswith("title:"):
+            title = title[6:].strip()
+        title = title.rstrip(".")
+
+        # Hard cap to defend against runaway models
+        words = title.split()
+        if len(words) > 8:
+            title = " ".join(words[:8])
+
+        if not title:
+            raise HTTPException(status_code=502, detail="LLM returned empty title")
+
+        logger.info(f"Generated title: {title!r} (provider={data.provider}, model={data.model_name})")
+        return {"title": title}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating title: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Title generation failed: {e}")
+
+
 @app.post("/delete-meeting")
 async def delete_meeting(data: DeleteMeetingRequest):
     """Delete a meeting and all its associated data"""
@@ -333,10 +439,26 @@ async def process_transcript_background(process_id: str, transcript: TranscriptR
         if all_json_data:
             await processor.db.update_process(process_id, status="completed", result=final_summary)  # C03: pass dict directly — db.py handles json.dumps
             logger.info(f"Background processing completed for process_id: {process_id}")
+            await notification_bus.publish({
+                "id": str(uuid.uuid4()), "level": "success",
+                "title": "Summary Ready",
+                "body": f"AI summary generated for meeting {final_summary.get('MeetingName', '')}".strip(),
+                "source": "summary", "meeting_id": transcript.meeting_id,
+                "show_in_panel": False, "data": None, "duration_ms": 5000,
+                "timestamp": time.time(),
+            })
         else:
             error_msg = "Summary generation failed: No chunks were processed successfully. Check logs for specific errors."
             await processor.db.update_process(process_id, status="failed", error=error_msg)
             logger.error(f"Background processing failed for process_id: {process_id} - {error_msg}")
+            await notification_bus.publish({
+                "id": str(uuid.uuid4()), "level": "error",
+                "title": "Summary Failed",
+                "body": "No chunks were processed successfully. Check model settings.",
+                "source": "summary", "meeting_id": transcript.meeting_id,
+                "show_in_panel": False, "data": None, "duration_ms": 8000,
+                "timestamp": time.time(),
+            })
 
     except ValueError as e:
         # Handle specific value errors (like API key issues)
@@ -346,6 +468,13 @@ async def process_transcript_background(process_id: str, transcript: TranscriptR
             await processor.db.update_process(process_id, status="failed", error=error_msg)
         except Exception as db_e:
             logger.error(f"Failed to update DB status to failed for {process_id}: {db_e}", exc_info=True)
+        await notification_bus.publish({
+            "id": str(uuid.uuid4()), "level": "error",
+            "title": "Summary Failed", "body": error_msg,
+            "source": "summary", "meeting_id": transcript.meeting_id,
+            "show_in_panel": False, "data": None, "duration_ms": 8000,
+            "timestamp": time.time(),
+        })
     except Exception as e:
         # Handle all other exceptions
         error_msg = f"Processing error: {str(e)}"
@@ -354,6 +483,13 @@ async def process_transcript_background(process_id: str, transcript: TranscriptR
             await processor.db.update_process(process_id, status="failed", error=error_msg)
         except Exception as db_e:
             logger.error(f"Failed to update DB status to failed for {process_id}: {db_e}", exc_info=True)
+        await notification_bus.publish({
+            "id": str(uuid.uuid4()), "level": "error",
+            "title": "Summary Failed", "body": "An unexpected error occurred during summary generation.",
+            "source": "summary", "meeting_id": transcript.meeting_id,
+            "show_in_panel": False, "data": None, "duration_ms": 8000,
+            "timestamp": time.time(),
+        })
 
 @app.post("/process-transcript")
 async def process_transcript_api(

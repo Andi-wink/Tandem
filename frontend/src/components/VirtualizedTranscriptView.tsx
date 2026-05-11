@@ -102,7 +102,7 @@ function clipboardToBasketItem(clip: ClipboardData): ContextBasketItem {
         type: 'clipboard',
         label: `Clipboard ${timeLabel}`,
         preview: (clip.text || '').slice(0, 80) + ((clip.text || '').length > 80 ? '...' : ''),
-        fullContent: clip.text || `[Clipboard image: ${clip.file_path}]`,
+        fullContent: clip.text || `[Clipboard image: .tandem/clipboard/${(clip.file_path || '').split(/[/\\]/).pop() || 'image.png'}]\nPlease use the Read tool to view this image file.`,
         timestamp: clip.recording_elapsed_secs,
     };
 }

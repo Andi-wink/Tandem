@@ -1,253 +1,154 @@
 <div align="center" style="border-bottom: none">
     <h1>
-        <img src="docs/Tandem-6.png" style="border-radius: 10px;" />
+        <img src="docs/Tandem_Logo (1)-Photoroom.png" width="120" style="border-radius: 10px;" />
         <br>
-        Work in Tandem with AI on Every Call
+        Tandem
     </h1>
-    <a href="https://trendshift.io/repositories/13272" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13272" alt="Zackriya-Solutions%2Fmeeting-minutes | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-    <br>
-    <br>
-    <a href="https://github.com/Zackriya-Solutions/meeting-minutes/releases/"><img src="https://img.shields.io/badge/Pre_Release-Link-brightgreen" alt="Pre-Release"></a>
-    <a href="https://github.com/Zackriya-Solutions/meeting-minutes/releases"><img alt="GitHub Repo stars" src="https://img.shields.io/github/stars/zackriya-solutions/meeting-minutes?style=flat">
-</a>
- <a href="https://github.com/Zackriya-Solutions/meeting-minutes/releases"> <img alt="GitHub Downloads (all assets, all releases)" src="https://img.shields.io/github/downloads/zackriya-solutions/meeting-minutes/total?style=plastic"> </a>
-    <a href="https://github.com/Zackriya-Solutions/meeting-minutes/releases"><img src="https://img.shields.io/badge/License-MIT-blue" alt="License"></a>
-    <a href="https://github.com/Zackriya-Solutions/meeting-minutes/releases"><img src="https://img.shields.io/badge/Supported_OS-macOS,_Windows-white" alt="Supported OS"></a>
-    <a href="https://github.com/Zackriya-Solutions/meeting-minutes/releases"><img alt="GitHub Tag" src="https://img.shields.io/github/v/tag/zackriya-solutions/meeting-minutes?include_prereleases&color=yellow">
-</a>
-    <br>
-    <h3>
-    <br>
-    Open Source • Privacy-First • Enterprise-Ready
-    </h3>
-    <p align="center">
-    Get latest <a href="https://www.zackriya.com/tandem-subscribe/"><b>Product updates</b></a> <br><br>
-    <a href="https://tandem.ai"><b>Website</b></a> •
-    <a href="https://www.linkedin.com/company/106363062/"><b>LinkedIn</b></a> •
-    <a href="https://discord.gg/crRymMQBFH"><b>Tandem Discord</b></a> •
-    <a href="https://discord.com/invite/vCFJvN4BwJ"><b>Privacy-First AI</b></a> •
-    <a href="https://www.reddit.com/r/tandem/"><b>Reddit</b></a>
-</p>
-    <p align="center">
-
-A privacy-first AI co-pilot that works alongside you on every call — capturing, transcribing, and collaborating in real time, entirely on your infrastructure. Built by expert AI engineers passionate about data sovereignty and open source solutions. Perfect for anyone who wants an intelligent partner on calls without compromising on privacy, compliance, or control.
-
-</p>
-
-<p align="center">
-    <img src="docs/tandem_demo.gif" width="650" alt="Tandem Demo" />
-    <br>
-    <a href="https://youtu.be/6FnhSC_eSz8">View full Demo Video</a>
-</p>
-
+    <p><strong>Privacy-first AI co-pilot for every call</strong></p>
+    <p>
+    <a href="https://github.com/Andi-wink/Tandem/releases"><img src="https://img.shields.io/badge/Status-In_Development-orange" alt="Status"></a>
+    <a href="https://github.com/Andi-wink/Tandem"><img alt="GitHub Repo stars" src="https://img.shields.io/github/stars/Andi-wink/Tandem?style=flat"></a>
+    <a href="https://github.com/Andi-wink/Tandem/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue" alt="License"></a>
+    <a href="#"><img src="https://img.shields.io/badge/Platforms-Windows_|_macOS-white" alt="Platforms"></a>
+    </p>
 </div>
 
 ---
 
-> **🎉 New: Tandem PRO Available** - Looking for enhanced accuracy and advanced features? Check out our professional-grade solution with custom summary templates, advanced exports (PDF, DOCX), auto-meeting detection, built-in GDPR compliance, and many more. **This Community Edition remains forever free & open source**. [Learn more about PRO →](https://tandem.ai/pro/)
+A privacy-first AI co-pilot that captures, transcribes, and collaborates in real time on every call — entirely on your machine. Built for consultants and freelancers on client-facing calls who need an intelligent partner without compromising on privacy.
 
----
+**Fork of [Zackriya-Solutions/meeting-minutes](https://github.com/Zackriya-Solutions/meeting-minutes) (Meetily)** — extended with an AI assistant panel, PII anonymization, Claude Code handoff, screenshot/clipboard capture, and a redesigned UI.
 
-<details>
-<summary>Table of Contents</summary>
+<p align="center">
+    <img src="docs/demo_small.gif" width="650" alt="Tandem Demo" />
+</p>
 
-- [Introduction](#introduction)
-- [Why Tandem?](#why-tandem)
-- [Features](#features)
-- [Installation](#installation)
-- [Key Features in Action](#key-features-in-action)
-- [System Architecture](#system-architecture)
-- [For Developers](#for-developers)
-- [Tandem PRO](#tandem-pro)
-- [Contributing](#contributing)
-- [License](#license)
+## What's Different from Upstream
 
-</details>
+This fork adds significant new capabilities on top of the Meetily base:
 
-## Introduction
-
-Tandem is a privacy-first AI meeting assistant that runs entirely on your local machine. It captures your meetings, transcribes them in real-time, and generates summaries, all without sending any data to the cloud. This makes it the perfect solution for professionals and enterprises who need to maintain complete control over their sensitive information.
-
-## Why Tandem?
-
-While there are many meeting transcription tools available, this solution stands out by offering:
-
-- **Privacy First:** All processing happens locally on your device.
-- **Cost-Effective:** Uses open-source AI models instead of expensive APIs.
-- **Flexible:** Works offline and supports multiple meeting platforms.
-- **Customizable:** Self-host and modify for your specific needs.
-
-<details>
-<summary>The Privacy Problem</summary>
-
-Meeting AI tools create significant privacy and compliance risks across all sectors:
-
-- **$4.4M average cost per data breach** (IBM 2024)
-- **€5.88 billion in GDPR fines** issued by 2025
-- **400+ unlawful recording cases** filed in California this year
-
-Whether you're a defense consultant, enterprise executive, legal professional, or healthcare provider, your sensitive discussions shouldn't live on servers you don't control. Cloud meeting tools promise convenience but deliver privacy nightmares with unclear data storage practices and potential unauthorized access.
-
-**Tandem solves this:** Complete data sovereignty on your infrastructure, zero vendor lock-in, and full control over your sensitive conversations.
-
-</details>
+| Feature | Description |
+|---------|-------------|
+| **AI Assistant Panel** | Claude-powered side panel with SSE streaming, context basket, and conversation history |
+| **PII Anonymization** | On-device entity detection (Microsoft Presidio + spaCy) with surrogate generation |
+| **Claude Code Handoff** | Say `@code <task>` during a meeting to hand off work to Claude Code in a terminal |
+| **Screenshot & Clipboard Capture** | `Alt+Shift+S` for screenshots, `Alt+Shift+V` for clipboard — attached to meeting context |
+| **Voice Commands** | Slash commands triggered by voice during recording |
+| **Live Transcript Files** | Rolling `.tandem/live-transcript.md` for external tool consumption |
+| **Redesigned UI** | Dark-first Vercel/Stripe-inspired interface with resizable panels |
 
 ## Features
 
-- **Local First:** All processing is done on your machine. No data ever leaves your computer.
-- **Real-time Transcription:** Get a live transcript of your meeting as it happens.
-- **AI-Powered Summaries:** Generate summaries of your meetings using powerful language models.
-- **Multi-Platform:** Works on macOS, Windows, and Linux.
-- **Open Source:** Tandem is open source and free to use.
-- **Flexible AI Provider Support:** Choose from Ollama (local), Claude, Groq, OpenRouter, or use your own OpenAI-compatible endpoint.
+- **100% Local Processing** — Transcription, audio capture, and storage never leave your machine
+- **Real-time Transcription** — Whisper.cpp with GPU acceleration (Metal, CUDA, Vulkan)
+- **AI Summaries** — Ollama (local), Claude, Groq, or OpenRouter
+- **Professional Audio Mixing** — RMS-based ducking, simultaneous mic + system capture
+- **PII Anonymization** — Presidio + spaCy NER detects and replaces sensitive entities before any cloud call
+- **AI Assistant** — Claude Agent SDK with streaming responses, diagram generation, and context-aware Q&A
+- **Cross-Platform** — Windows (WASAPI) and macOS (ScreenCaptureKit)
 
-## Installation
+## Tech Stack
 
-### 🪟 **Windows**
+| Layer | Technology |
+|-------|-----------|
+| Desktop App | Tauri 2.x (Rust) + Next.js 14 + React 18 |
+| Audio | cpal, whisper-rs, Silero VAD, professional mixing pipeline |
+| Transcription | Whisper.cpp — local, GPU-accelerated |
+| Backend | FastAPI + SQLite (aiosqlite) |
+| AI Assistant | Claude Agent SDK (Python) with SSE streaming |
+| PII | Microsoft Presidio + spaCy NER |
+| LLM | Ollama (local), Claude, Groq, OpenRouter |
+| UI | Tailwind CSS, shadcn/ui, dark mode default |
 
-1. Download the latest `x64-setup.exe` from [Releases](https://github.com/Zackriya-Solutions/meeting-minutes/releases/latest)
-2. Run the installer
+## Getting Started
 
-### 🍎 **macOS**
+### Prerequisites
 
-1. Download `tandem_0.2.1_aarch64.dmg` from [Releases](https://github.com/Zackriya-Solutions/meeting-minutes/releases/latest)
-2. Open the downloaded `.dmg` file
-3. Drag **Tandem** to your Applications folder
-4. Open **Tandem** from Applications folder
+- **Rust** 1.75+ with stable toolchain
+- **Node.js** 22+ with pnpm
+- **Python** 3.12+ with venv
+- **LLVM** 18+ (for whisper-rs bindgen)
+- **GPU drivers** (optional): CUDA 11.8+ for NVIDIA, Vulkan for AMD/Intel
 
-### 🐧 **Linux**
-
-Build from source following our detailed guides:
-
-- [Building on Linux](docs/building_in_linux.md)
-- [General Build Instructions](docs/BUILDING.md)
-
-**Quick start:**
+### Quick Start
 
 ```bash
-git clone https://github.com/Zackriya-Solutions/meeting-minutes
-cd meeting-minutes/frontend
+# Clone the repo
+git clone https://github.com/Andi-wink/Tandem.git
+cd Tandem
+
+# Backend
+cd backend
+python -m venv .venv
+# Windows: .venv\Scripts\activate  |  macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+python -m uvicorn app.main:app --host 0.0.0.0 --port 5167
+
+# Frontend (new terminal)
+cd frontend
 pnpm install
-./build-gpu.sh
+pnpm run tauri:dev          # CPU
+pnpm run tauri:dev:cuda     # NVIDIA GPU
+pnpm run tauri:dev:metal    # macOS Metal
+pnpm run tauri:dev:vulkan   # AMD/Intel GPU
 ```
 
-## Key Features in Action
+### Service Endpoints
 
-### 🎯 Local Transcription
+| Service | URL |
+|---------|-----|
+| Frontend Dev | http://localhost:3118 |
+| Backend API | http://localhost:5167 |
+| API Docs | http://localhost:5167/docs |
 
-Transcribe meetings entirely on your device using **Whisper** or **Parakeet** models. No cloud required.
+## Architecture
 
-<p align="center">
-    <img src="docs/home.png" width="650" style="border-radius: 10px;" alt="Tandem Demo" />
-</p>
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                      Frontend (Tauri Desktop App)                     │
+│   Next.js UI  ←→  Rust Backend (Audio + SQLite)  ←→  Whisper Engine  │
+└───────────────────────────────┬──────────────────────────────────────┘
+                                │ HTTP / SSE
+┌───────────────────────────────┴──────────────────────────────────────┐
+│                        Backend (FastAPI)                              │
+│   SQLite  ←→  Meeting Manager  ←→  LLM Providers                    │
+│               Claude Agent SDK     Presidio Anonymizer               │
+└──────────────────────────────────────────────────────────────────────┘
+```
 
-### 🤖 AI-Powered Summaries
+Two separate SQLite databases: Rust frontend (meetings, transcripts, settings via sqlx) and Python backend (summaries, processes via aiosqlite).
 
-Generate meeting summaries with your choice of AI provider. **Ollama** (local) is recommended, with support for Claude, Groq, OpenRouter, and OpenAI.
+For detailed architecture, see [CLAUDE.md](CLAUDE.md) and [docs/architecture.md](docs/architecture.md).
 
-<p align="center">
-    <img src="docs/summary.png" width="650" style="border-radius: 10px;" alt="Summary generation" />
-</p>
+## Development
 
-<p align="center">
-    <img src="docs/editor1.png" width="650" style="border-radius: 10px;" alt="Editor Summary generation" />
-</p>
+See [CLAUDE.md](CLAUDE.md) for comprehensive development guide including:
+- Build commands for all platforms
+- Audio pipeline deep-dive
+- Tauri command/event patterns
+- Project tracking files (`feature_list.json`, `bug_list.json`)
+- Git worktree workflow
 
-### 🔒 Privacy-First Design
+### Verification (run after every change)
 
-All data stays on your machine. Transcription models, recordings, and transcripts are stored locally.
-
-<p align="center">
-    <img src="docs/settings.png" width="650" style="border-radius: 10px;" alt="Local Transcription and storage" />
-</p>
-
-### 🌐 Custom OpenAI Endpoint Support
-
-Use your own OpenAI-compatible endpoint for AI summaries. Perfect for organizations with custom AI infrastructure or preferred providers.
-
-<p align="center">
-    <img src="docs/custom.png" width="650" style="border-radius: 10px;" alt="Custom OpenAI Endpoint Configuration" />
-</p>
-
-### 🎙️ Professional Audio Mixing
-
-Capture microphone and system audio simultaneously with intelligent ducking and clipping prevention.
-
-<p align="center">
-    <img src="docs/audio.png" width="650" style="border-radius: 10px;" alt="Device selection" />
-</p>
-
-### ⚡ GPU Acceleration
-
-Built-in support for hardware acceleration across platforms:
-
-- **macOS**: Apple Silicon (Metal) + CoreML
-- **Windows/Linux**: NVIDIA (CUDA), AMD/Intel (Vulkan)
-
-Automatically enabled at build time - no configuration needed.
-
-## System Architecture
-
-Tandem is a single, self-contained application built with [Tauri](https://tauri.app/). It uses a Rust-based backend to handle all the core logic, and a Next.js frontend for the user interface.
-
-For more details, see the [Architecture documentation](docs/architecture.md).
-
-## For Developers
-
-If you want to contribute to Tandem or build it from source, you'll need to have Rust and Node.js installed. For detailed build instructions, please see the [Building from Source guide](docs/BUILDING.md).
-
-## Tandem Pro
-
-<p align="center">
-    <img src="docs/pv2.1.png" width="650" style="border-radius: 10px;" alt="Upcoming version" />
-</p>
-
-**Tandem PRO** is a professional-grade solution with enhanced accuracy and advanced features for serious users and teams. Built on a different codebase with superior transcription models and enterprise-ready capabilities.
-
-### Key Advantages Over Community Edition:
-
-- **Enhanced Accuracy**: Superior transcription models for professional-grade accuracy
-- **Custom Summary Templates**: Tailor summaries to your specific workflow and needs
-- **Advanced Export Options**: PDF, DOCX, and Markdown exports with formatting
-- **Auto-detect and Join Meetings**: Automatic meeting detection and joining
-- **Speaker Identification**: Distinguish between speakers automatically *(Coming Soon)*
-- **Chat with Meetings**: AI-powered meeting insights and queries *(Coming Soon)*
-- **Calendar Integration**: Seamless integration with your calendar *(Coming Soon)*
-- **Self-Hosted Deployment**: Deploy on your own infrastructure for teams
-- **GDPR Compliance Built-In**: Privacy by design architecture with complete audit trails
-- **Priority Support**: Dedicated support for PRO users
-
-### Who is PRO for?
-
-- **Professionals** who need the highest accuracy for critical meetings
-- **Teams and organizations** (2-100 users) requiring self-hosted deployment
-- **Power users** who need advanced export formats and custom workflows
-- **Compliance-focused organizations** requiring GDPR readiness
-
-> **Note:** Tandem Community Edition remains **free & open source forever** with local transcription, AI summaries, and core features. PRO is a separate professional solution for users who need enhanced accuracy and advanced capabilities.
-
-For organizations needing 100+ users or managed compliance solutions, explore [Tandem Enterprise](https://tandem.ai/enterprise/).
-
-**Learn more about pricing and features:** [https://tandem.ai/pro/](https://tandem.ai/pro/)
+```bash
+cd frontend && pnpm tsc --noEmit      # TypeScript
+cd frontend/src-tauri && cargo check   # Rust
+cd backend && python -m pytest -v      # Python
+```
 
 ## Contributing
 
-We welcome contributions from the community! If you have any questions or suggestions, please open an issue or submit a pull request. Please follow the established project structure and guidelines. For more details, refer to the [CONTRIBUTING.md](CONTRIBUTING.md) file.
-
-Thanks for all the contributions. Our community is what makes this project possible.
+Contributions welcome. Please open an issue or submit a pull request. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-MIT License - Feel free to use this project for your own purposes.
+MIT License — see [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-- We borrowed some code from [Whisper.cpp](https://github.com/ggerganov/whisper.cpp).
-- We borrowed some code from [Screenpipe](https://github.com/mediar-ai/screenpipe).
-- We borrowed some code from [transcribe-rs](https://crates.io/crates/transcribe-rs).
-- Thanks to **NVIDIA** for developing the **Parakeet** model.
-- Thanks to [istupakov](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx) for providing the **ONNX conversion** of the Parakeet model.
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=Zackriya-Solutions/meeting-minutes&type=Date)](https://star-history.com/#Zackriya-Solutions/meeting-minutes&Date)
+- Forked from [Zackriya-Solutions/meeting-minutes](https://github.com/Zackriya-Solutions/meeting-minutes) (Meetily)
+- [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) for local transcription
+- [Screenpipe](https://github.com/mediar-ai/screenpipe) for audio capture patterns
+- NVIDIA for the Parakeet model
+- [istupakov](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx) for the ONNX Parakeet conversion
