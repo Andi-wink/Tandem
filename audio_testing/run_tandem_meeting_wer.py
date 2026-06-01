@@ -32,7 +32,7 @@ OUT_DIR = Path(__file__).parent / "parakeet_out"
 
 # Mirror the SHIPPED Rust engine config (post #1/#3/#4/#5 changes).
 SHIPPED_VAD = VAD_SENSITIVE          # vad.rs + pipeline.rs redemption
-SHIPPED_MIN_SAMPLES = 12 * 16000     # MIN_TRANSCRIPTION_SAMPLES (#5)
+SHIPPED_MIN_SAMPLES = 25 * 16000     # MIN_TRANSCRIPTION_SAMPLES (#5; 12s->25s, exp E6)
 
 
 def transcribe_clip(model, stem, write_hyp=False):

@@ -959,13 +959,14 @@ impl AudioPipeline {
         Ok(())
     }
 
-    /// Target samples before sending to the engine (12 seconds at 16kHz).
-    /// #5: raised from 1.5s to 12s to give the Parakeet transducer more acoustic
-    /// context, which measurably cut substitutions/deletions on long monologue
-    /// (clip_04 24%->21%, clip_10 9%->5%). Responsiveness is preserved in practice
-    /// because SILENCE_GAP_FLUSH_SECS flushes at every natural pause; 12s is only the
-    /// cap for uninterrupted speech. Lower this if mid-monologue latency feels high.
-    const MIN_TRANSCRIPTION_SAMPLES: usize = 192000;
+    /// Target samples before sending to the engine (25 seconds at 16kHz).
+    /// #5/E6: the Parakeet transducer is markedly more accurate with more acoustic
+    /// context. Swept window sizes against ground truth (audio_testing): pooled WER
+    /// 8s 28.6% / 12s 26.1% / 20s 25.7% / 25s 24.6% / 30s 24.6% / 60s 29.9% (the 60s
+    /// single buffer re-triggers TDT runaways). 25s is the low end of the 25-30s
+    /// optimum. Responsiveness is preserved because SILENCE_GAP_FLUSH_SECS flushes at
+    /// every natural pause; 25s is only the cap for uninterrupted monologue.
+    const MIN_TRANSCRIPTION_SAMPLES: usize = 400000;
 
     /// Maximum silence gap (seconds) before flushing a partial buffer.
     /// 1.2s catches natural end-of-sentence pauses without cutting mid-utterance.
