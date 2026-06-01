@@ -22,6 +22,12 @@ pub struct TranscriptSegment {
     pub display_time: String,   // Formatted time for display like "[02:15]"
     pub confidence: f32,
     pub sequence_id: u64,
+    #[serde(default = "default_source")]
+    pub source: String,         // "Local" (mic) or "Remote" (system audio)
+}
+
+fn default_source() -> String {
+    "Local".to_string()
 }
 
 /// Meeting metadata structure
@@ -129,6 +135,7 @@ impl RecordingSaver {
             display_time: "[00:00]".to_string(),
             confidence: 1.0,
             sequence_id: 0,
+            source: default_source(),
         };
         self.add_transcript_segment(segment);
     }

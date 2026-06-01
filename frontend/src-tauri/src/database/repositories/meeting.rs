@@ -363,6 +363,7 @@ mod tests {
             audio_start_time: Some(0.0),
             audio_end_time: Some(2.5),
             duration: Some(2.5),
+            source: None,
         }];
         let meeting_id = TranscriptsRepository::save_transcript(&pool, "Test", &segments, None)
             .await
@@ -398,6 +399,7 @@ mod tests {
             audio_start_time: None,
             audio_end_time: None,
             duration: None,
+            source: None,
         }];
         let meeting_id =
             TranscriptsRepository::save_transcript(&pool, "Meeting", &segments, None)
@@ -455,6 +457,7 @@ mod tests {
                 audio_start_time: Some(i as f64),
                 audio_end_time: Some(i as f64 + 1.0),
                 duration: Some(1.0),
+                source: None,
             })
             .collect();
         let meeting_id =
