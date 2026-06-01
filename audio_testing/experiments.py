@@ -15,7 +15,7 @@ from silero_vad import vad_segments_for_clip, assemble_buffers
 from run_ablation import VAD_SENSITIVE
 
 SHIPPED_VAD = VAD_SENSITIVE
-MIN_S = 12 * 16000
+MIN_S = 25 * 16000   # current shipped window (E6)
 GAP_MS = 1200
 
 
@@ -70,6 +70,64 @@ class ParakeetTDT(ParakeetModel):
                 if len(ts) >= 10 and len(set(ts[-10:])) == 1:
                     t += 1
         return tokens, ts
+
+    # ---- E4: time-synchronous RNNT/TDT beam search ----
+    def _joint_logprobs(self, enc_frame, last_token, s1, s2):
+        enc = enc_frame.reshape(1, -1, 1).astype(np.float32)
+        target = self._np("targets", [[last_token]], "int32")
+        tlen = self._np("target_length", [1], "int32")
+        logits, n1, n2 = self.decoder.run(
+            ["outputs", "output_states_1", "output_states_2"],
+            {"encoder_outputs": enc, "targets": target, "target_length": tlen,
+             "input_states_1": s1, "input_states_2": s2})
+        v = np.asarray(logits).reshape(-1)[: self.vocab_size].astype(np.float64)
+        v -= v.max()
+        lp = v - np.log(np.exp(v).sum())
+        return lp, n1, n2
+
+    def transcribe_beam(self, samples, beam=4, max_symbols=3):
+        wav = np.asarray(samples, dtype=np.float32).reshape(1, -1)
+        wl = np.array([wav.shape[1]], dtype=np.int64)
+        feats, fl = self.preprocessor.run(["features", "features_lens"],
+                                          {"waveforms": wav, "waveforms_lens": wl})
+        enc, el = self.encoder.run(["outputs", "encoded_lengths"],
+                                   {"audio_signal": feats, "length": fl})
+        enc = np.transpose(enc, (0, 2, 1))[0]
+        n = int(el[0])
+        blank = self.blank_idx
+        z1, z2 = self._zero_state("input_states_1"), self._zero_state("input_states_2")
+        # hyp = (score, tokens, ts, last_token, s1, s2)
+        hyps = [(0.0, [], [], blank, z1, z2)]
+        for t in range(n):
+            ef = enc[t]
+            kept = []        # took blank at t -> advance to t+1
+            live = list(hyps)
+            for _ in range(max_symbols):
+                cand = []
+                for (sc, toks, ts, last, s1, s2) in live:
+                    lp, nn1, nn2 = self._joint_logprobs(ef, last, s1, s2)
+                    kept.append((sc + lp[blank], toks, ts, last, s1, s2))
+                    order = np.argsort(lp)[::-1]
+                    taken = 0
+                    for tok in order:
+                        if tok == blank:
+                            continue
+                        cand.append((sc + lp[tok], toks + [int(tok)], ts + [t],
+                                     int(tok), nn1, nn2))
+                        taken += 1
+                        if taken >= beam:
+                            break
+                if not cand:
+                    break
+                cand.sort(key=lambda h: h[0], reverse=True)
+                live = cand[:beam]
+            for (sc, toks, ts, last, s1, s2) in live:  # force blank after cap
+                lp, _, _ = self._joint_logprobs(ef, last, s1, s2)
+                kept.append((sc + lp[blank], toks, ts, last, s1, s2))
+            kept.sort(key=lambda h: h[0], reverse=True)
+            hyps = kept[:beam]
+        best = max(hyps, key=lambda h: h[0])
+        return self._decode_tokens(best[1], best[2])[0]
 
 
 def _join(parts):
@@ -142,11 +200,18 @@ def variant_e5_durations(model, samples, segs):
                  for b in buffers_concat(samples, segs))
 
 
+def variant_e4_beam(model, samples, segs):
+    """E4: time-synchronous beam search (beam=4) instead of greedy argmax."""
+    return _join(postprocess(model.transcribe_beam(np.asarray(b, dtype=np.float32)))
+                 for b in buffers_concat(samples, segs))
+
+
 VARIANTS = {
     "baseline": variant_baseline,
     "e1_contiguous": variant_e1_contiguous,
     "e2_overlap": variant_e2_overlap,
     "e5_durations": variant_e5_durations,
+    "e4_beam": variant_e4_beam,
 }
 
 
