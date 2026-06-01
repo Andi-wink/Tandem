@@ -1,7 +1,9 @@
 // src/audio/mod.rs
+pub mod aec;
 pub mod audio_processing;
 pub mod encode;
 pub mod ffmpeg;
+pub mod raw_track_saver;
 pub mod vad;
 
 // Modularized device management

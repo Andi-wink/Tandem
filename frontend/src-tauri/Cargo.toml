@@ -96,6 +96,9 @@ ebur128 = "0.1"
 # Noise suppression - RNNoise-based neural network noise reduction
 nnnoiseless = "0.5"
 
+# Acoustic Echo Cancellation - pure-Rust port of WebRTC APM (AEC3)
+sonora = "0.1.0"
+
 # Speech recognition and async utilities
 # NOTE: whisper-rs is declared in platform-specific sections below (macOS/Windows/Linux)
 # to ensure correct GPU features are enabled per platform

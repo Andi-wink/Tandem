@@ -8,7 +8,9 @@ use crate::{perf_debug, batch_audio_metric};
 use super::batch_processor::AudioMetricsBatcher;
 use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 
+use super::aec::EchoCanceller;
 use super::devices::AudioDevice;
+use super::raw_track_saver::RawTrackSaver;
 use super::recording_state::{AudioChunk, AudioError, RecordingState, DeviceType};
 use super::audio_processing::{audio_to_mono, LoudnessNormalizer, NoiseSuppressionProcessor, HighPassFilter};
 use super::vad::{ContinuousVadProcessor};
@@ -679,7 +681,10 @@ pub struct AudioPipeline {
     receiver: mpsc::UnboundedReceiver<AudioChunk>,
     transcription_sender: mpsc::UnboundedSender<AudioChunk>,
     state: Arc<RecordingState>,
-    vad_processor: ContinuousVadProcessor,
+    vad_mic: ContinuousVadProcessor,
+    vad_system: ContinuousVadProcessor,
+    echo_canceller: EchoCanceller,
+    raw_track_saver: Option<RawTrackSaver>,
     sample_rate: u32,
     chunk_id_counter: u64,
     // Performance optimization: reduce logging frequency
@@ -692,11 +697,17 @@ pub struct AudioPipeline {
     mixer: ProfessionalAudioMixer,
     // Recording sender for pre-mixed audio
     recording_sender_for_mixed: Option<mpsc::UnboundedSender<AudioChunk>>,
-    // Transcription buffer: accumulate VAD segments until >= MIN_TRANSCRIPTION_SAMPLES
-    // before sending to Whisper. Short chunks (<3s) produce poor transcription quality.
-    transcription_buffer: Vec<f32>,
-    transcription_buffer_start_ts: f64,
-    transcription_buffer_last_activity: std::time::Instant,
+    // Per-stream transcription buffers: accumulate VAD segments until
+    // >= MIN_TRANSCRIPTION_SAMPLES before sending to Whisper. Short chunks
+    // (<1.5s) produce poor transcription quality. Mic and system are
+    // accumulated independently so a flush on one stream doesn't truncate
+    // the other.
+    mic_transcription_buffer: Vec<f32>,
+    mic_transcription_buffer_start_ts: f64,
+    mic_transcription_buffer_last_activity: std::time::Instant,
+    system_transcription_buffer: Vec<f32>,
+    system_transcription_buffer_start_ts: f64,
+    system_transcription_buffer_last_activity: std::time::Instant,
 }
 
 impl AudioPipeline {
@@ -710,6 +721,7 @@ impl AudioPipeline {
         mic_device_kind: super::device_detection::InputDeviceKind,
         system_device_name: String,
         system_device_kind: super::device_detection::InputDeviceKind,
+        raw_track_folder: Option<std::path::PathBuf>,
     ) -> Result<Self> {
         // Log device characteristics for adaptive buffering
         info!("🎛️ AudioPipeline initializing with device characteristics:");
@@ -731,9 +743,36 @@ impl AudioPipeline {
         // (must remain > post_speech_pad of 300ms set in vad.rs).
         let redemption_time = if cfg!(target_os = "macos") { 900 } else { 500 };
 
-        let vad_processor = ContinuousVadProcessor::new(sample_rate, redemption_time)
-            .map_err(|e| anyhow::anyhow!("Failed to create VAD processor: {}", e))?;
-        info!("VAD-driven pipeline: VAD segments will be sent directly to Whisper (no time-based accumulation)");
+        let vad_mic = ContinuousVadProcessor::new(sample_rate, redemption_time)
+            .map_err(|e| anyhow::anyhow!("Failed to create mic VAD processor: {}", e))?;
+        let vad_system = ContinuousVadProcessor::new(sample_rate, redemption_time)
+            .map_err(|e| anyhow::anyhow!("Failed to create system VAD processor: {}", e))?;
+        info!("VAD-driven pipeline: dual VAD instances (mic + system) feed separate transcription streams");
+
+        let echo_canceller = EchoCanceller::new(sample_rate)
+            .map_err(|e| anyhow::anyhow!("Failed to create echo canceller: {}", e))?;
+
+        let raw_track_saver = if RawTrackSaver::is_enabled() {
+            match raw_track_folder.as_ref() {
+                Some(folder) => match RawTrackSaver::new(folder, sample_rate) {
+                    Ok(saver) => {
+                        info!("TANDEM_SAVE_RAW_TRACKS=1: raw debug WAV tracks → {}",
+                              folder.display());
+                        Some(saver)
+                    }
+                    Err(e) => {
+                        warn!("TANDEM_SAVE_RAW_TRACKS=1 but RawTrackSaver init failed: {}", e);
+                        None
+                    }
+                },
+                None => {
+                    warn!("TANDEM_SAVE_RAW_TRACKS=1 but no meeting folder available; raw tracks disabled");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         // Initialize professional audio mixing components
         let ring_buffer = AudioMixerRingBuffer::new(sample_rate);
@@ -746,7 +785,10 @@ impl AudioPipeline {
             receiver,
             transcription_sender,
             state,
-            vad_processor,
+            vad_mic,
+            vad_system,
+            echo_canceller,
+            raw_track_saver,
             sample_rate,
             chunk_id_counter: 0,
             // Performance optimization: reduce logging frequency
@@ -758,12 +800,16 @@ impl AudioPipeline {
             ring_buffer,
             mixer,
             recording_sender_for_mixed: None,  // Will be set by manager
-            // Buffer VAD segments to ensure Whisper gets >= 3s of audio
-            transcription_buffer: Vec::with_capacity(48000), // Pre-allocate 3s at 16kHz
-            transcription_buffer_start_ts: 0.0,
-            transcription_buffer_last_activity: std::time::Instant::now(),
+            // Per-stream transcription buffers (1.5s @ 16kHz pre-allocated)
+            mic_transcription_buffer: Vec::with_capacity(48000),
+            mic_transcription_buffer_start_ts: 0.0,
+            mic_transcription_buffer_last_activity: std::time::Instant::now(),
+            system_transcription_buffer: Vec::with_capacity(48000),
+            system_transcription_buffer_start_ts: 0.0,
+            system_transcription_buffer_last_activity: std::time::Instant::now(),
         })
     }
+
 
     /// Run the VAD-driven audio processing pipeline
     pub async fn run(mut self) -> Result<()> {
@@ -821,73 +867,48 @@ impl AudioPipeline {
                     // System audio remains raw
                     self.ring_buffer.add_samples(chunk.device_type.clone(), chunk.data);
 
-                    // STEP 2: Mix audio in fixed windows when both streams have sufficient data
+                    // STEP 2: Process aligned windows when both streams have data
                     while self.ring_buffer.can_mix() {
-                        if let Some((mic_window, sys_window)) = self.ring_buffer.extract_window() {
-                            // Simple mixing without aggressive ducking
-                            let mixed_clean = self.mixer.mix_window(&mic_window, &sys_window);
-
-                            // NO POST-GAIN NEEDED: Microphone already normalized by EBU R128 to -16 LUFS
-                            // This is voice/podcast-standard loudness (7 dB louder than broadcast -23 LUFS)
-                            // System audio at natural levels
-                            // Previous 2x gain was causing excessive limiting/distortion
-                            let mixed_with_gain = mixed_clean;
-
-                            // Clamp to [-1.0, 1.0] before VAD — Silero requires normalized samples.
-                            // Mixed audio can exceed this range when mic (EBU R128 normalized)
-                            // and system audio are summed together.
-                            let vad_input: Vec<f32> = mixed_with_gain.iter()
-                                .map(|&s| s.clamp(-1.0, 1.0))
-                                .collect();
-
-                            // STEP 3: Send mixed audio through VAD, accumulate into buffer
-                            // VAD segments are buffered until >= 3 seconds to give Whisper
-                            // enough acoustic context for accurate transcription.
-                            match self.vad_processor.process_audio(&vad_input) {
-                                Ok(speech_segments) => {
-                                    // Publish audio-elapsed time so screenshot/clipboard
-                                    // timestamps stay aligned with transcript timestamps
-                                    // (both now share the same VAD audio clock).
-                                    crate::audio::recording_commands::update_audio_elapsed_secs(
-                                        self.vad_processor.audio_elapsed_secs(),
-                                    );
-                                    for segment in speech_segments {
-                                        let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
-
-                                        if segment.samples.len() >= 800 {  // Minimum 50ms at 16kHz
-                                            // Record timestamp of first sample in this buffer
-                                            if self.transcription_buffer.is_empty() {
-                                                self.transcription_buffer_start_ts = segment.start_timestamp_ms / 1000.0;
-                                            }
-
-                                            // Append VAD speech samples to accumulation buffer
-                                            self.transcription_buffer.extend_from_slice(&segment.samples);
-                                            self.transcription_buffer_last_activity = std::time::Instant::now();
-
-                                            perf_debug!("🎤 Buffered VAD segment: {:.1}ms ({} samples), buffer total: {} samples ({:.1}s)",
-                                                  duration_ms, segment.samples.len(),
-                                                  self.transcription_buffer.len(),
-                                                  self.transcription_buffer.len() as f64 / 16000.0);
-
-                                            // Flush buffer to Whisper when we have enough audio
-                                            if self.transcription_buffer.len() >= Self::MIN_TRANSCRIPTION_SAMPLES {
-                                                self.flush_transcription_buffer();
-                                            }
-                                        } else {
-                                            debug!("⏭️ Dropping short VAD segment: {:.1}ms ({} samples < 800)",
-                                                   duration_ms, segment.samples.len());
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!("⚠️ VAD error: {}", e);
-                                }
+                        if let Some((mut mic_window, sys_window)) = self.ring_buffer.extract_window() {
+                            // STEP 2a: Save raw mic / system tracks for offline benchmarking
+                            if let Some(ref mut saver) = self.raw_track_saver {
+                                saver.write_mic_raw(&mic_window);
+                                saver.write_system(&sys_window);
                             }
 
-                            // STEP 4: Send mixed audio for recording (WAV file)
+                            // STEP 2b: AEC — subtract system audio (reference) from mic
+                            // mic_window is modified in place; carry-over inside EchoCanceller
+                            // handles 10ms frame alignment for arbitrary window lengths.
+                            self.echo_canceller.process(&mut mic_window, &sys_window);
+
+                            if let Some(ref mut saver) = self.raw_track_saver {
+                                saver.write_mic_clean(&mic_window);
+                            }
+
+                            // STEP 3: Per-stream VAD on cleaned mic + raw system
+                            let mic_vad_input: Vec<f32> = mic_window.iter()
+                                .map(|&s| s.clamp(-1.0, 1.0))
+                                .collect();
+                            self.process_stream_vad(&mic_vad_input, DeviceType::Microphone);
+
+                            let sys_vad_input: Vec<f32> = sys_window.iter()
+                                .map(|&s| s.clamp(-1.0, 1.0))
+                                .collect();
+                            self.process_stream_vad(&sys_vad_input, DeviceType::System);
+
+                            // Publish audio-elapsed time from mic VAD so screenshot/clipboard
+                            // timestamps stay aligned with transcript timestamps. Both VAD
+                            // instances share the same input cadence, so either clock works.
+                            crate::audio::recording_commands::update_audio_elapsed_secs(
+                                self.vad_mic.audio_elapsed_secs(),
+                            );
+
+                            // STEP 4: Mix cleaned mic + system for the saved recording file
+                            let mixed_clean = self.mixer.mix_window(&mic_window, &sys_window);
+
                             if let Some(ref sender) = self.recording_sender_for_mixed {
                                 let recording_chunk = AudioChunk {
-                                    data: mixed_with_gain,
+                                    data: mixed_clean,
                                     sample_rate: self.sample_rate,
                                     timestamp: chunk.timestamp,
                                     chunk_id: self.chunk_id_counter,
@@ -903,19 +924,28 @@ impl AudioPipeline {
                     break;
                 }
                 Err(_) => {
-                    // Timeout (no audio for 50ms) — check if transcription buffer
-                    // has been idle long enough to flush a partial chunk to Whisper.
-                    // This ensures speech followed by a pause gets transcribed promptly
-                    // rather than waiting indefinitely for more audio to fill the buffer.
-                    if !self.transcription_buffer.is_empty()
-                        && self.transcription_buffer_last_activity.elapsed().as_secs_f64()
+                    // Timeout (no audio for 50ms) — check each stream's buffer
+                    // independently for silence-gap flush. Without per-stream tracking,
+                    // activity on one stream would delay flushing the other.
+                    if !self.mic_transcription_buffer.is_empty()
+                        && self.mic_transcription_buffer_last_activity.elapsed().as_secs_f64()
                             >= Self::SILENCE_GAP_FLUSH_SECS
                     {
-                        info!("⏱️ Silence gap ({:.1}s) exceeded — flushing partial transcription buffer ({} samples, {:.1}s)",
-                              self.transcription_buffer_last_activity.elapsed().as_secs_f64(),
-                              self.transcription_buffer.len(),
-                              self.transcription_buffer.len() as f64 / 16000.0);
-                        self.flush_transcription_buffer();
+                        info!("⏱️ Mic silence gap ({:.1}s) exceeded — flushing partial mic buffer ({} samples, {:.1}s)",
+                              self.mic_transcription_buffer_last_activity.elapsed().as_secs_f64(),
+                              self.mic_transcription_buffer.len(),
+                              self.mic_transcription_buffer.len() as f64 / 16000.0);
+                        self.flush_transcription_buffer(DeviceType::Microphone);
+                    }
+                    if !self.system_transcription_buffer.is_empty()
+                        && self.system_transcription_buffer_last_activity.elapsed().as_secs_f64()
+                            >= Self::SILENCE_GAP_FLUSH_SECS
+                    {
+                        info!("⏱️ System silence gap ({:.1}s) exceeded — flushing partial system buffer ({} samples, {:.1}s)",
+                              self.system_transcription_buffer_last_activity.elapsed().as_secs_f64(),
+                              self.system_transcription_buffer.len(),
+                              self.system_transcription_buffer.len() as f64 / 16000.0);
+                        self.flush_transcription_buffer(DeviceType::System);
                     }
                     continue;
                 }
@@ -942,73 +972,153 @@ impl AudioPipeline {
     /// Reduced from 2.0s for faster transcript appearance.
     const SILENCE_GAP_FLUSH_SECS: f64 = 1.2;
 
-    /// Send accumulated transcription buffer to Whisper and reset.
-    /// Called when buffer >= MIN_TRANSCRIPTION_SAMPLES, on silence gap, or on recording stop.
-    fn flush_transcription_buffer(&mut self) {
-        if self.transcription_buffer.is_empty() {
+    /// Run a window through the per-stream VAD and accumulate speech segments
+    /// into the matching transcription buffer. Flushes when the buffer reaches
+    /// MIN_TRANSCRIPTION_SAMPLES. Segment timestamps come from the VAD's
+    /// internal audio-elapsed clock, so the chunk wall-clock timestamp is not
+    /// needed here.
+    fn process_stream_vad(
+        &mut self,
+        vad_input: &[f32],
+        device_type: DeviceType,
+    ) {
+        let vad_result = match device_type {
+            DeviceType::Microphone => self.vad_mic.process_audio(vad_input),
+            DeviceType::System => self.vad_system.process_audio(vad_input),
+        };
+
+        let speech_segments = match vad_result {
+            Ok(segments) => segments,
+            Err(e) => {
+                warn!("⚠️ {:?} VAD error: {}", device_type, e);
+                return;
+            }
+        };
+
+        for segment in speech_segments {
+            let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
+            if segment.samples.len() < 800 {
+                debug!("⏭️ Dropping short {:?} VAD segment: {:.1}ms ({} samples < 800)",
+                       device_type, duration_ms, segment.samples.len());
+                continue;
+            }
+
+            let (buffer, start_ts, last_activity) = self.buffer_for(&device_type);
+            if buffer.is_empty() {
+                *start_ts = segment.start_timestamp_ms / 1000.0;
+            }
+            buffer.extend_from_slice(&segment.samples);
+            *last_activity = std::time::Instant::now();
+            let buffer_samples = buffer.len();
+
+            perf_debug!("🎤 Buffered {:?} VAD segment: {:.1}ms ({} samples), buffer total: {} samples ({:.1}s)",
+                  device_type, duration_ms, segment.samples.len(),
+                  buffer_samples, buffer_samples as f64 / 16000.0);
+
+            if buffer_samples >= Self::MIN_TRANSCRIPTION_SAMPLES {
+                self.flush_transcription_buffer(device_type.clone());
+            }
+        }
+    }
+
+    /// Return mutable references to the per-stream buffer triple.
+    fn buffer_for(
+        &mut self,
+        device_type: &DeviceType,
+    ) -> (&mut Vec<f32>, &mut f64, &mut std::time::Instant) {
+        match device_type {
+            DeviceType::Microphone => (
+                &mut self.mic_transcription_buffer,
+                &mut self.mic_transcription_buffer_start_ts,
+                &mut self.mic_transcription_buffer_last_activity,
+            ),
+            DeviceType::System => (
+                &mut self.system_transcription_buffer,
+                &mut self.system_transcription_buffer_start_ts,
+                &mut self.system_transcription_buffer_last_activity,
+            ),
+        }
+    }
+
+    /// Send the accumulated buffer for `device_type` to Whisper and reset.
+    /// Called when buffer >= MIN_TRANSCRIPTION_SAMPLES, on silence gap, or on
+    /// recording stop. The `device_type` flows into the AudioChunk so downstream
+    /// transcripts are labeled by source.
+    fn flush_transcription_buffer(&mut self, device_type: DeviceType) {
+        let (buffer, start_ts, _) = self.buffer_for(&device_type);
+        if buffer.is_empty() {
             return;
         }
 
-        let buffer_samples = self.transcription_buffer.len();
-        let buffer_duration_ms = buffer_samples as f64 / 16.0; // 16kHz → ms
+        let buffer_samples = buffer.len();
+        let buffer_duration_ms = buffer_samples as f64 / 16.0;
+        let start_timestamp = *start_ts;
 
-        info!("🎤 Flushing transcription buffer: {:.1}ms ({} samples) to Whisper",
-              buffer_duration_ms, buffer_samples);
+        info!("🎤 Flushing {:?} transcription buffer: {:.1}ms ({} samples) to Whisper",
+              device_type, buffer_duration_ms, buffer_samples);
+
+        let data = std::mem::replace(buffer, Vec::with_capacity(Self::MIN_TRANSCRIPTION_SAMPLES));
+        *start_ts = 0.0;
 
         let chunk = AudioChunk {
-            data: std::mem::replace(
-                &mut self.transcription_buffer,
-                Vec::with_capacity(Self::MIN_TRANSCRIPTION_SAMPLES),
-            ),
+            data,
             sample_rate: 16000,
-            timestamp: self.transcription_buffer_start_ts,
+            timestamp: start_timestamp,
             chunk_id: self.chunk_id_counter,
-            device_type: DeviceType::Microphone,
+            device_type,
         };
 
-        self.chunk_id_counter += 1; // Increment before send to avoid duplicate IDs on error
+        self.chunk_id_counter += 1;
 
         if let Err(e) = self.transcription_sender.send(chunk) {
             warn!("Failed to send buffered transcription chunk: {}", e);
         }
-
-        self.transcription_buffer_start_ts = 0.0;
     }
 
     fn flush_remaining_audio(&mut self) -> Result<()> {
         info!("Flushing remaining audio from pipeline (processed {} chunks)", self.processed_chunks);
 
-        // Flush any remaining audio from VAD processor into the transcription buffer
-        match self.vad_processor.flush() {
-            Ok(final_segments) => {
-                for segment in final_segments {
-                    let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
+        for device_type in [DeviceType::Microphone, DeviceType::System] {
+            let vad_result = match device_type {
+                DeviceType::Microphone => self.vad_mic.flush(),
+                DeviceType::System => self.vad_system.flush(),
+            };
 
-                    if segment.samples.len() >= 800 {
-                        info!("🎤 Buffering final VAD segment: {:.1}ms duration, {} samples",
-                              duration_ms, segment.samples.len());
-
-                        if self.transcription_buffer.is_empty() {
-                            self.transcription_buffer_start_ts = segment.start_timestamp_ms / 1000.0;
+            match vad_result {
+                Ok(final_segments) => {
+                    for segment in final_segments {
+                        let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
+                        if segment.samples.len() < 800 {
+                            info!("⏭️ Skipping short final {:?} segment: {:.1}ms ({} samples < 800)",
+                                  device_type, duration_ms, segment.samples.len());
+                            continue;
                         }
-                        self.transcription_buffer.extend_from_slice(&segment.samples);
-                    } else {
-                        info!("⏭️ Skipping short final segment: {:.1}ms ({} samples < 800)",
-                              duration_ms, segment.samples.len());
+                        info!("🎤 Buffering final {:?} VAD segment: {:.1}ms duration, {} samples",
+                              device_type, duration_ms, segment.samples.len());
+
+                        let (buffer, start_ts, _) = self.buffer_for(&device_type);
+                        if buffer.is_empty() {
+                            *start_ts = segment.start_timestamp_ms / 1000.0;
+                        }
+                        buffer.extend_from_slice(&segment.samples);
                     }
                 }
+                Err(e) => warn!("Failed to flush {:?} VAD processor: {}", device_type, e),
             }
-            Err(e) => {
-                warn!("Failed to flush VAD processor: {}", e);
+
+            let buffer_len = match device_type {
+                DeviceType::Microphone => self.mic_transcription_buffer.len(),
+                DeviceType::System => self.system_transcription_buffer.len(),
+            };
+            if buffer_len > 0 {
+                info!("📤 Flushing final {:?} transcription buffer: {} samples ({:.1}s)",
+                      device_type, buffer_len, buffer_len as f64 / 16000.0);
+                self.flush_transcription_buffer(device_type);
             }
         }
 
-        // Flush whatever remains in the transcription buffer (even if < 3s)
-        if !self.transcription_buffer.is_empty() {
-            info!("📤 Flushing final transcription buffer: {} samples ({:.1}s)",
-                  self.transcription_buffer.len(),
-                  self.transcription_buffer.len() as f64 / 16000.0);
-            self.flush_transcription_buffer();
+        if let Some(ref mut saver) = self.raw_track_saver {
+            saver.finish();
         }
 
         Ok(())
@@ -1042,6 +1152,7 @@ impl AudioPipelineManager {
         mic_device_kind: super::device_detection::InputDeviceKind,
         system_device_name: String,
         system_device_kind: super::device_detection::InputDeviceKind,
+        raw_track_folder: Option<std::path::PathBuf>,
     ) -> Result<()> {
         // Log device information for adaptive buffering
         info!("🎙️ Starting pipeline with device info:");
@@ -1065,6 +1176,7 @@ impl AudioPipelineManager {
             mic_device_kind,
             system_device_name,
             system_device_kind,
+            raw_track_folder,
         )?;
 
         // CRITICAL FIX: Connect recording sender to receive pre-mixed audio

@@ -103,6 +103,10 @@ impl RecordingManager {
             system_device.as_ref().map(|d| d.name.clone())
         );
 
+        // Raw track saving (TANDEM_SAVE_RAW_TRACKS=1) writes mic_raw / mic_clean /
+        // system WAVs into the meeting folder for offline AEC quality benchmarking.
+        let raw_track_folder = self.recording_saver.get_meeting_folder().cloned();
+
         // Start the audio processing pipeline with FFmpeg adaptive mixer
         // Pipeline will: 1) Mix mic+system audio with adaptive buffering, 2) Send mixed to recording_sender,
         // 3) Apply VAD and send speech segments to transcription
@@ -116,6 +120,7 @@ impl RecordingManager {
             mic_kind,
             sys_name,
             sys_kind,
+            raw_track_folder,
         )?;
 
         // Give the pipeline a moment to fully initialize before starting streams
