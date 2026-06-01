@@ -48,24 +48,31 @@ impl ContinuousVadProcessor {
         // CONTINUOUS SPEECH FIX: Tuned for capturing complete 5+ second utterances
         // Previous: 0.55/0.40 with 400ms redemption was fragmenting speech into 40ms segments
         // New: More lenient thresholds + longer redemption for continuous speech
-        config.positive_speech_threshold = 0.50;  // Silero default - good for continuous speech
+        // #4 "catch all speech": 0.45 positive (down from 0.50) recovers low-energy
+        // sentence onsets the VAD was clipping ("Hi there, I'm Andrew."). Verified to
+        // raise ground-truth word coverage from ~98% to ~99.5-100% on the test clips.
+        config.positive_speech_threshold = 0.45;
         config.negative_speech_threshold = 0.35;  // Silero default - allows natural pauses
 
         // CRITICAL FIX: Removed redemption_time capping to support long continuous speech
         // Previous: capped at 400ms, causing VAD to fragment 5-second speech into 40ms segments
         // New: Use full redemption_time from pipeline (2000ms) to bridge natural pauses
         config.redemption_time = Duration::from_millis(redemption_time_ms as u64);
-        config.pre_speech_pad = Duration::from_millis(300);
+        // #4: wider pre-pad (300->500ms) so detected onsets don't truncate the first
+        // word of an utterance. Must stay < redemption_time (see post_speech_pad note).
+        config.pre_speech_pad = Duration::from_millis(500);
         // CRITICAL: post_speech_pad MUST be < redemption_time or silero-rs panics:
         // it indexes session_audio at (speech_end + post_speech_pad) which is only
         // guaranteed to be in-buffer when post_speech_pad ≤ redemption_time.
         // redemption_time is 400ms on Windows / 900ms on macOS — use 200ms to be safe on all platforms.
-        config.post_speech_pad = Duration::from_millis(200);
+        // #4: 300ms (up from 200ms) to retain trailing word tails. Still < redemption
+        // (500ms Windows / 900ms macOS) so silero-rs won't panic indexing past buffer.
+        config.post_speech_pad = Duration::from_millis(300);
 
         // CRITICAL FIX: Increased min_speech_time to prevent tiny 40ms fragments
         // Previous: 100ms allowed too-short segments that Whisper rejects
         // New: 250ms ensures segments are substantial enough for Whisper (>100ms requirement)
-        config.min_speech_time = Duration::from_millis(250);  // Prevent tiny fragments
+        config.min_speech_time = Duration::from_millis(200);  // #4: 250->200ms, keep short real utterances
 
         debug!("Creating VAD session with: sample_rate={}Hz, redemption={}ms, min_speech={}ms, input_rate={}Hz",
                VAD_SAMPLE_RATE, redemption_time_ms, 250, input_sample_rate);

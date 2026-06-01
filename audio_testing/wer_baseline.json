@@ -1,0 +1,15 @@
+{
+  "pooled": 0.26045,
+  "clips": {
+    "clip_02": 0.19828,
+    "clip_04": 0.2125,
+    "clip_06": 0.07194,
+    "clip_07": 0.64789,
+    "clip_10": 0.04615
+  },
+  "tolerances": {
+    "pooled_pp": 0.015,
+    "per_clip_pp": 0.05
+  },
+  "note": "Pooled+per-clip WER vs ElevenLabs ground truth, shipped engine config. Regenerate with: python audio_testing/wer_gate.py --update-baseline"
+}

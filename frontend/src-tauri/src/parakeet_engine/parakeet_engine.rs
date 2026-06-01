@@ -469,9 +469,104 @@ impl ParakeetEngine {
             .transcribe_samples(audio_data)
             .map_err(|e| anyhow!("Parakeet transcription failed: {}", e))?;
 
-        log::debug!("Parakeet transcription result: '{}'", result.text);
+        log::debug!("Parakeet transcription result (raw): '{}'", result.text);
 
-        Ok(result.text)
+        // Post-processing the Parakeet engine previously skipped (the raw text was
+        // returned directly). Two cheap, measured fixes:
+        //  #1 de-stutter: collapse TDT runaway repetitions ("a a a a", "st st st").
+        //  #3 domain correction: fix known vocabulary misfires (n8n, Shopify, ...).
+        let cleaned = Self::apply_domain_corrections(&Self::collapse_runaways(&result.text));
+        if cleaned != result.text {
+            log::debug!("Parakeet transcription result (cleaned): '{}'", cleaned);
+        }
+
+        Ok(cleaned)
+    }
+
+    /// #1 Gentle de-stutter: collapse only consecutive identical tokens repeated
+    /// >= 3 times (the Parakeet TDT runaway artifact, e.g. "a a a a a" / "st st st"
+    /// / "in in in in"). Natural doublings like "I I" / "the the" are preserved.
+    /// Deliberately gentler than WhisperEngine::clean_repetitive_text, whose
+    /// phrase-removal and whole-segment dropping over-deleted real Parakeet words.
+    fn collapse_runaways(text: &str) -> String {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let mut out: Vec<&str> = Vec::with_capacity(words.len());
+        let mut i = 0;
+        while i < words.len() {
+            let mut j = i + 1;
+            while j < words.len() && words[j].eq_ignore_ascii_case(words[i]) {
+                j += 1;
+            }
+            if j - i >= 3 {
+                out.push(words[i]); // collapse runaway run to a single token
+            } else {
+                out.extend_from_slice(&words[i..j]); // keep natural short repeats
+            }
+            i = j;
+        }
+        out.join(" ")
+    }
+
+    /// #3 Domain-vocabulary correction. Parakeet (unlike whisper) has no
+    /// initial-prompt biasing, so terms like n8n / Shopify get mangled. Conservative:
+    /// explicit aliases for known misfires + a tight fuzzy match against a wordlist.
+    fn apply_domain_corrections(text: &str) -> String {
+        const TERMS: &[&str] = &[
+            "n8n", "tandem", "excalidraw", "meetily", "anthropic", "claude", "powershell",
+            "shopify", "webhook", "workflow", "json", "ollama", "parakeet", "whisper",
+            "coworker", "github",
+        ];
+        // (misrecognition -> canonical)
+        const ALIASES: &[(&str, &str)] = &[
+            ("nan", "n8n"), ("anan", "n8n"),
+            ("excalidor", "excalidraw"), ("excalidra", "excalidraw"),
+            ("meetly", "meetily"), ("meetilly", "meetily"),
+        ];
+
+        text.split_whitespace()
+            .map(|w| {
+                let trimmed = w.trim_end_matches(|c: char| ".,!?;:".contains(c));
+                let tail = &w[trimmed.len()..];
+                let core = trimmed.to_lowercase();
+                if let Some((_, canon)) = ALIASES.iter().find(|(a, _)| *a == core) {
+                    return format!("{}{}", canon, tail);
+                }
+                if core.len() >= 4 {
+                    if let Some(best) = TERMS
+                        .iter()
+                        .map(|t| (*t, Self::similarity(&core, t)))
+                        .filter(|(t, r)| *r >= 0.86 && core != **t)
+                        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                        .map(|(t, _)| t)
+                    {
+                        return format!("{}{}", best, tail);
+                    }
+                }
+                w.to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Normalized Levenshtein similarity in [0,1] for the domain fuzzy match.
+    fn similarity(a: &str, b: &str) -> f32 {
+        let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+        let (n, m) = (a.len(), b.len());
+        if n == 0 || m == 0 {
+            return 0.0;
+        }
+        let mut prev: Vec<usize> = (0..=m).collect();
+        let mut cur = vec![0usize; m + 1];
+        for i in 1..=n {
+            cur[0] = i;
+            for j in 1..=m {
+                let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+                cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+            }
+            std::mem::swap(&mut prev, &mut cur);
+        }
+        let dist = prev[m] as f32;
+        1.0 - dist / n.max(m) as f32
     }
 
     /// Get the models directory path

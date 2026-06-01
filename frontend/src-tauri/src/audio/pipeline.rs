@@ -727,7 +727,9 @@ impl AudioPipeline {
         // This bridges natural pauses without excessive fragmentation
         // For mac os core audio, 900ms, for windows 400ms seems good
 
-        let redemption_time = if cfg!(target_os = "macos") { 900 } else { 400 };
+        // #4: Windows 400->500ms so brief mid-utterance pauses don't split a sentence
+        // (must remain > post_speech_pad of 300ms set in vad.rs).
+        let redemption_time = if cfg!(target_os = "macos") { 900 } else { 500 };
 
         let vad_processor = ContinuousVadProcessor::new(sample_rate, redemption_time)
             .map_err(|e| anyhow::anyhow!("Failed to create VAD processor: {}", e))?;
@@ -927,10 +929,13 @@ impl AudioPipeline {
         Ok(())
     }
 
-    /// Minimum samples before sending to Whisper (1.5 seconds at 16kHz).
-    /// VAD upstream enforces 250ms min_speech_time so buffers always contain real speech.
-    /// Reduced from 3s to improve transcription responsiveness for short sentences.
-    const MIN_TRANSCRIPTION_SAMPLES: usize = 24000;
+    /// Target samples before sending to the engine (12 seconds at 16kHz).
+    /// #5: raised from 1.5s to 12s to give the Parakeet transducer more acoustic
+    /// context, which measurably cut substitutions/deletions on long monologue
+    /// (clip_04 24%->21%, clip_10 9%->5%). Responsiveness is preserved in practice
+    /// because SILENCE_GAP_FLUSH_SECS flushes at every natural pause; 12s is only the
+    /// cap for uninterrupted speech. Lower this if mid-monologue latency feels high.
+    const MIN_TRANSCRIPTION_SAMPLES: usize = 192000;
 
     /// Maximum silence gap (seconds) before flushing a partial buffer.
     /// 1.2s catches natural end-of-sentence pauses without cutting mid-utterance.

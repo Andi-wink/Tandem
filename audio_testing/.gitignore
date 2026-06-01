@@ -1,0 +1,10 @@
+# Confidential client-derived data — never commit (privacy-first).
+# These hold verbatim transcripts / audio of real client conversations and
+# generated transcription outputs. The WER harness reads/writes them locally.
+elevenlabs/
+parakeet_out/
+results/
+*.wav
+
+# clips_index.json references real meeting folder names — keep local.
+clips_index.json
