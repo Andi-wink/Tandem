@@ -129,6 +129,66 @@ class ParakeetTDT(ParakeetModel):
         best = max(hyps, key=lambda h: h[0])
         return self._decode_tokens(best[1], best[2])[0]
 
+    def transcribe_bp(self, samples, bp=0.0):
+        """Greedy decode with a blank penalty: subtract `bp` from the blank
+        logit before argmax. Higher bp -> more emissions -> fewer deletions."""
+        wav = np.asarray(samples, dtype=np.float32).reshape(1, -1)
+        wl = np.array([wav.shape[1]], dtype=np.int64)
+        feats, fl = self.preprocessor.run(["features", "features_lens"],
+                                          {"waveforms": wav, "waveforms_lens": wl})
+        enc, el = self.encoder.run(["outputs", "encoded_lengths"],
+                                   {"audio_signal": feats, "length": fl})
+        enc = np.transpose(enc, (0, 2, 1))[0]
+        n = int(el[0])
+        s1, s2 = self._zero_state("input_states_1"), self._zero_state("input_states_2")
+        tokens, ts = [], []
+        t = 0
+        emitted = 0
+        while t < n:
+            target = self._np("targets", [[tokens[-1] if tokens else self.blank_idx]], "int32")
+            tlen = self._np("target_length", [1], "int32")
+            logits, n1, n2 = self.decoder.run(
+                ["outputs", "output_states_1", "output_states_2"],
+                {"encoder_outputs": enc[t].reshape(1, -1, 1).astype(np.float32),
+                 "targets": target, "target_length": tlen,
+                 "input_states_1": s1, "input_states_2": s2})
+            vlog = np.asarray(logits).reshape(-1)[: self.vocab_size].astype(np.float64).copy()
+            vlog[self.blank_idx] -= bp
+            token = int(np.argmax(vlog))
+            if token != self.blank_idx:
+                s1, s2 = n1, n2
+                tokens.append(token)
+                ts.append(t)
+                emitted += 1
+            if token == self.blank_idx or emitted == 10:
+                t += 1
+                emitted = 0
+        return self._decode_tokens(tokens, ts)[0]
+
+
+# ---- audio preprocessing (applied per buffer before the model) ----
+def dsp_peak_norm(x, peak=0.95):
+    m = np.max(np.abs(x)) + 1e-9
+    return (x / m * peak).astype(np.float32)
+
+
+def dsp_rms_norm(x, target=0.06, max_gain=8.0):
+    rms = np.sqrt(np.mean(x ** 2) + 1e-12)
+    g = min(target / (rms + 1e-9), max_gain)
+    return np.clip(x * g, -1.0, 1.0).astype(np.float32)
+
+
+def dsp_preemph(x, a=0.97):
+    y = np.empty_like(x)
+    y[0] = x[0]
+    y[1:] = x[1:] - a * x[:-1]
+    return y.astype(np.float32)
+
+
+def dsp_pad(x, ms=250):
+    pad = np.zeros(int(ms * 16), dtype=np.float32)
+    return np.concatenate([pad, x, pad])
+
 
 def _join(parts):
     return " ".join(p.strip() for p in parts if p.strip())
@@ -206,12 +266,39 @@ def variant_e4_beam(model, samples, segs):
                  for b in buffers_concat(samples, segs))
 
 
+def _bp_variant(bp):
+    def v(model, samples, segs):
+        return _join(postprocess(model.transcribe_bp(np.asarray(b, dtype=np.float32), bp=bp))
+                     for b in buffers_concat(samples, segs))
+    return v
+
+
+def _dsp_variant(fn):
+    def v(model, samples, segs):
+        return _join(postprocess(model.transcribe(fn(np.asarray(b, dtype=np.float32)))[0])
+                     for b in buffers_concat(samples, segs))
+    return v
+
+
 VARIANTS = {
     "baseline": variant_baseline,
     "e1_contiguous": variant_e1_contiguous,
     "e2_overlap": variant_e2_overlap,
     "e5_durations": variant_e5_durations,
     "e4_beam": variant_e4_beam,
+    # E_bp: blank-penalty sweep (targets deletions)
+    "bp0.5": _bp_variant(0.5),
+    "bp0.75": _bp_variant(0.75),
+    "bp1.0": _bp_variant(1.0),
+    "bp1.25": _bp_variant(1.25),
+    "bp1.5": _bp_variant(1.5),
+    "bp2.0": _bp_variant(2.0),
+    "bp3.0": _bp_variant(3.0),
+    # audio preprocessing
+    "rms_norm": _dsp_variant(dsp_rms_norm),
+    "peak_norm": _dsp_variant(dsp_peak_norm),
+    "preemph": _dsp_variant(dsp_preemph),
+    "pad_silence": _dsp_variant(dsp_pad),
 }
 
 

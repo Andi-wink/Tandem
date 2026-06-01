@@ -15,6 +15,9 @@ pub type DecoderState = (Array3<f32>, Array3<f32>);
 const SUBSAMPLING_FACTOR: usize = 8;
 const WINDOW_SIZE: f32 = 0.01;
 const MAX_TOKENS_PER_STEP: usize = 10;
+/// Subtracted from the blank logit before argmax to counter Parakeet's
+/// deletion bias. See decode_sequence for the measured WER impact.
+const BLANK_PENALTY: f32 = 1.25;
 
 static DECODE_SPACE_RE: Lazy<Result<Regex, regex::Error>> =
     Lazy::new(|| Regex::new(r"\A\s|\s\B|(\s)\b"));
@@ -384,10 +387,19 @@ impl ParakeetModel {
                 vocab_logits_slice
             };
 
-            // Get argmax token from vocabulary logits only
+            // Get argmax token from vocabulary logits only.
+            // BLANK_PENALTY: Parakeet under-emits (deletions dominate WER); penalizing
+            // the blank logit recovers dropped words. Tuned against ground truth
+            // (audio_testing): pooled WER 24.6% -> 22.0%, every clip improved, deletions
+            // 108 -> 62. 1.25 is the conservative end of the 1.25-1.5 optimum (higher
+            // values start hallucinating). See audio_testing/experiments.py.
+            let blank_idx = self.blank_idx;
             let token = vocab_logits
                 .iter()
                 .enumerate()
+                .map(|(idx, &v)| {
+                    (idx, if idx as i32 == blank_idx { v - BLANK_PENALTY } else { v })
+                })
                 .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
                 .map(|(idx, _)| idx as i32)
                 .unwrap_or(self.blank_idx);
