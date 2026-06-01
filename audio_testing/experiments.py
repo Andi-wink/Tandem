@@ -4,6 +4,7 @@ ElevenLabs ground truth. Each variant is (model, samples, segs) -> hypothesis.
 
 Usage: python experiments.py [variant1 variant2 ...]   (default: all registered)
 """
+import re
 import sys
 import numpy as np
 
@@ -85,7 +86,7 @@ class ParakeetTDT(ParakeetModel):
         lp = v - np.log(np.exp(v).sum())
         return lp, n1, n2
 
-    def transcribe_beam(self, samples, beam=4, max_symbols=3):
+    def transcribe_beam(self, samples, beam=4, max_symbols=3, bp=0.0, length_norm=False):
         wav = np.asarray(samples, dtype=np.float32).reshape(1, -1)
         wl = np.array([wav.shape[1]], dtype=np.int64)
         feats, fl = self.preprocessor.run(["features", "features_lens"],
@@ -106,7 +107,8 @@ class ParakeetTDT(ParakeetModel):
                 cand = []
                 for (sc, toks, ts, last, s1, s2) in live:
                     lp, nn1, nn2 = self._joint_logprobs(ef, last, s1, s2)
-                    kept.append((sc + lp[blank], toks, ts, last, s1, s2))
+                    blank_lp = lp[blank] - bp           # penalize the blank path
+                    kept.append((sc + blank_lp, toks, ts, last, s1, s2))
                     order = np.argsort(lp)[::-1]
                     taken = 0
                     for tok in order:
@@ -123,13 +125,58 @@ class ParakeetTDT(ParakeetModel):
                 live = cand[:beam]
             for (sc, toks, ts, last, s1, s2) in live:  # force blank after cap
                 lp, _, _ = self._joint_logprobs(ef, last, s1, s2)
-                kept.append((sc + lp[blank], toks, ts, last, s1, s2))
+                kept.append((sc + lp[blank] - bp, toks, ts, last, s1, s2))
             kept.sort(key=lambda h: h[0], reverse=True)
             hyps = kept[:beam]
-        best = max(hyps, key=lambda h: h[0])
+        if length_norm:
+            best = max(hyps, key=lambda h: h[0] / max(len(h[1]), 1))
+        else:
+            best = max(hyps, key=lambda h: h[0])
         return self._decode_tokens(best[1], best[2])[0]
 
-    def transcribe_bp(self, samples, bp=0.0):
+    def transcribe_bp_conf(self, samples, bp=1.25, conf=0.0):
+        """Greedy + blank penalty, but suppress a non-blank emission whose softmax
+        confidence (over the un-penalized logits) is below `conf` (treat as blank)."""
+        wav = np.asarray(samples, dtype=np.float32).reshape(1, -1)
+        wl = np.array([wav.shape[1]], dtype=np.int64)
+        feats, fl = self.preprocessor.run(["features", "features_lens"],
+                                          {"waveforms": wav, "waveforms_lens": wl})
+        enc, el = self.encoder.run(["outputs", "encoded_lengths"],
+                                   {"audio_signal": feats, "length": fl})
+        enc = np.transpose(enc, (0, 2, 1))[0]
+        n = int(el[0])
+        s1, s2 = self._zero_state("input_states_1"), self._zero_state("input_states_2")
+        tokens, ts = [], []
+        t = 0
+        emitted = 0
+        while t < n:
+            target = self._np("targets", [[tokens[-1] if tokens else self.blank_idx]], "int32")
+            tlen = self._np("target_length", [1], "int32")
+            logits, n1, n2 = self.decoder.run(
+                ["outputs", "output_states_1", "output_states_2"],
+                {"encoder_outputs": enc[t].reshape(1, -1, 1).astype(np.float32),
+                 "targets": target, "target_length": tlen,
+                 "input_states_1": s1, "input_states_2": s2})
+            raw = np.asarray(logits).reshape(-1)[: self.vocab_size].astype(np.float64)
+            vlog = raw.copy()
+            vlog[self.blank_idx] -= bp
+            token = int(np.argmax(vlog))
+            if token != self.blank_idx and conf > 0.0:
+                p = np.exp(raw - raw.max())
+                prob = p[token] / p.sum()
+                if prob < conf:
+                    token = self.blank_idx  # too uncertain -> suppress emission
+            if token != self.blank_idx:
+                s1, s2 = n1, n2
+                tokens.append(token)
+                ts.append(t)
+                emitted += 1
+            if token == self.blank_idx or emitted == 10:
+                t += 1
+                emitted = 0
+        return self._decode_tokens(tokens, ts)[0]
+
+    def transcribe_bp(self, samples, bp=0.0, max_sym=10):
         """Greedy decode with a blank penalty: subtract `bp` from the blank
         logit before argmax. Higher bp -> more emissions -> fewer deletions."""
         wav = np.asarray(samples, dtype=np.float32).reshape(1, -1)
@@ -160,7 +207,7 @@ class ParakeetTDT(ParakeetModel):
                 tokens.append(token)
                 ts.append(t)
                 emitted += 1
-            if token == self.blank_idx or emitted == 10:
+            if token == self.blank_idx or emitted == max_sym:
                 t += 1
                 emitted = 0
         return self._decode_tokens(tokens, ts)[0]
@@ -188,6 +235,23 @@ def dsp_preemph(x, a=0.97):
 def dsp_pad(x, ms=250):
     pad = np.zeros(int(ms * 16), dtype=np.float32)
     return np.concatenate([pad, x, pad])
+
+
+def dsp_compress(x, power=0.6):
+    """#13: power companding to lift quiet speech, then peak-renormalize."""
+    y = np.sign(x) * (np.abs(x) ** power)
+    return dsp_peak_norm(y, 0.95)
+
+
+def dsp_highpass(x, cutoff=80.0, sr=16000):
+    """#11: 1st-order high-pass to remove low rumble below `cutoff` Hz."""
+    rc = 1.0 / (2 * np.pi * cutoff)
+    a = rc / (rc + 1.0 / sr)
+    y = np.empty_like(x)
+    y[0] = x[0]
+    for n in range(1, len(x)):
+        y[n] = a * (y[n - 1] + x[n] - x[n - 1])
+    return y.astype(np.float32)
 
 
 def _join(parts):
@@ -280,6 +344,66 @@ def _dsp_variant(fn):
     return v
 
 
+def _conf_variant(conf):
+    def v(model, samples, segs):
+        return _join(postprocess(model.transcribe_bp_conf(np.asarray(b, dtype=np.float32),
+                                                          bp=1.25, conf=conf))
+                     for b in buffers_concat(samples, segs))
+    return v
+
+
+def variant_beam_bp(model, samples, segs):
+    """E4 retry: beam search WITH blank penalty + length normalization."""
+    return _join(postprocess(model.transcribe_beam(np.asarray(b, dtype=np.float32),
+                                                    bp=1.25, length_norm=True))
+                 for b in buffers_concat(samples, segs))
+
+
+def _short_collapse(text):
+    """#19: collapse consecutive identical short tokens (len<=2) repeated >=2x."""
+    words = text.split()
+    out = []
+    i = 0
+    while i < len(words):
+        j = i + 1
+        while j < len(words) and words[j].lower() == words[i].lower():
+            j += 1
+        core = words[i].strip(".,!?;:")
+        if (j - i) >= 2 and len(core) <= 2:
+            out.append(words[i])
+        else:
+            out.extend(words[i:j])
+        i = j
+    return " ".join(out)
+
+
+def variant_short_destutter(model, samples, segs):
+    return _short_collapse(variant_baseline(model, samples, segs))
+
+
+_PHON = [(r"\bn eight n\b", "n8n"), (r"\bn 8 n\b", "n8n"), (r"\bco[- ]worker\b", "coworker"),
+         (r"\bpower shell\b", "powershell"), (r"\bn and n\b", "n8n")]
+
+
+def variant_phonetic(model, samples, segs):
+    t = variant_baseline(model, samples, segs)
+    for pat, rep in _PHON:
+        t = re.sub(pat, rep, t, flags=re.I)
+    return t
+
+
+def variant_merge_sub2s(model, samples, segs):
+    """#16: merge a buffer shorter than 2s into the previous one."""
+    bufs = [np.asarray(b, dtype=np.float32) for b in buffers_concat(samples, segs)]
+    merged = []
+    for b in bufs:
+        if merged and len(merged[-1]) / 16000 < 2.0:
+            merged[-1] = np.concatenate([merged[-1], b])
+        else:
+            merged.append(b)
+    return _join(postprocess(model.transcribe(b)[0]) for b in merged)
+
+
 VARIANTS = {
     "baseline": variant_baseline,
     "e1_contiguous": variant_e1_contiguous,
@@ -299,6 +423,19 @@ VARIANTS = {
     "peak_norm": _dsp_variant(dsp_peak_norm),
     "preemph": _dsp_variant(dsp_preemph),
     "pad_silence": _dsp_variant(dsp_pad),
+    # confidence suppression sweep (on top of bp=1.25)
+    "conf0.1": _conf_variant(0.10),
+    "conf0.2": _conf_variant(0.20),
+    "conf0.3": _conf_variant(0.30),
+    "conf0.4": _conf_variant(0.40),
+    "beam_bp": variant_beam_bp,
+    "short_destutter": variant_short_destutter,
+    "phonetic": variant_phonetic,
+    "merge_sub2s": variant_merge_sub2s,
+    "compress": _dsp_variant(dsp_compress),
+    "highpass": _dsp_variant(dsp_highpass),
+    "maxsym3": lambda m, s, g: _join(postprocess(m.transcribe_bp(np.asarray(b, dtype=np.float32), bp=1.25, max_sym=3)) for b in buffers_concat(s, g)),
+    "maxsym5": lambda m, s, g: _join(postprocess(m.transcribe_bp(np.asarray(b, dtype=np.float32), bp=1.25, max_sym=5)) for b in buffers_concat(s, g)),
 }
 
 
