@@ -5,6 +5,18 @@ members = [
     "llama-helper"
 ]
 
+# Local patch for sonora-aec3 0.1.0: the upstream crate panics with
+# "slice index starts at N but ends at M" in adaptive_fir_filter.rs::zero_filter
+# whenever the adaptive FIR filter shrinks (update_size interpolates the
+# current size down toward a smaller target). Killed the audio pipeline
+# silently — surfaced as a real-meeting crash on 2026-06-03.
+# vendor/sonora-aec3 mirrors the registry crate with a one-line fix
+# (zero_filter is now a no-op on shrink, matching upstream WebRTC C++).
+# TODO: drop this patch once upstream https://github.com/dignifiedquire/sonora
+# has the fix released.
+[patch.crates-io]
+sonora-aec3 = { path = "vendor/sonora-aec3" }
+
 # Shared workspace settings
 [workspace.package]
 edition = "2021"
