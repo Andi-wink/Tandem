@@ -708,6 +708,12 @@ pub struct AudioPipeline {
     system_transcription_buffer: Vec<f32>,
     system_transcription_buffer_start_ts: f64,
     system_transcription_buffer_last_activity: std::time::Instant,
+    // Last TRANSCRIPTION_OVERLAP_SAMPLES of the audio sent for each stream's
+    // most recent transcription flush. Prepended to the next flush so words
+    // straddling buffer boundaries get a second chance. Empty until the first
+    // flush; worker.rs dedupes the overlapping prefix in the resulting text.
+    mic_overlap_tail: Vec<f32>,
+    system_overlap_tail: Vec<f32>,
 }
 
 impl AudioPipeline {
@@ -737,11 +743,13 @@ impl AudioPipeline {
         // Create VAD processor with balanced redemption time for speech accumulation
         // The VAD processor now handles 48kHz->16kHz resampling internally
         // This bridges natural pauses without excessive fragmentation
-        // For mac os core audio, 900ms, for windows 400ms seems good
-
-        // #4: Windows 400->500ms so brief mid-utterance pauses don't split a sentence
-        // (must remain > post_speech_pad of 300ms set in vad.rs).
-        let redemption_time = if cfg!(target_os = "macos") { 900 } else { 500 };
+        //
+        // Tuning loop winner (audio_testing/tune_parakeet_loop.py, 2026-06-03):
+        // 800ms redemption (up from 500ms Windows / 900ms macOS-leaning) keeps
+        // brief mid-sentence pauses inside one segment. Must stay > vad.rs
+        // post_speech_pad (200ms). macOS stays at 900ms since the existing
+        // value was already past the sweep optimum.
+        let redemption_time = if cfg!(target_os = "macos") { 900 } else { 800 };
 
         let vad_mic = ContinuousVadProcessor::new(sample_rate, redemption_time)
             .map_err(|e| anyhow::anyhow!("Failed to create mic VAD processor: {}", e))?;
@@ -807,6 +815,8 @@ impl AudioPipeline {
             system_transcription_buffer: Vec::with_capacity(48000),
             system_transcription_buffer_start_ts: 0.0,
             system_transcription_buffer_last_activity: std::time::Instant::now(),
+            mic_overlap_tail: Vec::new(),
+            system_overlap_tail: Vec::new(),
         })
     }
 
@@ -959,14 +969,22 @@ impl AudioPipeline {
         Ok(())
     }
 
-    /// Target samples before sending to the engine (25 seconds at 16kHz).
-    /// #5/E6: the Parakeet transducer is markedly more accurate with more acoustic
-    /// context. Swept window sizes against ground truth (audio_testing): pooled WER
-    /// 8s 28.6% / 12s 26.1% / 20s 25.7% / 25s 24.6% / 30s 24.6% / 60s 29.9% (the 60s
-    /// single buffer re-triggers TDT runaways). 25s is the low end of the 25-30s
-    /// optimum. Responsiveness is preserved because SILENCE_GAP_FLUSH_SECS flushes at
-    /// every natural pause; 25s is only the cap for uninterrupted monologue.
-    const MIN_TRANSCRIPTION_SAMPLES: usize = 400000;
+    /// Target samples before sending to the engine (12 seconds at 16kHz).
+    /// Tuning loop winner (audio_testing/tune_parakeet_loop.py, 2026-06-03):
+    /// min_s=12.0 beat 1.5s/3s/6s/9s/18s/25s on pooled WER (23.95% at 12s vs
+    /// 24.28% at 25s). The previous 25s comment cited earlier sweep data where
+    /// 25s was best; the current sweep — run with the tuned VAD config below —
+    /// puts the optimum at 12s. Responsiveness is preserved because
+    /// SILENCE_GAP_FLUSH_SECS flushes at every natural pause; 12s is only the
+    /// cap for uninterrupted monologue.
+    const MIN_TRANSCRIPTION_SAMPLES: usize = 192000;
+
+    /// Per-stream left-context overlap, in samples (1.0s at 16kHz).
+    /// Tuning loop Phase F: prepending 1.0s of the previous buffer's audio
+    /// before the next transcription pass dropped pooled WER 23.95% -> 23.31%
+    /// at the winning VAD config. Worker dedups the overlapping prefix words
+    /// against the previous emission's suffix. Set to 0 to disable.
+    const TRANSCRIPTION_OVERLAP_SAMPLES: usize = 16000;
 
     /// Maximum silence gap (seconds) before flushing a partial buffer.
     /// 1.2s catches natural end-of-sentence pauses without cutting mid-utterance.
@@ -1045,6 +1063,12 @@ impl AudioPipeline {
     /// Called when buffer >= MIN_TRANSCRIPTION_SAMPLES, on silence gap, or on
     /// recording stop. The `device_type` flows into the AudioChunk so downstream
     /// transcripts are labeled by source.
+    ///
+    /// Left-context overlap: the last TRANSCRIPTION_OVERLAP_SAMPLES of the
+    /// previous flush is prepended so words straddling buffer boundaries get
+    /// a second chance. The fresh tail (last N samples of THIS buffer, before
+    /// prepending) is then saved for the next flush. worker.rs dedupes the
+    /// overlapping prefix words in the resulting transcript.
     fn flush_transcription_buffer(&mut self, device_type: DeviceType) {
         let (buffer, start_ts, _) = self.buffer_for(&device_type);
         if buffer.is_empty() {
@@ -1058,8 +1082,29 @@ impl AudioPipeline {
         info!("🎤 Flushing {:?} transcription buffer: {:.1}ms ({} samples) to Whisper",
               device_type, buffer_duration_ms, buffer_samples);
 
-        let data = std::mem::replace(buffer, Vec::with_capacity(Self::MIN_TRANSCRIPTION_SAMPLES));
+        let mut data = std::mem::replace(buffer, Vec::with_capacity(Self::MIN_TRANSCRIPTION_SAMPLES));
         *start_ts = 0.0;
+
+        // Capture fresh tail from this buffer for the NEXT flush, then prepend
+        // the PREVIOUS tail to `data` before dispatch.
+        let new_tail: Vec<f32> = if Self::TRANSCRIPTION_OVERLAP_SAMPLES > 0
+            && data.len() > Self::TRANSCRIPTION_OVERLAP_SAMPLES
+        {
+            data[data.len() - Self::TRANSCRIPTION_OVERLAP_SAMPLES..].to_vec()
+        } else {
+            data.clone()
+        };
+        let prev_tail_slot = match device_type {
+            DeviceType::Microphone => &mut self.mic_overlap_tail,
+            DeviceType::System => &mut self.system_overlap_tail,
+        };
+        if Self::TRANSCRIPTION_OVERLAP_SAMPLES > 0 && !prev_tail_slot.is_empty() {
+            let mut prepended = Vec::with_capacity(prev_tail_slot.len() + data.len());
+            prepended.extend_from_slice(prev_tail_slot);
+            prepended.extend_from_slice(&data);
+            data = prepended;
+        }
+        *prev_tail_slot = new_tail;
 
         let chunk = AudioChunk {
             data,

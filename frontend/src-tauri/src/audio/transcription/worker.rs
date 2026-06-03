@@ -14,6 +14,42 @@ use tauri::{AppHandle, Emitter, Runtime};
 // Sequence counter for transcript updates
 static SEQUENCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// How many words from the previous emission to keep as the dedup window for
+/// the chunk-overlap prepend in pipeline.rs. 10 covers the ~1s audio overlap.
+const OVERLAP_TAIL_WORDS: usize = 10;
+
+/// Drop the longest prefix of `current` that matches a suffix of `prev_tail`
+/// (case-insensitive, whole-word). Returns the deduped transcript. If no
+/// overlap matches, returns `current` unchanged.
+fn dedup_overlap_prefix(prev_tail: &[String], current: &str) -> String {
+    if prev_tail.is_empty() {
+        return current.to_string();
+    }
+    let curr_words: Vec<&str> = current.split_whitespace().collect();
+    if curr_words.is_empty() {
+        return String::new();
+    }
+    let max_k = curr_words.len().min(prev_tail.len()).min(OVERLAP_TAIL_WORDS);
+    let mut overlap = 0;
+    for k in (1..=max_k).rev() {
+        let prev_slice = &prev_tail[prev_tail.len() - k..];
+        let curr_slice = &curr_words[..k];
+        if prev_slice
+            .iter()
+            .zip(curr_slice.iter())
+            .all(|(a, b)| a.to_lowercase() == b.to_lowercase())
+        {
+            overlap = k;
+            break;
+        }
+    }
+    if overlap == 0 {
+        current.to_string()
+    } else {
+        curr_words[overlap..].join(" ")
+    }
+}
+
 // Speech detection flag - reset per recording session
 static SPEECH_DETECTED_EMITTED: AtomicBool = AtomicBool::new(false);
 
@@ -111,6 +147,18 @@ pub fn start_transcription_task<R: Runtime>(
                 }
 
                 let mut chunk_loss_retries: u32 = 0;
+
+                // Per-stream overlap dedup state. pipeline.rs prepends the last
+                // ~1s of the previous flush's audio to the next chunk so words
+                // straddling boundaries get a second chance. We hold the last
+                // few words of each stream's previous emission and drop any
+                // matching prefix from the new transcript (case-insensitive
+                // n-gram dedup, up to 10 words). Per-worker state is correct
+                // while NUM_WORKERS==1; if that changes, lift this into a
+                // shared map keyed by DeviceType.
+                let mut prev_mic_tail: Vec<String> = Vec::new();
+                let mut prev_system_tail: Vec<String> = Vec::new();
+
                 loop {
                     // Try to get a chunk to process
                     let chunk = {
@@ -214,6 +262,31 @@ pub fn start_transcription_task<R: Runtime>(
                                             crate::audio::recording_state::DeviceType::Microphone => "Local",
                                             crate::audio::recording_state::DeviceType::System => "Remote",
                                         };
+
+                                        // Dedup the overlap prefix (see prev_*_tail
+                                        // declaration above). For the matching stream,
+                                        // drop any leading words that already appeared
+                                        // at the tail of the previous emission.
+                                        let prev_tail = match chunk_device_type {
+                                            crate::audio::recording_state::DeviceType::Microphone => &prev_mic_tail,
+                                            crate::audio::recording_state::DeviceType::System => &prev_system_tail,
+                                        };
+                                        let transcript = dedup_overlap_prefix(prev_tail, &transcript);
+                                        // Update the tail for next iteration: keep up to
+                                        // OVERLAP_TAIL_WORDS of the emitted transcript.
+                                        let new_tail: Vec<String> = transcript
+                                            .split_whitespace()
+                                            .rev()
+                                            .take(OVERLAP_TAIL_WORDS)
+                                            .map(|w| w.to_string())
+                                            .collect::<Vec<_>>()
+                                            .into_iter()
+                                            .rev()
+                                            .collect();
+                                        match chunk_device_type {
+                                            crate::audio::recording_state::DeviceType::Microphone => prev_mic_tail = new_tail,
+                                            crate::audio::recording_state::DeviceType::System => prev_system_tail = new_tail,
+                                        }
 
                                         let update = TranscriptUpdate {
                                             text: transcript,

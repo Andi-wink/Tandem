@@ -45,37 +45,31 @@ impl ContinuousVadProcessor {
         let mut config = VadConfig::default();
         config.sample_rate = VAD_SAMPLE_RATE as usize;
 
-        // CONTINUOUS SPEECH FIX: Tuned for capturing complete 5+ second utterances
-        // Previous: 0.55/0.40 with 400ms redemption was fragmenting speech into 40ms segments
-        // New: More lenient thresholds + longer redemption for continuous speech
-        // #4 "catch all speech": 0.45 positive (down from 0.50) recovers low-energy
-        // sentence onsets the VAD was clipping ("Hi there, I'm Andrew."). Verified to
-        // raise ground-truth word coverage from ~98% to ~99.5-100% on the test clips.
-        config.positive_speech_threshold = 0.45;
-        config.negative_speech_threshold = 0.35;  // Silero default - allows natural pauses
+        // Tuning loop winner (audio_testing/tune_parakeet_loop.py, 2026-06-03):
+        // pos=0.40 / neg=0.20 / pre=300ms / post=200ms / red=800ms / min_speech=100ms
+        // dropped pooled WER 26.85% -> 23.31% and deletions 8.68% -> 6.11% on
+        // the 5 ElevenLabs ground-truth clips. The wider negative band (0.20 vs
+        // the prior 0.35) keeps the VAD in the speech state through natural
+        // pauses, which was the dominant fix for dropped words.
+        config.positive_speech_threshold = 0.40;
+        config.negative_speech_threshold = 0.20;
 
-        // CRITICAL FIX: Removed redemption_time capping to support long continuous speech
-        // Previous: capped at 400ms, causing VAD to fragment 5-second speech into 40ms segments
-        // New: Use full redemption_time from pipeline (2000ms) to bridge natural pauses
         config.redemption_time = Duration::from_millis(redemption_time_ms as u64);
-        // #4: wider pre-pad (300->500ms) so detected onsets don't truncate the first
-        // word of an utterance. Must stay < redemption_time (see post_speech_pad note).
-        config.pre_speech_pad = Duration::from_millis(500);
-        // CRITICAL: post_speech_pad MUST be < redemption_time or silero-rs panics:
-        // it indexes session_audio at (speech_end + post_speech_pad) which is only
-        // guaranteed to be in-buffer when post_speech_pad ≤ redemption_time.
-        // redemption_time is 400ms on Windows / 900ms on macOS — use 200ms to be safe on all platforms.
-        // #4: 300ms (up from 200ms) to retain trailing word tails. Still < redemption
-        // (500ms Windows / 900ms macOS) so silero-rs won't panic indexing past buffer.
-        config.post_speech_pad = Duration::from_millis(300);
+        // Shorter pre/post-pad than the previous "catch-all" settings: in the
+        // sweep, wider pads (500-900ms) regressed badly because silero loses
+        // segments when pre-pad approaches redemption_time.
+        config.pre_speech_pad = Duration::from_millis(300);
+        // post_speech_pad MUST stay < redemption_time or silero-rs panics
+        // indexing past the buffer (200ms is safe against 800ms Windows /
+        // 900ms macOS redemption).
+        config.post_speech_pad = Duration::from_millis(200);
 
-        // CRITICAL FIX: Increased min_speech_time to prevent tiny 40ms fragments
-        // Previous: 100ms allowed too-short segments that Whisper rejects
-        // New: 250ms ensures segments are substantial enough for Whisper (>100ms requirement)
-        config.min_speech_time = Duration::from_millis(200);  // #4: 250->200ms, keep short real utterances
+        // Lower min_speech_time accepts short real utterances ("yeah", "right")
+        // that were previously dropped as fragments.
+        config.min_speech_time = Duration::from_millis(100);
 
         debug!("Creating VAD session with: sample_rate={}Hz, redemption={}ms, min_speech={}ms, input_rate={}Hz",
-               VAD_SAMPLE_RATE, redemption_time_ms, 250, input_sample_rate);
+               VAD_SAMPLE_RATE, redemption_time_ms, 100, input_sample_rate);
 
         let session = VadSession::new(config)
             .map_err(|e| anyhow!("Failed to create VAD session: {:?}", e))?;
