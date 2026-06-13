@@ -1,10 +1,10 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { FolderGit2, Trash2, Plus, Search, X, Cpu } from 'lucide-react';
+import { FolderGit2, Trash2, Plus, Search, X, Cpu, PanelTop } from 'lucide-react';
 import { toast } from 'sonner';
 import { invoke } from '@tauri-apps/api/core';
-import { useSoloMode } from '@/contexts/SoloModeContext';
+import { useSoloMode, SOLO_HUD_ENABLED_KEY } from '@/contexts/SoloModeContext';
 import {
   Project,
   ScannedProject,
@@ -29,6 +29,7 @@ export function ProjectSettings() {
   const [isImporting, setIsImporting] = useState(false);
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [scanRoot, setScanRoot] = useState(DEFAULT_SCAN_ROOT);
+  const [hudEnabled, setHudEnabled] = useState(true);
 
   // Add project form
   const [showAddForm, setShowAddForm] = useState(false);
@@ -54,6 +55,19 @@ export function ProjectSettings() {
   useEffect(() => {
     loadProjects();
   }, [loadProjects]);
+
+  // Load the floating HUD toggle (default ON when unset)
+  useEffect(() => {
+    setHudEnabled(localStorage.getItem(SOLO_HUD_ENABLED_KEY) !== 'false');
+  }, []);
+
+  const handleToggleHud = useCallback(() => {
+    setHudEnabled(prev => {
+      const next = !prev;
+      localStorage.setItem(SOLO_HUD_ENABLED_KEY, next ? 'true' : 'false');
+      return next;
+    });
+  }, []);
 
   // Load Ollama models for routing model selector
   useEffect(() => {
@@ -206,6 +220,34 @@ export function ProjectSettings() {
             <option value={routingModel}>{routingModel} (Ollama not connected)</option>
           )}
         </select>
+      </div>
+
+      {/* Floating HUD toggle */}
+      <div className="border border-border rounded-lg p-4 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <PanelTop size={16} className="text-muted-foreground" />
+          <div>
+            <p className="text-sm font-medium">Floating project HUD</p>
+            <p className="text-xs text-muted-foreground">
+              Always-on-top overlay showing the active project during a solo session. Click it to correct a misroute.
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={hudEnabled}
+          onClick={handleToggleHud}
+          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 ${
+            hudEnabled ? 'bg-brand' : 'bg-muted'
+          }`}
+        >
+          <span
+            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+              hudEnabled ? 'translate-x-6' : 'translate-x-1'
+            }`}
+          />
+        </button>
       </div>
 
       {/* Scan + Add */}

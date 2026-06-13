@@ -14,6 +14,7 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 import { toast } from 'sonner';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useSoloMode } from '@/contexts/SoloModeContext';
@@ -123,6 +124,46 @@ export function useSoloModeRouter() {
     };
   }, [isActive]);
 
+  // ── Shared project-switch side-effects ──────────────────────────────
+  // Both the auto-router (LLM-detected switch) and the manual HUD correction
+  // go through this so a manual switch behaves IDENTICALLY to an auto-switch:
+  // update solo state, lazily compute the session folder, ensure CLAUDE.md +
+  // loop state, append a session_start feed entry, and toast.
+  // Returns the resolved session folder (so the caller's current cycle can keep
+  // appending to the freshly-switched project in the same folder).
+  const performProjectSwitch = useCallback(
+    async (matched: Project, transcriptIndex: number): Promise<string> => {
+      const previousProject = activeProjectRef.current;
+      switchProject(matched, transcriptIndex);
+
+      let activeSessionFolder = sessionFolderRef.current;
+      if (!activeSessionFolder) {
+        activeSessionFolder = buildSessionFolderName(meetingTitleRef.current || 'Solo');
+        setSessionFolder(activeSessionFolder);
+        sessionFolderRef.current = activeSessionFolder;
+        toast.info(`Session folder: .tandem/${activeSessionFolder}`, { duration: 6000 });
+      }
+
+      toast.success(`Switched to ${matched.name}`);
+      await ensureTandemClaudeMd(matched.path, activeSessionFolder);
+      await ensureLoopState(matched.path, activeSessionFolder);
+
+      try {
+        await appendFeedEntry(matched.path, {
+          type: 'session_start',
+          timestamp: new Date(),
+          body: `Solo session active on ${matched.name}`,
+          meta: previousProject ? { switched_from: previousProject.name } : {},
+        }, activeSessionFolder);
+      } catch (err) {
+        console.warn('[SoloRouter] Failed to append session_start entry:', err);
+      }
+
+      return activeSessionFolder;
+    },
+    [switchProject, setSessionFolder],
+  );
+
   // ── Core routing (stable — reads everything from refs) ──────────────
   const runRouting = useCallback(async (requireMinSegments = false) => {
     if (isRoutingRef.current) return;
@@ -190,31 +231,8 @@ export function useSoloModeRouter() {
       if (decision.project_switch.detected && decision.project_switch.project_name) {
         const matched = matchProjectByName(decision.project_switch.project_name, projects);
         if (matched && matched.id !== activeProjectRef.current?.id) {
-          const previousProject = activeProjectRef.current;
-          switchProject(matched, currentTranscripts.length);
-
-          if (!activeSessionFolder) {
-            activeSessionFolder = buildSessionFolderName(meetingTitleRef.current || 'Solo');
-            setSessionFolder(activeSessionFolder);
-            sessionFolderRef.current = activeSessionFolder;
-            toast.info(`Session folder: .tandem/${activeSessionFolder}`, { duration: 6000 });
-          }
-
-          toast.success(`Switched to ${matched.name}`);
-          await ensureTandemClaudeMd(matched.path, activeSessionFolder);
-          await ensureLoopState(matched.path, activeSessionFolder);
+          activeSessionFolder = await performProjectSwitch(matched, currentTranscripts.length);
           switchedTo = matched;
-
-          try {
-            await appendFeedEntry(matched.path, {
-              type: 'session_start',
-              timestamp: new Date(),
-              body: `Solo session active on ${matched.name}`,
-              meta: previousProject ? { switched_from: previousProject.name } : {},
-            }, activeSessionFolder);
-          } catch (err) {
-            console.warn('[SoloRouter] Failed to append session_start entry:', err);
-          }
         } else if (!matched) {
           toast.warning(
             `Didn't recognize "${decision.project_switch.project_name}". Add it in Settings > Projects.`,
@@ -300,7 +318,41 @@ export function useSoloModeRouter() {
     } finally {
       isRoutingRef.current = false;
     }
-  }, [switchProject, setSessionFolder, addTask]);
+  }, [performProjectSwitch, addTask]);
+
+  // ── HUD manual correction → apply same switch as the auto-router ──────
+  useEffect(() => {
+    if (!isActive) return;
+
+    let unlisten: UnlistenFn | null = null;
+    let cancelled = false;
+
+    listen<{ projectId: string }>('solo-hud-switch', async event => {
+      const projectId = event.payload?.projectId;
+      if (!projectId) return;
+
+      const matched = projectsRef.current.find(p => p.id === projectId);
+      if (!matched) {
+        console.warn('[SoloRouter] HUD switch: unknown project id', projectId);
+        return;
+      }
+      if (matched.id === activeProjectRef.current?.id) return; // already active
+
+      try {
+        await performProjectSwitch(matched, transcriptsRef.current.length);
+      } catch (err) {
+        console.error('[SoloRouter] HUD switch failed:', err);
+      }
+    }).then(fn => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, [isActive, performProjectSwitch]);
 
   // ── Routing interval ────────────────────────────────────────────────
   useEffect(() => {

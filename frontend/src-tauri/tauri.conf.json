@@ -19,6 +19,22 @@
                 "fullscreen": false,
                 "decorations": true,
                 "dragDropEnabled": false
+            },
+            {
+                "label": "solo-hud",
+                "url": "/solo-hud",
+                "title": "Tandem Solo HUD",
+                "width": 240,
+                "height": 56,
+                "x": 40,
+                "y": 40,
+                "visible": false,
+                "alwaysOnTop": true,
+                "decorations": false,
+                "transparent": true,
+                "resizable": false,
+                "skipTaskbar": true,
+                "shadow": false
             }
         ],
         "macOSPrivateApi": true,
@@ -84,6 +100,24 @@
                                 }
                             ]
                         }
+                    ]
+                },
+                {
+                    "identifier": "solo-hud",
+                    "description": "Solo Mode floating HUD overlay window: events, window controls, and project listing",
+                    "windows": [
+                        "solo-hud"
+                    ],
+                    "permissions": [
+                        "core:default",
+                        "core:event:default",
+                        "core:window:default",
+                        "core:window:allow-show",
+                        "core:window:allow-hide",
+                        "core:window:allow-set-size",
+                        "core:window:allow-set-focus",
+                        "core:window:allow-start-dragging",
+                        "core:webview:default"
                     ]
                 }
             ]

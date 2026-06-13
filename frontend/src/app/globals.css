@@ -32,6 +32,28 @@
   animation: vibrate 0.3s linear;
 }
 
+/* Solo HUD: gentle expanding ring when the active project changes. */
+@keyframes hud-pulse {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
+.animate-hud-pulse {
+  animation: hud-pulse 1.2s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-hud-pulse {
+    animation: none;
+  }
+}
+
 @keyframes fade-in {
   0% {
     opacity: 0;
@@ -188,6 +210,14 @@
     @apply bg-background text-foreground;
     overflow: hidden;
     height: 100%;
+  }
+
+  /* Solo Mode HUD: the overlay window must be fully transparent so only the
+     pill paints over whatever app is underneath (e.g. a Zoom/Meet call). */
+  html.solo-hud-root,
+  body.solo-hud-body {
+    background: transparent !important;
+    overflow: hidden;
   }
 
   /* Make the window draggable */

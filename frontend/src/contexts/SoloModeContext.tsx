@@ -2,9 +2,39 @@
 
 import React, { createContext, useContext, useState, useCallback, useMemo, useRef } from 'react';
 import { toast } from 'sonner';
+import { emit } from '@tauri-apps/api/event';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { Project } from '@/services/projectService';
 import { setActiveSoloProject } from '@/services/screenshotService';
 import { SoloTask, ProjectHistoryEntry } from '@/types/solo';
+
+/** localStorage key for the "Floating project HUD" toggle (default ON). */
+export const SOLO_HUD_ENABLED_KEY = 'tandem-solo-hud-enabled';
+
+function isHudEnabled(): boolean {
+  if (typeof window === 'undefined') return true;
+  return localStorage.getItem(SOLO_HUD_ENABLED_KEY) !== 'false';
+}
+
+/** Show/hide the separate `solo-hud` overlay window. Best-effort; no-ops if the
+ *  window doesn't exist (e.g. running in a browser / window not yet created). */
+async function setHudWindowVisible(visible: boolean): Promise<void> {
+  try {
+    const hud = await WebviewWindow.getByLabel('solo-hud');
+    if (!hud) return;
+    if (visible) await hud.show();
+    else await hud.hide();
+  } catch (err) {
+    console.warn('[SoloMode] HUD window toggle failed:', err);
+  }
+}
+
+/** Push the active project to the HUD window via Tauri event. */
+function emitHudActiveProject(id: string | null, name: string | null): void {
+  emit('solo-active-project', { id, name }).catch(err =>
+    console.warn('[SoloMode] Failed to emit solo-active-project:', err),
+  );
+}
 
 interface SoloModeState {
   isActive: boolean;
@@ -31,11 +61,12 @@ interface SoloModeContextType extends SoloModeState {
   getActiveProjectHistory: () => ProjectHistoryEntry | null;
 }
 
-const DEFAULT_ROUTING_MODEL = 'gpt-oss:20b';
-// Bumped 2026-05-05 — gemma4:26b returns malformed JSON and fails to detect project switches.
-// gpt-oss:20b reliably detects switches with phonetic matching (e.g. "higher path" → "Hirepath")
-// and uses ~6GB less VRAM, leaving room for Whisper GPU.
-const MODEL_VERSION = 'v3';
+const DEFAULT_ROUTING_MODEL = 'gemma4:12b';
+// Bumped 2026-06-11 — default routing model switched to gemma4:12b (from gpt-oss:20b).
+// Gemma 4 12B (recently released) follows the strict JSON schema reliably for switch/intent
+// detection and needs ~7.6GB VRAM vs gpt-oss:20b's ~13GB, leaving more headroom for the
+// Whisper/Parakeet GPU engine. The version bump migrates existing users off the old saved default.
+const MODEL_VERSION = 'v5';
 
 const SoloModeContext = createContext<SoloModeContextType | null>(null);
 
@@ -86,6 +117,12 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
       description: 'Listening for project switches and tasks',
       duration: 4000,
     });
+
+    // Show the floating HUD (if enabled) and reset it to the "Listening" state.
+    if (isHudEnabled()) {
+      setHudWindowVisible(true);
+      emitHudActiveProject(null, null);
+    }
   }, []);
 
   const stopSoloSession = useCallback(() => {
@@ -109,6 +146,10 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     setActiveSoloProject(null).catch(err =>
       console.warn('[SoloMode] Failed to clear screenshot routing:', err),
     );
+
+    // Hide the floating HUD and notify it to self-reset.
+    emit('solo-session-stopped', {}).catch(() => {});
+    setHudWindowVisible(false);
   }, []);
 
   const switchProject = useCallback((project: Project, transcriptIndex: number) => {
@@ -141,6 +182,9 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     setActiveSoloProject(project.path).catch(err =>
       console.warn('[SoloMode] Failed to set screenshot routing:', err),
     );
+
+    // Update the floating HUD with the new active project.
+    emitHudActiveProject(project.id, project.name);
   }, []);
 
   const addTask = useCallback((task: SoloTask) => {
