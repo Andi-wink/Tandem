@@ -2,6 +2,8 @@
 //
 // TranscriptionEngine enum and model initialization/validation logic.
 
+use super::mistral_provider::MistralProvider;
+use super::elevenlabs_provider::ElevenLabsProvider;
 use super::provider::TranscriptionProvider;
 use log::{info, warn};
 use std::sync::Arc;
@@ -135,6 +137,52 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
                 }
             }
         }
+        "mistral" => {
+            info!("🔍 Validating Mistral Voxtral configuration...");
+            // No local model to download; just require a non-empty API key.
+            let pool = app.state::<crate::state::AppState>().db_manager.pool().clone();
+            match crate::database::repositories::setting::SettingsRepository::get_transcript_api_key(
+                &pool, "mistral",
+            )
+            .await
+            {
+                Ok(Some(key)) if !key.trim().is_empty() => {
+                    info!("✅ Mistral Voxtral API key present");
+                    Ok(())
+                }
+                Ok(_) => Err(
+                    "Enter your Mistral API key in Settings → Transcription to use Voxtral."
+                        .to_string(),
+                ),
+                Err(e) => {
+                    warn!("❌ Failed to read Mistral API key: {}", e);
+                    Err(format!("Failed to read Mistral API key: {}", e))
+                }
+            }
+        }
+        "elevenLabs" => {
+            info!("🔍 Validating ElevenLabs Scribe configuration...");
+            // No local model to download; just require a non-empty API key.
+            let pool = app.state::<crate::state::AppState>().db_manager.pool().clone();
+            match crate::database::repositories::setting::SettingsRepository::get_transcript_api_key(
+                &pool, "elevenLabs",
+            )
+            .await
+            {
+                Ok(Some(key)) if !key.trim().is_empty() => {
+                    info!("✅ ElevenLabs Scribe API key present");
+                    Ok(())
+                }
+                Ok(_) => Err(
+                    "Enter your ElevenLabs API key in Settings → Transcription to use Scribe."
+                        .to_string(),
+                ),
+                Err(e) => {
+                    warn!("❌ Failed to read ElevenLabs API key: {}", e);
+                    Err(format!("Failed to read ElevenLabs API key: {}", e))
+                }
+            }
+        }
         other => {
             warn!("❌ Unsupported transcription provider for local recording: {}", other);
             Err(format!(
@@ -211,6 +259,52 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                     Err("Parakeet engine not initialized. This should not happen after validation.".to_string())
                 }
             }
+        }
+        "mistral" => {
+            info!("☁️  Initializing Mistral Voxtral transcription provider");
+            // Per-init API key read from SQLite — never logged, kept only in MistralProvider.
+            let pool = app.state::<crate::state::AppState>().db_manager.pool().clone();
+            let api_key = match crate::database::repositories::setting::SettingsRepository::get_transcript_api_key(
+                &pool, "mistral",
+            )
+            .await
+            {
+                Ok(Some(k)) if !k.trim().is_empty() => k,
+                Ok(_) => {
+                    return Err(
+                        "Mistral API key is missing. Enter it in Settings → Transcription."
+                            .to_string(),
+                    );
+                }
+                Err(e) => return Err(format!("Failed to read Mistral API key: {}", e)),
+            };
+
+            let provider = MistralProvider::new(api_key, config.model.clone(), None);
+            info!("✅ Mistral Voxtral provider ready (model: {})", config.model);
+            Ok(TranscriptionEngine::Provider(Arc::new(provider)))
+        }
+        "elevenLabs" => {
+            info!("☁️  Initializing ElevenLabs Scribe transcription provider");
+            // Per-init API key read from SQLite — never logged, kept only in ElevenLabsProvider.
+            let pool = app.state::<crate::state::AppState>().db_manager.pool().clone();
+            let api_key = match crate::database::repositories::setting::SettingsRepository::get_transcript_api_key(
+                &pool, "elevenLabs",
+            )
+            .await
+            {
+                Ok(Some(k)) if !k.trim().is_empty() => k,
+                Ok(_) => {
+                    return Err(
+                        "ElevenLabs API key is missing. Enter it in Settings → Transcription."
+                            .to_string(),
+                    );
+                }
+                Err(e) => return Err(format!("Failed to read ElevenLabs API key: {}", e)),
+            };
+
+            let provider = ElevenLabsProvider::new(api_key, config.model.clone(), None);
+            info!("✅ ElevenLabs Scribe provider ready (model: {})", config.model);
+            Ok(TranscriptionEngine::Provider(Arc::new(provider)))
         }
         "localWhisper" | _ => {
             info!("🎤 Initializing Whisper transcription engine");

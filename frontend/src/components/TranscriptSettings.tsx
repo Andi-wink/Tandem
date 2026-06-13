@@ -10,7 +10,7 @@ import { ParakeetModelManager } from './ParakeetModelManager';
 
 
 export interface TranscriptModelProps {
-    provider: 'localWhisper' | 'parakeet' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai';
+    provider: 'localWhisper' | 'parakeet' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai' | 'mistral';
     model: string;
     apiKey?: string | null;
 }
@@ -50,15 +50,43 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
             setApiKey(null);
         }
     };
-    const modelOptions = {
+
+    const persistConfig = async (next: TranscriptModelProps, keyOverride?: string | null) => {
+        setTranscriptModelConfig(next);
+        try {
+            await invoke('api_save_transcript_config', {
+                provider: next.provider,
+                model: next.model,
+                apiKey: keyOverride ?? null,
+            });
+        } catch (err) {
+            console.error('Failed to persist transcript config:', err);
+        }
+    };
+
+    const saveApiKey = async () => {
+        if (!apiKey) return;
+        try {
+            await invoke('api_save_transcript_config', {
+                provider: transcriptModelConfig.provider,
+                model: transcriptModelConfig.model,
+                apiKey,
+            });
+            setTranscriptModelConfig({ ...transcriptModelConfig, apiKey });
+        } catch (err) {
+            console.error('Failed to save API key:', err);
+        }
+    };
+    const modelOptions: Record<TranscriptModelProps['provider'], string[]> = {
         localWhisper: [], // Model selection handled by ModelManager component
         parakeet: [], // Model selection handled by ParakeetModelManager component
         deepgram: ['nova-2-phonecall'],
-        elevenLabs: ['eleven_multilingual_v2'],
+        elevenLabs: ['scribe_v2', 'scribe_v1'],
         groq: ['llama-3.3-70b-versatile'],
         openai: ['gpt-4o'],
+        mistral: ['voxtral-mini-latest', 'voxtral-mini-2507', 'voxtral-small-latest'],
     };
-    const requiresApiKey = transcriptModelConfig.provider === 'deepgram' || transcriptModelConfig.provider === 'elevenLabs' || transcriptModelConfig.provider === 'openai' || transcriptModelConfig.provider === 'groq';
+    const requiresApiKey = transcriptModelConfig.provider === 'deepgram' || transcriptModelConfig.provider === 'elevenLabs' || transcriptModelConfig.provider === 'openai' || transcriptModelConfig.provider === 'groq' || transcriptModelConfig.provider === 'mistral';
 
     const handleInputClick = () => {
         if (isApiKeyLocked) {
@@ -68,28 +96,22 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
     };
 
     const handleWhisperModelSelect = (modelName: string) => {
-        // Always update config when model is selected, regardless of current provider
-        // This ensures the model is set when user switches back
-        setTranscriptModelConfig({
+        persistConfig({
             ...transcriptModelConfig,
-            provider: 'localWhisper', // Ensure provider is set correctly
-            model: modelName
+            provider: 'localWhisper',
+            model: modelName,
         });
-        // Close modal after selection
         if (onModelSelect) {
             onModelSelect();
         }
     };
 
     const handleParakeetModelSelect = (modelName: string) => {
-        // Always update config when model is selected, regardless of current provider
-        // This ensures the model is set when user switches back
-        setTranscriptModelConfig({
+        persistConfig({
             ...transcriptModelConfig,
-            provider: 'parakeet', // Ensure provider is set correctly
-            model: modelName
+            provider: 'parakeet',
+            model: modelName,
         });
-        // Close modal after selection
         if (onModelSelect) {
             onModelSelect();
         }
@@ -115,6 +137,20 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                     if (provider !== 'localWhisper' && provider !== 'parakeet') {
                                         fetchApiKey(provider);
                                     }
+                                    // When switching to a local provider, clear any stale
+                                    // cloud-provider model (e.g. "voxtral-mini-latest") so it
+                                    // isn't persisted until the user picks a local model via
+                                    // ModelManager / ParakeetModelManager.
+                                    if (
+                                        provider !== transcriptModelConfig.provider &&
+                                        (provider === 'localWhisper' || provider === 'parakeet')
+                                    ) {
+                                        persistConfig({
+                                            ...transcriptModelConfig,
+                                            provider,
+                                            model: '',
+                                        });
+                                    }
                                 }}
                             >
                                 <SelectTrigger className='focus:ring-1 focus:ring-blue-500 focus:border-blue-500'>
@@ -123,8 +159,9 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                 <SelectContent>
                                     <SelectItem value="parakeet">⚡ Parakeet (Recommended - Real-time / Accurate)</SelectItem>
                                     <SelectItem value="localWhisper">🏠 Local Whisper (High Accuracy)</SelectItem>
+                                    <SelectItem value="mistral">☁️ Mistral Voxtral (Cloud)</SelectItem>
+                                    <SelectItem value="elevenLabs">☁️ ElevenLabs Scribe (Cloud)</SelectItem>
                                     {/* <SelectItem value="deepgram">☁️ Deepgram (Backup)</SelectItem>
-                                    <SelectItem value="elevenLabs">☁️ ElevenLabs</SelectItem>
                                     <SelectItem value="groq">☁️ Groq</SelectItem>
                                     <SelectItem value="openai">☁️ OpenAI</SelectItem> */}
                                 </SelectContent>
@@ -135,7 +172,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                     value={transcriptModelConfig.model}
                                     onValueChange={(value) => {
                                         const model = value as TranscriptModelProps['model'];
-                                        setTranscriptModelConfig({ ...transcriptModelConfig, provider: uiProvider, model });
+                                        persistConfig({ ...transcriptModelConfig, provider: uiProvider, model });
                                     }}
                                 >
                                     <SelectTrigger className='focus:ring-1 focus:ring-blue-500 focus:border-blue-500'>
@@ -185,6 +222,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                         }`}
                                     value={apiKey || ''}
                                     onChange={(e) => setApiKey(e.target.value)}
+                                    onBlur={saveApiKey}
                                     disabled={isApiKeyLocked}
                                     onClick={handleInputClick}
                                     placeholder="Enter your API key"
@@ -200,7 +238,13 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                         type="button"
                                         variant="ghost"
                                         size="icon"
-                                        onClick={() => setIsApiKeyLocked(!isApiKeyLocked)}
+                                        onClick={() => {
+                                            const next = !isApiKeyLocked;
+                                            if (next) {
+                                                saveApiKey();
+                                            }
+                                            setIsApiKeyLocked(next);
+                                        }}
                                         className={`transition-colors duration-200 ${isLockButtonVibrating ? 'animate-vibrate text-red-500' : ''
                                             }`}
                                         title={isApiKeyLocked ? "Unlock to edit" : "Lock to prevent editing"}
