@@ -37,6 +37,7 @@ pub(crate) use perf_trace;
 pub mod analytics;
 pub mod api;
 pub mod audio;
+pub mod canvas;
 pub mod clipboard;
 pub mod console_utils;
 pub mod database;
@@ -919,6 +920,13 @@ pub fn run() {
             // System settings commands
             #[cfg(target_os = "macos")]
             utils::open_system_settings,
+            // Voice-driven canvas (hosts the agent-whiteboard app in a window)
+            canvas::commands::canvas_open,
+            canvas::commands::canvas_hide,
+            canvas::commands::canvas_toggle,
+            canvas::commands::canvas_is_open,
+            canvas::commands::canvas_send_prompt,
+            canvas::commands::canvas_health_check,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

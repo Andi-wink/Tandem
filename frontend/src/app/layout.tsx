@@ -32,6 +32,8 @@ import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ThemeProvider } from 'next-themes'
 import { ComposeProviders } from '@/components/ComposeProviders'
 import { SoloModeProvider } from '@/contexts/SoloModeContext'
+import { CanvasProvider } from '@/contexts/CanvasContext'
+import { CanvasDevPanel } from '@/components/CanvasPanel/CanvasDevPanel'
 import { logger } from '@/lib/logger'
 
 const sourceSans3 = Source_Sans_3({
@@ -132,6 +134,7 @@ export default function RootLayout({
           [SoloModeProvider],
           [ContextBasketProvider],  // R009: Must be above ClaudeProvider
           [ClaudeProvider],
+          [CanvasProvider],  // Voice-driven canvas host glue (drives the agent-whiteboard window)
         ]}>
           {/* Download progress toast provider - listens for background downloads */}
           <DownloadProgressToastProvider />
@@ -149,6 +152,9 @@ export default function RootLayout({
               </ErrorBoundary>
               <ErrorBoundary fallbackLabel="AI Panel">
                 <ClaudePanel />
+              </ErrorBoundary>
+              <ErrorBoundary fallbackLabel="Canvas">
+                <CanvasDevPanel />
               </ErrorBoundary>
             </div>
           )}
