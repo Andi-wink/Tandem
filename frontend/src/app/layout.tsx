@@ -33,7 +33,6 @@ import { ThemeProvider } from 'next-themes'
 import { ComposeProviders } from '@/components/ComposeProviders'
 import { SoloModeProvider } from '@/contexts/SoloModeContext'
 import { CanvasProvider } from '@/contexts/CanvasContext'
-import { CanvasDevPanel } from '@/components/CanvasPanel/CanvasDevPanel'
 import { CanvasVoiceListener } from '@/components/CanvasPanel/CanvasVoiceListener'
 import { logger } from '@/lib/logger'
 
@@ -155,7 +154,6 @@ export default function RootLayout({
                 <ClaudePanel />
               </ErrorBoundary>
               <ErrorBoundary fallbackLabel="Canvas">
-                <CanvasDevPanel />
                 <CanvasVoiceListener />
               </ErrorBoundary>
             </div>

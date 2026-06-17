@@ -1,13 +1,15 @@
 'use client';
 
 /**
- * CanvasContext — Tandem's host-side handle on the voice-driven canvas.
+ * CanvasContext — Tandem's host-side handle on the embedded canvas.
  *
- * Tandem does NOT implement any drawing/agent logic; that lives in the agent-whiteboard `apps/agent`
- * kit, which Tandem opens in a dedicated Tauri window and drives by sending natural-language
- * instructions. All canvas window ops go through Rust commands (see `src-tauri/src/canvas`). This
- * context just exposes them to the React tree plus a little UI state (status, the agent URL, and the
- * transcript-privacy opt-in used by the voice flow).
+ * The canvas is the agent-whiteboard kit, loaded in an <iframe> inside the AI panel (see
+ * CanvasIframe). Tandem never forks canvas code — it drives the iframe by postMessage, which the
+ * app's prompt bridge forwards to `agent.prompt()`. Because the iframe is cross-origin we can't read
+ * its readiness flag directly, so the bridge posts `canvas:ready` up to us; until then we queue.
+ *
+ * This context exposes: the agent URL, the in-panel canvas visibility, iframe registration, the
+ * transcript-privacy opt-in, and `sendPrompt` (the one call that draws/edits on the canvas).
  */
 
 import React, {
@@ -19,7 +21,6 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { logger } from '@/lib/logger';
 
 const DEFAULT_AGENT_URL = 'http://localhost:5174';
@@ -29,41 +30,40 @@ const PRIVACY_STORAGE_KEY = 'tandem-canvas-transcript-optin';
 export type CanvasStatus = 'idle' | 'sending' | 'sent' | 'error';
 
 interface CanvasContextType {
-  /** URL of the agent app the canvas window loads (dev: http://localhost:5174). */
   agentUrl: string;
   setAgentUrl: (url: string) => void;
-  /** Whether the canvas window is currently visible. */
-  isOpen: boolean;
-  /** Health of the agent app URL (null = unknown/not yet checked). */
-  isHealthy: boolean | null;
+  /** Whether the in-panel canvas view is shown (vs the chat view). */
+  canvasVisible: boolean;
+  showCanvas: () => void;
+  hideCanvas: () => void;
+  toggleCanvas: () => void;
+  /** True once the embedded canvas agent has announced it's ready to receive prompts. */
+  canvasReady: boolean;
   status: CanvasStatus;
   lastError: string | null;
-  /** Opt-in to sending the rolling transcript window as context to the canvas (voice flow). */
   transcriptOptIn: boolean;
   setTranscriptOptIn: (v: boolean) => void;
 
-  openCanvas: () => Promise<void>;
-  hideCanvas: () => Promise<void>;
-  toggleCanvas: () => Promise<void>;
-  /** Send a natural-language instruction to the canvas agent. */
-  sendPrompt: (message: string, opts?: { show?: boolean }) => Promise<boolean>;
-  checkHealth: () => Promise<boolean>;
+  /** CanvasIframe calls this with its contentWindow (or null on unmount). */
+  registerCanvasIframe: (win: Window | null) => void;
+  /** Send a natural-language instruction to the embedded canvas (shows the canvas view). */
+  sendPrompt: (message: string) => Promise<boolean>;
 }
 
 const CanvasContext = createContext<CanvasContextType | null>(null);
 
-const inTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-
 export function CanvasProvider({ children }: { children: React.ReactNode }) {
   const [agentUrl, setAgentUrlState] = useState(DEFAULT_AGENT_URL);
-  const [isOpen, setIsOpen] = useState(false);
-  const [isHealthy, setIsHealthy] = useState<boolean | null>(null);
+  const [canvasVisible, setCanvasVisible] = useState(false);
+  const [canvasReady, setCanvasReady] = useState(false);
   const [status, setStatus] = useState<CanvasStatus>('idle');
   const [lastError, setLastError] = useState<string | null>(null);
   const [transcriptOptIn, setTranscriptOptInState] = useState(false);
+
+  const iframeWinRef = useRef<Window | null>(null);
+  const pendingRef = useRef<string | null>(null);
   const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Load persisted settings
   useEffect(() => {
     try {
       const u = localStorage.getItem(URL_STORAGE_KEY);
@@ -100,113 +100,123 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const checkHealth = useCallback(async (): Promise<boolean> => {
-    if (!inTauri()) return false;
+  const postToCanvas = useCallback((message: string): boolean => {
+    const win = iframeWinRef.current;
+    if (!win) return false;
     try {
-      const ok = await invoke<boolean>('canvas_health_check', { url: agentUrl });
-      setIsHealthy(ok);
-      return ok;
+      win.postMessage({ type: 'canvas:prompt', message }, '*');
+      return true;
     } catch (e) {
-      logger.warn('[Canvas] health check failed', e);
-      setIsHealthy(false);
+      logger.warn('[Canvas] postMessage to iframe failed', e);
       return false;
     }
-  }, [agentUrl]);
+  }, []);
 
-  const refreshOpen = useCallback(async () => {
-    if (!inTauri()) return;
-    try {
-      setIsOpen(await invoke<boolean>('canvas_is_open'));
-    } catch {
-      /* ignore */
+  const showCanvas = useCallback(() => setCanvasVisible(true), []);
+  const hideCanvas = useCallback(() => setCanvasVisible(false), []);
+  const toggleCanvas = useCallback(() => setCanvasVisible((v) => !v), []);
+
+  // Listen for the bridge's readiness announcement (and flush any queued prompt).
+  useEffect(() => {
+    const onMessage = (ev: MessageEvent) => {
+      const t = ev.data && typeof ev.data === 'object' ? (ev.data as { type?: unknown }).type : undefined;
+      if (t === 'canvas:ready') {
+        setCanvasReady(true);
+        if (pendingRef.current) {
+          const msg = pendingRef.current;
+          pendingRef.current = null;
+          postToCanvas(msg);
+          flashStatus('sent');
+        }
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => {
+      window.removeEventListener('message', onMessage);
+      if (statusTimer.current) clearTimeout(statusTimer.current);
+    };
+  }, [postToCanvas, flashStatus]);
+
+  const registerCanvasIframe = useCallback((win: Window | null) => {
+    iframeWinRef.current = win;
+    setCanvasReady(false);
+    // Ask an already-mounted agent whether it's ready (covers reloads / late host mount).
+    if (win) {
+      try {
+        win.postMessage({ type: 'canvas:ping' }, '*');
+      } catch {
+        /* ignore */
+      }
     }
   }, []);
 
-  const openCanvas = useCallback(async () => {
-    if (!inTauri()) return;
-    await invoke('canvas_open', { url: agentUrl });
-    setIsOpen(true);
-  }, [agentUrl]);
-
-  const hideCanvas = useCallback(async () => {
-    if (!inTauri()) return;
-    await invoke('canvas_hide');
-    setIsOpen(false);
-  }, []);
-
-  const toggleCanvas = useCallback(async () => {
-    if (!inTauri()) return;
-    const open = await invoke<boolean>('canvas_toggle', { url: agentUrl });
-    setIsOpen(open);
-  }, [agentUrl]);
-
   const sendPrompt = useCallback(
-    async (message: string, opts?: { show?: boolean }): Promise<boolean> => {
+    async (message: string): Promise<boolean> => {
       const trimmed = message.trim();
       if (!trimmed) return false;
-      if (!inTauri()) {
-        logger.warn('[Canvas] sendPrompt called outside Tauri');
-        return false;
+      // Make sure the user can see the result, and ask the host to open the panel.
+      setCanvasVisible(true);
+      try {
+        window.dispatchEvent(new CustomEvent('tandem:canvas-show'));
+      } catch {
+        /* ignore */
       }
       flashStatus('sending');
       setLastError(null);
-      try {
-        await invoke('canvas_send_prompt', {
-          message: trimmed,
-          url: agentUrl,
-          show: opts?.show ?? true,
-        });
-        setIsOpen(true);
-        flashStatus('sent');
-        return true;
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        logger.error('[Canvas] sendPrompt failed', msg);
-        setLastError(msg);
-        flashStatus('error');
-        return false;
-      }
-    },
-    [agentUrl, flashStatus],
-  );
 
-  useEffect(() => {
-    void refreshOpen();
-    return () => {
-      if (statusTimer.current) clearTimeout(statusTimer.current);
-    };
-  }, [refreshOpen]);
+      if (!iframeWinRef.current) {
+        // Iframe not mounted yet — queue it; it flushes on 'canvas:ready'.
+        pendingRef.current = trimmed;
+        return true;
+      }
+      if (canvasReady) {
+        const ok = postToCanvas(trimmed);
+        flashStatus(ok ? 'sent' : 'error');
+        if (!ok) setLastError('Could not reach the canvas.');
+        return ok;
+      }
+      // Mounted but not ready yet — queue + nudge.
+      pendingRef.current = trimmed;
+      try {
+        iframeWinRef.current.postMessage({ type: 'canvas:ping' }, '*');
+      } catch {
+        /* ignore */
+      }
+      return true;
+    },
+    [canvasReady, postToCanvas, flashStatus],
+  );
 
   const value = useMemo<CanvasContextType>(
     () => ({
       agentUrl,
       setAgentUrl,
-      isOpen,
-      isHealthy,
+      canvasVisible,
+      showCanvas,
+      hideCanvas,
+      toggleCanvas,
+      canvasReady,
       status,
       lastError,
       transcriptOptIn,
       setTranscriptOptIn,
-      openCanvas,
-      hideCanvas,
-      toggleCanvas,
+      registerCanvasIframe,
       sendPrompt,
-      checkHealth,
     }),
     [
       agentUrl,
       setAgentUrl,
-      isOpen,
-      isHealthy,
+      canvasVisible,
+      showCanvas,
+      hideCanvas,
+      toggleCanvas,
+      canvasReady,
       status,
       lastError,
       transcriptOptIn,
       setTranscriptOptIn,
-      openCanvas,
-      hideCanvas,
-      toggleCanvas,
+      registerCanvasIframe,
       sendPrompt,
-      checkHealth,
     ],
   );
 

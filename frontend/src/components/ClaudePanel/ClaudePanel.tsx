@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X, Send, AlertCircle, Square, Check, Shield, Paperclip, Mic, FolderOpen, Code, SlidersHorizontal, ChevronDown, Plus } from 'lucide-react';
+import { X, Send, AlertCircle, Square, Check, Shield, Paperclip, Mic, FolderOpen, Code, SlidersHorizontal, ChevronDown, Plus, PenTool } from 'lucide-react';
 import { toast } from 'sonner';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { useClaude, MODEL_OPTIONS } from '@/contexts/ClaudeContext';
@@ -13,6 +13,9 @@ import { useDropZone, useDragActive } from '@/hooks/useDragAndDrop';
 import { useSelection } from '@/contexts/SelectionContext';
 import { useSlashCommand } from '@/hooks/useSlashCommand';
 import { useVoiceCommand, VoiceCommandResult } from '@/hooks/useVoiceCommand';
+import { useCanvas } from '@/contexts/CanvasContext';
+import { routeMessage } from '@/services/canvasRouter';
+import { CanvasIframe } from '@/components/CanvasPanel/CanvasIframe';
 import { TEXTAREA_MAX_HEIGHT_PX } from '@/lib/constants';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useTranscripts } from '@/contexts/TranscriptContext';
@@ -251,6 +254,7 @@ export function ClaudePanel() {
   // F047: Feed new transcript segments into voice command capture while listening
   const { transcripts } = useTranscripts();
   const { sessionFolder } = useSoloMode();
+  const canvas = useCanvas();
   const lastFedTranscriptIdRef = useRef<string | null>(null);
   const prevIsListeningRef = useRef(false);
 
@@ -289,6 +293,23 @@ export function ClaudePanel() {
     }
   }, [isPanelOpen]);
 
+  // Canvas asked to be shown (a voice/typed command routed to the canvas) — open the panel and
+  // switch to the canvas view so the user sees the result.
+  useEffect(() => {
+    const onShow = async () => {
+      if (!isPanelOpen) {
+        let folder = projectDir || '';
+        if (!folder) {
+          try { folder = (await invoke<string | null>('get_meeting_folder_path')) || ''; } catch { /* ok */ }
+        }
+        await openPanel(meetingId || 'live-recording', meetingTitle || 'Live Recording', folder);
+      }
+      canvas.showCanvas();
+    };
+    window.addEventListener('tandem:canvas-show', onShow as EventListener);
+    return () => window.removeEventListener('tandem:canvas-show', onShow as EventListener);
+  }, [isPanelOpen, projectDir, meetingId, meetingTitle, openPanel, canvas]);
+
   // Auto-resize textarea
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
@@ -309,6 +330,19 @@ export function ClaudePanel() {
     if (isStreaming) {
       cancelStream();
       await new Promise(r => setTimeout(r, 150));
+    }
+
+    // Canvas auto-routing: a plain message may be a "draw/edit this on the canvas" request. The
+    // router is heuristic-first (instant) with a small Claude classification for ambiguous cases.
+    // Slash/action/@code messages are explicit AI commands and are never routed.
+    if (!activeCommand && !/@code\b/i.test(text)) {
+      const route = await routeMessage(text, { anthropicKey: apiKey, canvasOpen: canvas.canvasVisible });
+      if (route === 'canvas') {
+        setInputText('');
+        if (inputRef.current) inputRef.current.style.height = 'auto';
+        await canvas.sendPrompt(text);
+        return;
+      }
     }
 
     // F020: If this is an action command, dispatch locally instead of sending to AI
@@ -611,6 +645,14 @@ export function ClaudePanel() {
             )}
           </div>
           <div className="flex items-center gap-0.5 flex-shrink-0">
+            <button
+              onClick={() => canvas.toggleCanvas()}
+              className={`p-1.5 rounded-md transition-colors ${canvas.canvasVisible ? 'text-brand bg-muted' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
+              title={canvas.canvasVisible ? 'Show chat' : 'Show canvas'}
+              aria-pressed={canvas.canvasVisible}
+            >
+              <PenTool className="w-4 h-4" />
+            </button>
             {sessionId && (
               <button
                 onClick={clearSession}
@@ -637,6 +679,11 @@ export function ClaudePanel() {
             </button>
           </div>
         </div>
+
+        {/* Content area (chat). The canvas iframe overlays this region when the canvas view is on;
+            the header (toggle) and the input below stay visible — one input drives both. */}
+        <div className="relative flex flex-1 flex-col min-h-0">
+        <CanvasIframe />
 
         {/* API key not set warning */}
         {!hasApiKey && (
@@ -685,6 +732,7 @@ export function ClaudePanel() {
           isStreaming={isStreaming}
           onAnswer={(answer) => { if (!isStreaming) sendMessage(answer).catch(console.error); }}
         />
+        </div>
 
         {/* Input */}
         <div className="p-3 flex-shrink-0">

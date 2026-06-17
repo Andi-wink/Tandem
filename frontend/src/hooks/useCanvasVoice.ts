@@ -157,7 +157,7 @@ export function useCanvasVoice() {
     }
 
     toast.info(`Canvas: "${instruction.slice(0, 60)}${instruction.length > 60 ? '…' : ''}"`);
-    await sendPrompt(message, { show: true });
+    await sendPrompt(message);
   }, [teardown, sendPrompt]);
 
   useEffect(() => {
