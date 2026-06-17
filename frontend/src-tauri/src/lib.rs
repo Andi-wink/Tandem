@@ -442,11 +442,31 @@ pub fn run() {
             let fullscreen_shortcut: Shortcut = "Alt+Shift+S".parse().expect("Invalid shortcut: Alt+Shift+S");
             let region_shortcut: Shortcut = "Alt+Shift+R".parse().expect("Invalid shortcut: Alt+Shift+R");
             let clipboard_shortcut: Shortcut = "Alt+Shift+V".parse().expect("Invalid shortcut: Alt+Shift+V");
+            let canvas_shortcut: Shortcut = "Alt+Shift+A".parse().expect("Invalid shortcut: Alt+Shift+A");
 
             tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcuts(["Alt+Shift+S", "Alt+Shift+R", "Alt+Shift+V"])
+                .with_shortcuts(["Alt+Shift+S", "Alt+Shift+R", "Alt+Shift+V", "Alt+Shift+A"])
                 .expect("Failed to parse global shortcuts")
                 .with_handler(move |app, shortcut, event| {
+                    use tauri::Emitter as _;
+
+                    // Canvas voice command (Alt+Shift+A) is PUSH-TO-TALK: it needs both edges.
+                    // Hold to speak the command, release to fire. The renderer captures the mic
+                    // clip between these events, transcribes it, and drives the canvas window.
+                    if shortcut == &canvas_shortcut {
+                        match event.state {
+                            ShortcutState::Pressed => {
+                                log::info!("Global shortcut pressed: Alt+Shift+A (canvas voice — start)");
+                                let _ = app.emit("canvas-voice-start", ());
+                            }
+                            ShortcutState::Released => {
+                                log::info!("Global shortcut released: Alt+Shift+A (canvas voice — stop)");
+                                let _ = app.emit("canvas-voice-stop", ());
+                            }
+                        }
+                        return;
+                    }
+
                     if let ShortcutState::Pressed = event.state {
                         if shortcut == &clipboard_shortcut {
                             log::info!("Global shortcut pressed: Alt+Shift+V (clipboard capture)");
@@ -586,7 +606,7 @@ pub fn run() {
             }
 
             // Global shortcuts are registered via .with_shortcuts() on the plugin builder
-            log::info!("Global shortcuts registered via plugin builder (Alt+Shift+S, Alt+Shift+R, Alt+Shift+V)");
+            log::info!("Global shortcuts registered via plugin builder (Alt+Shift+S, Alt+Shift+R, Alt+Shift+V, Alt+Shift+A)");
 
             // Initialize notification system with proper defaults
             log::info!("Initializing notification system...");
@@ -926,6 +946,7 @@ pub fn run() {
             canvas::commands::canvas_toggle,
             canvas::commands::canvas_is_open,
             canvas::commands::canvas_send_prompt,
+            canvas::commands::canvas_transcribe_clip,
             canvas::commands::canvas_health_check,
         ])
         .build(tauri::generate_context!())

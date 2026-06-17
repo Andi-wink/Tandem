@@ -34,6 +34,7 @@ import { ComposeProviders } from '@/components/ComposeProviders'
 import { SoloModeProvider } from '@/contexts/SoloModeContext'
 import { CanvasProvider } from '@/contexts/CanvasContext'
 import { CanvasDevPanel } from '@/components/CanvasPanel/CanvasDevPanel'
+import { CanvasVoiceListener } from '@/components/CanvasPanel/CanvasVoiceListener'
 import { logger } from '@/lib/logger'
 
 const sourceSans3 = Source_Sans_3({
@@ -155,6 +156,7 @@ export default function RootLayout({
               </ErrorBoundary>
               <ErrorBoundary fallbackLabel="Canvas">
                 <CanvasDevPanel />
+                <CanvasVoiceListener />
               </ErrorBoundary>
             </div>
           )}

@@ -24,6 +24,8 @@ export function CanvasDevPanel() {
     lastError,
     agentUrl,
     setAgentUrl,
+    transcriptOptIn,
+    setTranscriptOptIn,
     openCanvas,
     hideCanvas,
     sendPrompt,
@@ -117,6 +119,19 @@ export function CanvasDevPanel() {
             </button>
           </div>
 
+          <label className="mt-2 flex items-start gap-2 text-caption text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={transcriptOptIn}
+              onChange={(e) => setTranscriptOptIn(e.target.checked)}
+              className="mt-0.5 accent-primary"
+            />
+            <span>
+              Share the last 5 min of transcript as context for voice commands (Alt+Shift+A). Off by
+              default — your call stays private.
+            </span>
+          </label>
+
           {status === 'sent' && (
             <p className="mt-2 text-caption text-green-500">Sent to canvas.</p>
           )}
@@ -125,6 +140,11 @@ export function CanvasDevPanel() {
               {lastError || 'Could not reach the canvas.'}
             </p>
           )}
+
+          <p className="mt-2 text-caption text-muted-foreground">
+            Or hold <kbd className="rounded border border-border px-1">Alt+Shift+A</kbd> and speak a
+            command.
+          </p>
 
           <button
             onClick={() => setShowSettings((v) => !v)}

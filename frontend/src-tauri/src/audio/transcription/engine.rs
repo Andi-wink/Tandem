@@ -47,6 +47,31 @@ impl TranscriptionEngine {
             Self::Provider(provider) => provider.provider_name(),
         }
     }
+
+    /// Transcribe a one-off audio clip (16kHz mono f32) to text, dispatching to whichever provider
+    /// is configured. Used by the voice-canvas command path (a short push-to-talk clip), separate
+    /// from the streaming recording pipeline.
+    pub async fn transcribe(
+        &self,
+        audio: Vec<f32>,
+        language: Option<String>,
+    ) -> std::result::Result<String, String> {
+        match self {
+            Self::Whisper(engine) => engine
+                .transcribe_audio(audio, language)
+                .await
+                .map_err(|e| e.to_string()),
+            Self::Parakeet(engine) => engine
+                .transcribe_audio(audio)
+                .await
+                .map_err(|e| e.to_string()),
+            Self::Provider(provider) => provider
+                .transcribe(audio, language)
+                .await
+                .map(|r| r.text)
+                .map_err(|e| e.to_string()),
+        }
+    }
 }
 
 // ============================================================================

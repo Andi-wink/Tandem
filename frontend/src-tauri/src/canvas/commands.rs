@@ -111,6 +111,25 @@ pub async fn canvas_send_prompt<R: Runtime>(
     Ok(())
 }
 
+/// Transcribe a short push-to-talk command clip (16kHz mono f32 samples captured in the renderer)
+/// using whichever transcription provider Tandem is configured with. This is the "fast dedicated
+/// STT" for the spoken canvas command — separate from the rolling note transcript (which is too
+/// laggy for the command itself but supplies CONTEXT). Returns the transcribed instruction text.
+#[tauri::command]
+pub async fn canvas_transcribe_clip<R: Runtime>(
+    app: AppHandle<R>,
+    samples: Vec<f32>,
+    language: Option<String>,
+) -> Result<String, String> {
+    if samples.is_empty() {
+        return Err("empty audio clip".into());
+    }
+    let engine = crate::audio::transcription::engine::get_or_init_transcription_engine(&app).await?;
+    let text = engine.transcribe(samples, language).await?;
+    info!("Canvas command clip transcribed: {} chars", text.trim().len());
+    Ok(text.trim().to_string())
+}
+
 /// Health-check the agent app URL (used before opening the window / spawning the sidecar). Returns
 /// true if the URL responds. Short timeout so the UI doesn't hang when the server is down.
 #[tauri::command]
