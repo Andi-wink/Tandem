@@ -9,8 +9,9 @@ import { logger } from '@/lib/logger';
 export type CanvasRoute = 'canvas' | 'chat';
 
 // Strong "make something on the canvas" signals — high precision, route straight to canvas.
+// Includes "map out …", "process map", and "map … the processes/flow/steps" (a very common ask).
 const CREATE_RE =
-  /\b(draw|sketch|diagram|flow ?chart|wireframe|mock ?up|whiteboard|visuali[sz]e|graph|process flow|map (it|this|that|the)\b.*\bout|lay (it|this|out))\b/i;
+  /\b(draw|sketch|diagram|flow ?chart|wireframe|mock ?up|whiteboard|visuali[sz]e|graph|process flow|process map|map out|lay out)\b|\bmap\b[^.?!]{0,40}\b(process(es)?|flow|steps?|journey|pipeline)\b|\bmap (it|this|that|the)\b.*\bout\b|\blay (it|this|out)\b/i;
 // Edit signals that only make sense when there's already something on the canvas.
 const EDIT_RE =
   /\b(make (it|that|the|this)\b|recolou?r|rename (it|that|the)\b|add (a|an|another) (step|box|node|arrow|shape|label)|move (it|that|the)\b|connect (it|the|them)\b|bigger|smaller|delete (it|that|the)\b)\b/i;
@@ -34,8 +35,9 @@ async function llmRoute(message: string, apiKey: string, canvasOpen: boolean): P
   if (!apiKey) return null;
   const system =
     'You route one user message to a tool. Reply with EXACTLY one word: "canvas" or "chat". ' +
-    'Choose "canvas" if the user wants to draw, diagram, sketch, mock up, wireframe, lay out, or edit ' +
-    'something on a visual whiteboard canvas' +
+    'Choose "canvas" if the user wants to draw, diagram, sketch, mock up, wireframe, lay out, map out, ' +
+    'visualize, or edit a process/flow/steps/architecture on a visual whiteboard canvas (e.g. "map out ' +
+    'the processes", "process map", "show the flow")' +
     (canvasOpen ? ' (a canvas is currently open, so edits like "make it blue" mean the canvas)' : '') +
     '. Choose "chat" for questions, explanations, summaries, search, writing, code, or anything else.';
   try {
