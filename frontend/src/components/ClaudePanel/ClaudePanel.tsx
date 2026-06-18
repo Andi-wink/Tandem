@@ -556,6 +556,16 @@ export function ClaudePanel() {
     }
   };
 
+  // Canvas layout: expanded = full-screen with the chat as a white column on the right; narrow-canvas
+  // = canvas fills the panel with just the input bar below (history hidden); chat-only = normal chat.
+  const canvasExpanded = canvas.canvasVisible && canvas.canvasExpanded;
+  const conversationHidden = canvas.canvasVisible && !canvas.canvasExpanded;
+  const chatRegionClass = canvasExpanded
+    ? 'canvas-chat-light flex flex-col w-[400px] flex-shrink-0 min-h-0 border-l border-border bg-background'
+    : canvas.canvasVisible
+      ? 'flex flex-col flex-shrink-0'
+      : 'flex flex-col flex-1 min-h-0';
+
   return (
     <>
       {/* Edge drop strip — visible when panel is CLOSED and a drag is active.
@@ -690,10 +700,15 @@ export function ClaudePanel() {
           </div>
         </div>
 
-        {/* Content area (chat). The canvas iframe overlays this region when the canvas view is on;
-            the header (toggle) and the input below stay visible — one input drives both. */}
-        <div className="relative flex flex-1 flex-col min-h-0">
+        {/* Panel body. Canvas + chat are flex SIBLINGS (never overlapping): expanded -> row (canvas
+            left, white chat column right); narrow canvas -> column (canvas fills, input bar below);
+            chat-only -> column (full-width chat). The canvas iframe stays mounted across all three. */}
+        <div className={canvasExpanded ? 'flex flex-row flex-1 min-h-0' : 'flex flex-col flex-1 min-h-0'}>
         <CanvasIframe />
+
+        {/* Chat region: conversation history (hidden in narrow-canvas mode) + the shared input. */}
+        <div className={chatRegionClass}>
+        <div className={conversationHidden ? 'hidden' : 'flex flex-col flex-1 min-h-0'}>
 
         {/* API key not set warning */}
         {!hasApiKey && (
@@ -947,6 +962,8 @@ export function ClaudePanel() {
             </div>
           </div>
         </div>
+        </div>{/* chat region */}
+        </div>{/* panel body */}
       </div>
 
       {/* Project Dir Modal */}

@@ -26,10 +26,12 @@ export function CanvasIframe() {
   // `embed=1` tells the agent app to hide its own ChatPanel — Tandem's input is the single input.
   const src = agentUrl.includes('?') ? `${agentUrl}&embed=1` : `${agentUrl}?embed=1`;
 
+  // Flex child (not an absolute overlay): in the panel body it sits left of / above the chat region,
+  // so the chat input is never covered. Stays mounted when hidden (display:none) to preserve board +
+  // agent state across view switches.
   return (
     <div
-      className="absolute inset-0 z-10 bg-background"
-      style={{ display: canvasVisible ? 'block' : 'none' }}
+      className={canvasVisible ? 'relative min-h-0 min-w-0 flex-1 bg-background' : 'hidden'}
       aria-hidden={!canvasVisible}
     >
       <iframe
