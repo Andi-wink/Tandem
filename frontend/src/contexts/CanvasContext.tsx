@@ -251,6 +251,13 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
     return () => {
       window.removeEventListener('message', onMessage);
       if (statusTimer.current) clearTimeout(statusTimer.current);
+      // Resolve + clear any in-flight save/load requests so their timers don't leak past unmount.
+      pendingReqRef.current.forEach(({ timer, resolve }) => {
+        clearTimeout(timer);
+        resolve(null);
+      });
+      pendingReqRef.current.clear();
+      readyWaitersRef.current = [];
     };
   }, [postToCanvas, flashStatus]);
 
@@ -286,7 +293,7 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
         pendingRef.current = trimmed;
         return true;
       }
-      if (canvasReady) {
+      if (canvasReadyRef.current) {
         const ok = postToCanvas(trimmed);
         flashStatus(ok ? 'sent' : 'error');
         if (!ok) setLastError('Could not reach the canvas.');
@@ -301,7 +308,7 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
       }
       return true;
     },
-    [canvasReady, postToCanvas, flashStatus],
+    [postToCanvas, flashStatus],
   );
 
   const value = useMemo<CanvasContextType>(

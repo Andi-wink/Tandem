@@ -173,6 +173,28 @@
     --accent-foreground: 0 0% 9%;
     --border: 0 0% 89.8%;
     --input: 0 0% 89.8%;
+    --primary: 0 0% 9%;
+    --primary-foreground: 0 0% 98%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --ring: 0 0% 3.9%;
+    --recording: 0 84% 60%;
+    --recording-hover: 0 72% 51%;
+    --recording-foreground: 0 0% 100%;
+    --recording-muted: 0 84% 95%;
+    --paused: 25 95% 53%;
+    --paused-foreground: 0 0% 100%;
+    --brand: 221 83% 53%;
+    --brand-hover: 224 76% 48%;
+    --brand-foreground: 0 0% 100%;
+    --brand-muted: 214 94% 94%;
+    --brand-muted-foreground: 224 76% 48%;
+    --success: 142 76% 36%;
+    --success-foreground: 0 0% 100%;
+    --success-muted: 142 76% 93%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 9%;
+    --warning-muted: 48 96% 89%;
     color: hsl(var(--foreground));
   }
 

@@ -28,33 +28,49 @@ export function useWhiteboardPersistence() {
   const { canvasVisible, showCanvas, saveSnapshot, loadSnapshot, clearCanvas } = useCanvas();
   const currentFolderRef = useRef<string | null>(null);
   const prevVisibleRef = useRef(false);
+  // Marks that the next canvas-open was triggered by the "open this saved board" path, so the live
+  // open effect doesn't overwrite it with the active meeting's board.
+  const openedSavedRef = useRef<string | null>(null);
+  // Single-flight save per folder: coalesces concurrent saves (close + recording-stop + unload) so
+  // two round-trips can't interleave torn writes to the same file.
+  const savingRef = useRef<Map<string, Promise<void>>>(new Map());
 
   const save = useCallback(
-    async (folder: string | null) => {
-      if (!folder || !inTauri()) return;
-      try {
-        const result = await saveSnapshot();
-        if (!result?.snapshot) return; // board unreachable — don't clobber a good save with an empty one
-        // .tldr.json = full fidelity (restore). .md + .png = agent-friendly companions.
-        await invoke('save_transcript', {
-          filePath: joinPath(folder, WHITEBOARD_FILE),
-          content: JSON.stringify(result.snapshot),
-        });
-        if (result.markdown) {
+    (folder: string | null): Promise<void> => {
+      if (!folder || !inTauri()) return Promise.resolve();
+      // Coalesce concurrent saves of the same folder onto one in-flight round-trip.
+      const inflight = savingRef.current.get(folder);
+      if (inflight) return inflight;
+      const run = (async () => {
+        try {
+          const result = await saveSnapshot();
+          if (!result?.snapshot) return; // board unreachable — don't clobber a good save with an empty one
+          // .tldr.json = full fidelity (restore). .md + .png = agent-friendly companions.
           await invoke('save_transcript', {
-            filePath: joinPath(folder, 'whiteboard.md'),
-            content: result.markdown,
-          }).catch((e) => logger.warn('[Whiteboard] md save failed', e));
+            filePath: joinPath(folder, WHITEBOARD_FILE),
+            content: JSON.stringify(result.snapshot),
+          });
+          if (result.markdown) {
+            await invoke('save_transcript', {
+              filePath: joinPath(folder, 'whiteboard.md'),
+              content: result.markdown,
+            }).catch((e) => logger.warn('[Whiteboard] md save failed', e));
+          }
+          if (result.png) {
+            await invoke('save_base64_file', {
+              path: joinPath(folder, 'whiteboard.png'),
+              base64: result.png,
+            }).catch((e) => logger.warn('[Whiteboard] png save failed', e));
+          }
+        } catch (e) {
+          logger.warn('[Whiteboard] save failed', e);
         }
-        if (result.png) {
-          await invoke('save_base64_file', {
-            path: joinPath(folder, 'whiteboard.png'),
-            base64: result.png,
-          }).catch((e) => logger.warn('[Whiteboard] png save failed', e));
-        }
-      } catch (e) {
-        logger.warn('[Whiteboard] save failed', e);
-      }
+      })();
+      savingRef.current.set(folder, run);
+      void run.finally(() => {
+        if (savingRef.current.get(folder) === run) savingRef.current.delete(folder);
+      });
+      return run;
     },
     [saveSnapshot],
   );
@@ -90,7 +106,9 @@ export function useWhiteboardPersistence() {
     const onOpenSaved = (e: Event) => {
       const folder = (e as CustomEvent<{ folderPath?: string }>).detail?.folderPath || null;
       if (!folder) return;
-      currentFolderRef.current = folder; // set synchronously so the visibility effect doesn't re-resolve
+      // Flag + target synchronously so the live-open effect doesn't re-resolve to the active meeting.
+      openedSavedRef.current = folder;
+      currentFolderRef.current = folder;
       showCanvas();
       void load(folder);
     };
@@ -103,15 +121,20 @@ export function useWhiteboardPersistence() {
     const wasVisible = prevVisibleRef.current;
     prevVisibleRef.current = canvasVisible;
     if (canvasVisible && !wasVisible) {
-      if (!currentFolderRef.current) {
-        invoke<string | null>('get_meeting_folder_path')
-          .then((f) => {
-            if (f) void load(f);
-          })
-          .catch(() => {});
+      // Opened via the meeting-details "Whiteboard" button — it already targeted + loaded that board.
+      if (openedSavedRef.current) {
+        openedSavedRef.current = null;
+        return;
       }
+      // Live open: load the ACTIVE meeting's board, swapping if it differs from what's loaded.
+      invoke<string | null>('get_meeting_folder_path')
+        .then((f) => {
+          if (f && f !== currentFolderRef.current) void load(f);
+        })
+        .catch(() => {});
     } else if (!canvasVisible && wasVisible) {
       void save(currentFolderRef.current);
+      openedSavedRef.current = null;
     }
   }, [canvasVisible, load, save]);
 
