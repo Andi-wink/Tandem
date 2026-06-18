@@ -29,6 +29,15 @@ const PRIVACY_STORAGE_KEY = 'tandem-canvas-transcript-optin';
 
 export type CanvasStatus = 'idle' | 'sending' | 'sent' | 'error';
 
+/** What the board returns when asked to save: the snapshot (for restore) + agent-friendly exports. */
+export interface CanvasSaveResult {
+  snapshot: unknown;
+  /** PNG render of the board as a data URL (so a downstream agent can see it). Null if unavailable. */
+  png: string | null;
+  /** Markdown flattening: text labels + raw HTML/CSS of built shapes. Null if unavailable. */
+  markdown: string | null;
+}
+
 interface CanvasContextType {
   agentUrl: string;
   setAgentUrl: (url: string) => void;
@@ -53,8 +62,8 @@ interface CanvasContextType {
   /** Send a natural-language instruction to the embedded canvas (shows the canvas view). */
   sendPrompt: (message: string) => Promise<boolean>;
 
-  /** Ask the embedded board for a full snapshot (JSON) to persist. Null if it can't be reached. */
-  saveSnapshot: () => Promise<unknown | null>;
+  /** Ask the board to save: snapshot (for restore) + PNG + markdown. Null if it can't be reached. */
+  saveSnapshot: () => Promise<CanvasSaveResult | null>;
   /** Load a previously saved snapshot into the board (pass null to clear it). */
   loadSnapshot: (snapshot: unknown | null) => Promise<boolean>;
   /** Clear the board (blank canvas for a fresh meeting). */
@@ -180,9 +189,14 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
     [awaitReady],
   );
 
-  const saveSnapshot = useCallback(async (): Promise<unknown | null> => {
+  const saveSnapshot = useCallback(async (): Promise<CanvasSaveResult | null> => {
     const res = await postRequest({ type: 'canvas:save' });
-    return res && 'snapshot' in res ? (res.snapshot ?? null) : null;
+    if (!res || !('snapshot' in res) || res.snapshot == null) return null;
+    return {
+      snapshot: res.snapshot,
+      png: typeof res.png === 'string' ? res.png : null,
+      markdown: typeof res.markdown === 'string' ? res.markdown : null,
+    };
   }, [postRequest]);
 
   const loadSnapshot = useCallback(

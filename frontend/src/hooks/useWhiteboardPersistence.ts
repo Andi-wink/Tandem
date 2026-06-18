@@ -22,7 +22,7 @@ import { logger } from '@/lib/logger';
 export const WHITEBOARD_FILE = 'whiteboard.tldr.json';
 
 const inTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-const boardPath = (folder: string) => `${folder}${folder.includes('\\') ? '\\' : '/'}${WHITEBOARD_FILE}`;
+const joinPath = (folder: string, file: string) => `${folder}${folder.includes('\\') ? '\\' : '/'}${file}`;
 
 export function useWhiteboardPersistence() {
   const { canvasVisible, showCanvas, saveSnapshot, loadSnapshot, clearCanvas } = useCanvas();
@@ -33,9 +33,25 @@ export function useWhiteboardPersistence() {
     async (folder: string | null) => {
       if (!folder || !inTauri()) return;
       try {
-        const snap = await saveSnapshot();
-        if (!snap) return; // board unreachable — don't clobber a good save with an empty one
-        await invoke('save_transcript', { filePath: boardPath(folder), content: JSON.stringify(snap) });
+        const result = await saveSnapshot();
+        if (!result?.snapshot) return; // board unreachable — don't clobber a good save with an empty one
+        // .tldr.json = full fidelity (restore). .md + .png = agent-friendly companions.
+        await invoke('save_transcript', {
+          filePath: joinPath(folder, WHITEBOARD_FILE),
+          content: JSON.stringify(result.snapshot),
+        });
+        if (result.markdown) {
+          await invoke('save_transcript', {
+            filePath: joinPath(folder, 'whiteboard.md'),
+            content: result.markdown,
+          }).catch((e) => logger.warn('[Whiteboard] md save failed', e));
+        }
+        if (result.png) {
+          await invoke('save_base64_file', {
+            path: joinPath(folder, 'whiteboard.png'),
+            base64: result.png,
+          }).catch((e) => logger.warn('[Whiteboard] png save failed', e));
+        }
       } catch (e) {
         logger.warn('[Whiteboard] save failed', e);
       }
@@ -52,7 +68,7 @@ export function useWhiteboardPersistence() {
       }
       currentFolderRef.current = folder;
       try {
-        const raw = await invoke<string | null>('read_file_if_exists', { path: boardPath(folder) });
+        const raw = await invoke<string | null>('read_file_if_exists', { path: joinPath(folder, WHITEBOARD_FILE) });
         if (raw) {
           try {
             await loadSnapshot(JSON.parse(raw));

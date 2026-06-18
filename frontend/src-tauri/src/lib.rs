@@ -278,6 +278,26 @@ async fn read_file_if_exists(path: String) -> Result<Option<String>, String> {
     }
 }
 
+/// Write a base64-encoded payload to a binary file (e.g. a PNG export of the whiteboard),
+/// creating parent directories as needed. Accepts a bare base64 string or a data URL.
+#[tauri::command]
+async fn save_base64_file(path: String, base64: String) -> Result<(), String> {
+    use base64::Engine as _;
+    // Tolerate a "data:image/png;base64,...." prefix.
+    let payload = base64.rsplit(',').next().unwrap_or(&base64);
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload.trim())
+        .map_err(|e| format!("Invalid base64: {}", e))?;
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directory: {}", e))?;
+        }
+    }
+    std::fs::write(&path, bytes).map_err(|e| format!("Failed to write file: {}", e))?;
+    Ok(())
+}
+
 // Audio level monitoring commands
 #[tauri::command]
 async fn start_audio_level_monitoring<R: Runtime>(
@@ -703,6 +723,7 @@ pub fn run() {
             save_transcript,
             copy_file,
             read_file_if_exists,
+            save_base64_file,
             analytics::commands::init_analytics,
             analytics::commands::disable_analytics,
             analytics::commands::track_event,
