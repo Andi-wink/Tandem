@@ -18,10 +18,20 @@ Built + compile-verified (`cargo check` + `tsc --noEmit` both clean), NOT yet ru
 4. Phase 3: hold **Alt+Shift+A**, say "draw a login screen with email and password", release -> it draws. The "Listening..." pill should show while held.
 5. Privacy/context: tick "Share last 5 min of transcript" in the panel, start a recording, discuss an automation, then Alt+Shift+A "build the last automation we discussed" -> it should use the transcript as context.
 
+**Done since the first build (per-meeting boards + save/view):**
+- [x] Per-meeting board: the board is no longer one global store. On opening the canvas during a meeting it loads that meeting's saved board (or a blank one); switching meetings swaps boards. ([useWhiteboardPersistence.ts](frontend/src/hooks/useWhiteboardPersistence.ts), bridge `canvas:load`/`canvas:clear`).
+- [x] Save + view like notes: the board auto-saves to `<meeting folder>/whiteboard.tldr.json` on canvas close, recording-stop, and app exit. Meeting-details shows a Whiteboard button (when a saved board exists) that reopens it ([page-content.tsx](frontend/src/app/meeting-details/page-content.tsx), `tandem:canvas-open-saved`).
+- [x] "Connect MCP" button hidden in embed mode (kit-only feature) — agent-whiteboard `App.tsx` SharePanel gated on `?embed=1`.
+- [x] Solo HUD overlap: [CanvasHudGuard](frontend/src/components/CanvasPanel/CanvasHudGuard.tsx) hides the floating Solo HUD window while the canvas is open, restores it only if a Solo session is active.
+- [x] Canvas-not-reachable state: [CanvasIframe](frontend/src/components/CanvasPanel/CanvasIframe.tsx) shows a message + Retry (instead of a blank frame) if the agent server readiness handshake never arrives.
+- [x] Mic-contention error messages: `useCanvasVoice` now distinguishes "mic in use by another app" vs "permission denied".
+
 **Known caveats / follow-ups:**
-- [ ] Mic contention: `useCanvasVoice` opens a 2nd mic stream via getUserMedia while the recording pipeline holds the mic. WASAPI shared mode should allow it; verify on the target machine.
+- [ ] Collaboration (multi-user, same board): deferred by decision. Needs tldraw `@tldraw/sync` + a sync server (self-hosted on LAN to keep data local). Revisit later.
+- [ ] Prod sidecar (#3 — still open): the canvas still assumes the dev agent at :5174. For a shippable build, either (a) bundle agent-whiteboard's `serve` (node) as a Tauri sidecar (externalBin + spawn-on-startup + point `agentUrl` at it), or (b) port the kit's `/stream` SSE endpoint into Tandem's Python backend and serve the static `dist/` from Rust — removing the node dependency entirely. (b) is cleaner long-term but more work. Health check + configurable URL + the unreachable UI are already in place as the foundation.
+- [ ] Mic contention: runtime-verify on the target machine that the 2nd getUserMedia stream coexists with the recording pipeline under WASAPI shared mode (error handling is now graceful either way).
 - [ ] Alt+Shift+A registration can fail silently if another app owns it (same exposure as the existing Alt+Shift+S/R/V). Add detection + a configurable override if it bites.
-- [ ] Prod sidecar: `canvas_health_check` exists, but spawning agent-whiteboard's `serve` as a packaged sidecar isn't wired (dev assumes :5174). Build that for a shippable prod path.
+- [ ] Voice + auto-routing need a proper runtime pass (only lightly exercised).
 - [ ] Worktree setup drift (hit during this build): Cargo.lock is gitignored, so a fresh worktree resolved tauri 2.11.3 vs main's 2.10.2 and failed to compile. Copied main's Cargo.lock to pin. Also copied `binaries/llama-helper-*.exe` and several untracked frontend source files (NotificationContext, MermaidBlock, etc.) that committed code imports but which are uncommitted on main — commit those on main so worktrees build cleanly.
 
 ### Transcription WER regression gate (#10) — follow-ups to make it CI-grade

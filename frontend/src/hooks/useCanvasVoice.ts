@@ -112,7 +112,16 @@ export function useCanvasVoice() {
       setListening(true);
     } catch (e) {
       logger.error('[CanvasVoice] mic capture failed', e);
-      toast.error('Canvas voice: could not access the microphone.');
+      // Distinguish "another app/the recorder holds the mic" from "permission denied" so the user
+      // knows what to do (the recording pipeline + this capture share the device under WASAPI).
+      const name = e instanceof DOMException ? e.name : '';
+      if (name === 'NotReadableError' || name === 'AbortError') {
+        toast.error('Canvas voice: the microphone is in use by another app and could not be shared.');
+      } else if (name === 'NotAllowedError' || name === 'SecurityError') {
+        toast.error('Canvas voice: microphone permission denied.');
+      } else {
+        toast.error('Canvas voice: could not access the microphone.');
+      }
     } finally {
       startingRef.current = false;
     }
