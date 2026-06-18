@@ -21,6 +21,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { toast } from 'sonner';
 import { logger } from '@/lib/logger';
 
 const DEFAULT_AGENT_URL = 'http://localhost:5174';
@@ -84,6 +85,9 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
   const iframeWinRef = useRef<Window | null>(null);
   const pendingRef = useRef<string | null>(null);
   const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Armed when we post a prompt; cleared by the bridge's canvas:ack. If it fires, the prompt never
+  // reached the canvas (delivery problem) — distinct from canvas:error (the agent ran but failed).
+  const ackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Request/response plumbing for save/load round-trips with the cross-origin iframe.
   const canvasReadyRef = useRef(false);
@@ -142,12 +146,19 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
     if (!win) return false;
     try {
       win.postMessage({ type: 'canvas:prompt', message }, agentOriginRef.current || '*');
+      // Expect a canvas:ack back; if it doesn't arrive, the prompt didn't reach the canvas agent.
+      if (ackTimer.current) clearTimeout(ackTimer.current);
+      ackTimer.current = setTimeout(() => {
+        ackTimer.current = null;
+        toast.error("Canvas didn't receive the request. Is the canvas server running?");
+        flashStatus('error');
+      }, 3000);
       return true;
     } catch (e) {
       logger.warn('[Canvas] postMessage to iframe failed', e);
       return false;
     }
-  }, []);
+  }, [flashStatus]);
 
   // Resolve once the embedded agent is ready (it mounts at app start, so this is usually instant);
   // falls back after a timeout so callers never hang forever.
@@ -256,12 +267,29 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
             pending.resolve(data);
           }
         }
+      } else if (t === 'canvas:ack') {
+        // The canvas received our prompt — cancel the "didn't arrive" warning.
+        if (ackTimer.current) {
+          clearTimeout(ackTimer.current);
+          ackTimer.current = null;
+        }
+      } else if (t === 'canvas:error') {
+        // The agent ran but failed (model/auth/busy) — surface it so it isn't lost in the iframe.
+        if (ackTimer.current) {
+          clearTimeout(ackTimer.current);
+          ackTimer.current = null;
+        }
+        const msg = typeof data?.error === 'string' ? data.error : 'Canvas agent error';
+        setLastError(msg);
+        flashStatus('error');
+        toast.error(`Canvas: ${msg}`);
       }
     };
     window.addEventListener('message', onMessage);
     return () => {
       window.removeEventListener('message', onMessage);
       if (statusTimer.current) clearTimeout(statusTimer.current);
+      if (ackTimer.current) clearTimeout(ackTimer.current);
       // Resolve + clear any in-flight save/load requests so their timers don't leak past unmount.
       pendingReqRef.current.forEach(({ timer, resolve }) => {
         clearTimeout(timer);
