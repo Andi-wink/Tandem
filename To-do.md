@@ -30,6 +30,7 @@ Built + compile-verified (`cargo check` + `tsc --noEmit` both clean), NOT yet ru
 - [x] Save-on-quit: intercepts the Tauri window close, finishes the async save, then destroys the window (beforeunload couldn't await the IPC round-trip).
 - [x] Multi-page boards: `clearBoard` wipes all pages + drops extras; `extractMarkdown` walks all pages.
 - [x] postMessage hardening: both sides origin-pin replies and validate inbound source/origin (snapshots can carry confidential meeting content).
+- [x] Previous-boards picker (reuse across meetings with the same client): each save mirrors into a per-client library `{project}/.tandem/whiteboards/{meeting}.{tldr.json,md,png}` + `.meta.json`; new Rust `list_whiteboards` + a History dropdown in the canvas header (shown when a Solo project is active). Client anchor = Solo project. Today's board stays separate (saves keyed to the current meeting).
 
 **Known caveats / follow-ups:**
 - [ ] Collaboration (multi-user, same board): deferred by decision. Needs tldraw `@tldraw/sync` + a sync server (self-hosted on LAN to keep data local). Revisit later.
