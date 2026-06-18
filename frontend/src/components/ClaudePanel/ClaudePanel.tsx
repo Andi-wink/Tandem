@@ -223,6 +223,7 @@ export function ClaudePanel() {
   // Uses the same pendingFirstMessage pattern as manual sends to avoid
   // the race condition where openPanel's setState hasn't propagated to
   // stateRef.current before sendMessage reads it.
+  const canvas = useCanvas();
   const handleVoiceCommand = React.useCallback(async (result: VoiceCommandResult) => {
     const message = result.args || result.transcript;
     if (!message?.trim()) {
@@ -235,6 +236,16 @@ export function ClaudePanel() {
     }
 
     console.log('[VoiceCommand] handleVoiceCommand — message:', message.slice(0, 80));
+
+    // Canvas auto-routing for spoken commands too: saying "canvas" / "map out the processes" draws on
+    // the board instead of going to the assistant. (@code is always an explicit AI handoff.)
+    if (!/@code\b/i.test(message)) {
+      const route = await routeMessage(message, { anthropicKey: apiKey, canvasOpen: canvas.canvasVisible });
+      if (route === 'canvas') {
+        await canvas.sendPrompt(message);
+        return;
+      }
+    }
 
     try {
       // Ensure the panel is open with meeting context
@@ -253,7 +264,7 @@ export function ClaudePanel() {
       console.error('Voice command failed:', err);
       toast.error('Voice command failed: ' + (err instanceof Error ? err.message : String(err)));
     }
-  }, [isStreaming, sendMessage, openPanel, isPanelOpen, meetingId, meetingTitle, projectDir]);
+  }, [isStreaming, sendMessage, openPanel, isPanelOpen, meetingId, meetingTitle, projectDir, apiKey, canvas]);
 
   const { isListening, isHotkeyListening, cancelListening, feedTranscript, capturedText: voiceCapturedText } = useVoiceCommand({
     enabled: recordingState.isRecording,
@@ -263,7 +274,6 @@ export function ClaudePanel() {
   // F047: Feed new transcript segments into voice command capture while listening
   const { transcripts } = useTranscripts();
   const { sessionFolder, activeProject } = useSoloMode();
-  const canvas = useCanvas();
 
   // Previous-boards picker: lists this client's (Solo project's) saved whiteboards.
   const [previousBoards, setPreviousBoards] = useState<WhiteboardMeta[]>([]);

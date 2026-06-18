@@ -9,9 +9,10 @@ import { logger } from '@/lib/logger';
 export type CanvasRoute = 'canvas' | 'chat';
 
 // Strong "make something on the canvas" signals — high precision, route straight to canvas.
-// Includes "map out …", "process map", and "map … the processes/flow/steps" (a very common ask).
+// Includes the explicit word "canvas" (the user's deliberate trigger), "map out …", "process map",
+// and "map … the processes/flow/steps" (a very common ask).
 const CREATE_RE =
-  /\b(draw|sketch|diagram|flow ?chart|wireframe|mock ?up|whiteboard|visuali[sz]e|graph|process flow|process map|map out|lay out)\b|\bmap\b[^.?!]{0,40}\b(process(es)?|flow|steps?|journey|pipeline)\b|\bmap (it|this|that|the)\b.*\bout\b|\blay (it|this|out)\b/i;
+  /\b(draw|sketch|diagram|flow ?chart|wireframe|mock ?up|whiteboard|canvas|visuali[sz]e|graph|process flow|process map|map out|lay out)\b|\bmap\b[^.?!]{0,40}\b(process(es)?|flow|steps?|journey|pipeline)\b|\bmap (it|this|that|the)\b.*\bout\b|\blay (it|this|out)\b/i;
 // Edit signals that only make sense when there's already something on the canvas.
 const EDIT_RE =
   /\b(make (it|that|the|this)\b|recolou?r|rename (it|that|the)\b|add (a|an|another) (step|box|node|arrow|shape|label)|move (it|that|the)\b|connect (it|the|them)\b|bigger|smaller|delete (it|that|the)\b)\b/i;
