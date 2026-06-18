@@ -52,6 +52,13 @@ interface CanvasContextType {
   registerCanvasIframe: (win: Window | null) => void;
   /** Send a natural-language instruction to the embedded canvas (shows the canvas view). */
   sendPrompt: (message: string) => Promise<boolean>;
+
+  /** Ask the embedded board for a full snapshot (JSON) to persist. Null if it can't be reached. */
+  saveSnapshot: () => Promise<unknown | null>;
+  /** Load a previously saved snapshot into the board (pass null to clear it). */
+  loadSnapshot: (snapshot: unknown | null) => Promise<boolean>;
+  /** Clear the board (blank canvas for a fresh meeting). */
+  clearCanvas: () => Promise<boolean>;
 }
 
 const CanvasContext = createContext<CanvasContextType | null>(null);
@@ -68,6 +75,13 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
   const iframeWinRef = useRef<Window | null>(null);
   const pendingRef = useRef<string | null>(null);
   const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Request/response plumbing for save/load round-trips with the cross-origin iframe.
+  const canvasReadyRef = useRef(false);
+  canvasReadyRef.current = canvasReady;
+  const reqIdRef = useRef(0);
+  const pendingReqRef = useRef<Map<number, { resolve: (v: Record<string, unknown> | null) => void; timer: ReturnType<typeof setTimeout> }>>(new Map());
+  const readyWaitersRef = useRef<Array<() => void>>([]);
 
   useEffect(() => {
     try {
@@ -117,6 +131,73 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // Resolve once the embedded agent is ready (it mounts at app start, so this is usually instant);
+  // falls back after a timeout so callers never hang forever.
+  const awaitReady = useCallback((timeoutMs = 4000): Promise<boolean> => {
+    if (canvasReadyRef.current && iframeWinRef.current) return Promise.resolve(true);
+    try {
+      iframeWinRef.current?.postMessage({ type: 'canvas:ping' }, '*');
+    } catch {
+      /* ignore */
+    }
+    return new Promise((resolve) => {
+      let waiter: () => void;
+      const to = setTimeout(() => {
+        readyWaitersRef.current = readyWaitersRef.current.filter((w) => w !== waiter);
+        resolve(!!(canvasReadyRef.current && iframeWinRef.current));
+      }, timeoutMs);
+      waiter = () => {
+        clearTimeout(to);
+        resolve(true);
+      };
+      readyWaitersRef.current.push(waiter);
+    });
+  }, []);
+
+  // Post a request to the iframe and await its matching reply (by requestId). Null on timeout/no-iframe.
+  const postRequest = useCallback(
+    async (payload: Record<string, unknown>, timeoutMs = 8000): Promise<Record<string, unknown> | null> => {
+      const ready = await awaitReady();
+      const win = iframeWinRef.current;
+      if (!ready || !win) return null;
+      const id = ++reqIdRef.current;
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          pendingReqRef.current.delete(id);
+          resolve(null);
+        }, timeoutMs);
+        pendingReqRef.current.set(id, { resolve, timer });
+        try {
+          win.postMessage({ ...payload, requestId: id }, '*');
+        } catch (e) {
+          clearTimeout(timer);
+          pendingReqRef.current.delete(id);
+          logger.warn('[Canvas] postRequest failed', e);
+          resolve(null);
+        }
+      });
+    },
+    [awaitReady],
+  );
+
+  const saveSnapshot = useCallback(async (): Promise<unknown | null> => {
+    const res = await postRequest({ type: 'canvas:save' });
+    return res && 'snapshot' in res ? (res.snapshot ?? null) : null;
+  }, [postRequest]);
+
+  const loadSnapshot = useCallback(
+    async (snapshot: unknown | null): Promise<boolean> => {
+      const res = await postRequest({ type: 'canvas:load', snapshot });
+      return !!(res && res.ok);
+    },
+    [postRequest],
+  );
+
+  const clearCanvas = useCallback(async (): Promise<boolean> => {
+    const res = await postRequest({ type: 'canvas:clear' });
+    return !!(res && res.ok);
+  }, [postRequest]);
+
   const showCanvas = useCallback(() => setCanvasVisible(true), []);
   const hideCanvas = useCallback(() => setCanvasVisible(false), []);
   const toggleCanvas = useCallback(() => setCanvasVisible((v) => !v), []);
@@ -125,14 +206,30 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
   // Listen for the bridge's readiness announcement (and flush any queued prompt).
   useEffect(() => {
     const onMessage = (ev: MessageEvent) => {
-      const t = ev.data && typeof ev.data === 'object' ? (ev.data as { type?: unknown }).type : undefined;
+      const data = ev.data && typeof ev.data === 'object' ? (ev.data as Record<string, unknown>) : null;
+      const t = data?.type;
       if (t === 'canvas:ready') {
         setCanvasReady(true);
+        canvasReadyRef.current = true;
+        // Wake anything waiting on readiness (save/load round-trips).
+        const waiters = readyWaitersRef.current;
+        readyWaitersRef.current = [];
+        waiters.forEach((w) => w());
         if (pendingRef.current) {
           const msg = pendingRef.current;
           pendingRef.current = null;
           postToCanvas(msg);
           flashStatus('sent');
+        }
+      } else if (t === 'canvas:snapshot' || t === 'canvas:loaded') {
+        const id = data?.requestId;
+        if (typeof id === 'number') {
+          const pending = pendingReqRef.current.get(id);
+          if (pending) {
+            clearTimeout(pending.timer);
+            pendingReqRef.current.delete(id);
+            pending.resolve(data);
+          }
         }
       }
     };
@@ -211,6 +308,9 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
       setTranscriptOptIn,
       registerCanvasIframe,
       sendPrompt,
+      saveSnapshot,
+      loadSnapshot,
+      clearCanvas,
     }),
     [
       agentUrl,
@@ -229,6 +329,9 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
       setTranscriptOptIn,
       registerCanvasIframe,
       sendPrompt,
+      saveSnapshot,
+      loadSnapshot,
+      clearCanvas,
     ],
   );
 

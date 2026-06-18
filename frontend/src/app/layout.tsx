@@ -34,6 +34,8 @@ import { ComposeProviders } from '@/components/ComposeProviders'
 import { SoloModeProvider } from '@/contexts/SoloModeContext'
 import { CanvasProvider } from '@/contexts/CanvasContext'
 import { CanvasVoiceListener } from '@/components/CanvasPanel/CanvasVoiceListener'
+import { CanvasHudGuard } from '@/components/CanvasPanel/CanvasHudGuard'
+import { WhiteboardPersistence } from '@/hooks/useWhiteboardPersistence'
 import { logger } from '@/lib/logger'
 
 const sourceSans3 = Source_Sans_3({
@@ -155,6 +157,8 @@ export default function RootLayout({
               </ErrorBoundary>
               <ErrorBoundary fallbackLabel="Canvas">
                 <CanvasVoiceListener />
+                <WhiteboardPersistence />
+                <CanvasHudGuard />
               </ErrorBoundary>
             </div>
           )}

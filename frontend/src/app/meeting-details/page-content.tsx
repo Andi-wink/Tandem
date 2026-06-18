@@ -18,7 +18,7 @@ import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useClaude } from '@/contexts/ClaudeContext';
-import { Bot } from 'lucide-react';
+import { Bot, PenTool } from 'lucide-react';
 
 export default function PageContent({
   meeting,
@@ -171,6 +171,26 @@ export default function PageContent({
     };
   }, [shouldAutoGenerate, meeting.id]); // Re-run if meeting changes
 
+  // Does this meeting have a saved whiteboard? (controls the "Whiteboard" button visibility)
+  const [hasWhiteboard, setHasWhiteboard] = useState(false);
+  useEffect(() => {
+    const folder = meeting.folder_path;
+    if (!folder) { setHasWhiteboard(false); return; }
+    const sep = folder.includes('\\') ? '\\' : '/';
+    invoke<string | null>('read_file_if_exists', { path: `${folder}${sep}whiteboard.tldr.json` })
+      .then((raw) => setHasWhiteboard(!!raw))
+      .catch(() => setHasWhiteboard(false));
+  }, [meeting.folder_path]);
+
+  const openSavedWhiteboard = () => {
+    if (!isPanelOpen) {
+      openPanel(meeting.id, meetingData.meetingTitle || meeting.title || 'Meeting', meeting.folder_path || '');
+    }
+    window.dispatchEvent(
+      new CustomEvent('tandem:canvas-open-saved', { detail: { folderPath: meeting.folder_path } }),
+    );
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -253,6 +273,17 @@ export default function PageContent({
             title="Open AI Assistant"
           >
             <Bot className="w-5 h-5 text-muted-foreground" />
+          </button>
+        )}
+
+        {/* Whiteboard button — only when this meeting has a saved board */}
+        {!isPanelOpen && hasWhiteboard && (
+          <button
+            onClick={openSavedWhiteboard}
+            className="fixed right-16 top-4 z-30 bg-card border border-border rounded-full p-2 shadow-md hover:shadow-lg hover:bg-muted transition-all"
+            title="Open whiteboard"
+          >
+            <PenTool className="w-5 h-5 text-muted-foreground" />
           </button>
         )}
       </div>
