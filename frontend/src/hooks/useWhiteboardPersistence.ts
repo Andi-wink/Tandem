@@ -155,13 +155,36 @@ export function useWhiteboardPersistence() {
     };
   }, [save]);
 
-  // Best-effort save when the app window is closing.
+  // Reliable save on app quit: intercept the window close, finish the (async) save, then close.
+  // beforeunload alone can't do this — the window tears down before the postMessage+IPC round-trip
+  // completes — so we hold the close until the save resolves.
   useEffect(() => {
-    const onBeforeUnload = () => {
-      void save(currentFolderRef.current);
+    if (!inTauri()) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    let closing = false;
+    (async () => {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      const win = getCurrentWindow();
+      const fn = await win.onCloseRequested(async (event) => {
+        const folder = currentFolderRef.current;
+        if (closing || !folder) return; // nothing to persist — let the close proceed normally
+        event.preventDefault();
+        closing = true;
+        try {
+          await save(folder);
+        } catch {
+          /* ignore — don't trap the user in an unclosable window */
+        }
+        await win.destroy();
+      });
+      if (cancelled) fn();
+      else unlisten = fn;
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
     };
-    window.addEventListener('beforeunload', onBeforeUnload);
-    return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [save]);
 }
 

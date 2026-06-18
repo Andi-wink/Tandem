@@ -91,6 +91,15 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
   const reqIdRef = useRef(0);
   const pendingReqRef = useRef<Map<number, { resolve: (v: Record<string, unknown> | null) => void; timer: ReturnType<typeof setTimeout> }>>(new Map());
   const readyWaitersRef = useRef<Array<() => void>>([]);
+  // The canvas iframe's origin — used to pin postMessage targets and validate inbound messages.
+  const agentOriginRef = useRef<string>('');
+  useEffect(() => {
+    try {
+      agentOriginRef.current = new URL(agentUrl).origin;
+    } catch {
+      agentOriginRef.current = '';
+    }
+  }, [agentUrl]);
 
   useEffect(() => {
     try {
@@ -132,7 +141,7 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
     const win = iframeWinRef.current;
     if (!win) return false;
     try {
-      win.postMessage({ type: 'canvas:prompt', message }, '*');
+      win.postMessage({ type: 'canvas:prompt', message }, agentOriginRef.current || '*');
       return true;
     } catch (e) {
       logger.warn('[Canvas] postMessage to iframe failed', e);
@@ -145,7 +154,7 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
   const awaitReady = useCallback((timeoutMs = 4000): Promise<boolean> => {
     if (canvasReadyRef.current && iframeWinRef.current) return Promise.resolve(true);
     try {
-      iframeWinRef.current?.postMessage({ type: 'canvas:ping' }, '*');
+      iframeWinRef.current?.postMessage({ type: 'canvas:ping' }, agentOriginRef.current || '*');
     } catch {
       /* ignore */
     }
@@ -177,7 +186,7 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
         }, timeoutMs);
         pendingReqRef.current.set(id, { resolve, timer });
         try {
-          win.postMessage({ ...payload, requestId: id }, '*');
+          win.postMessage({ ...payload, requestId: id }, agentOriginRef.current || '*');
         } catch (e) {
           clearTimeout(timer);
           pendingReqRef.current.delete(id);
@@ -220,6 +229,8 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
   // Listen for the bridge's readiness announcement (and flush any queued prompt).
   useEffect(() => {
     const onMessage = (ev: MessageEvent) => {
+      // Only trust messages from our canvas iframe's origin (drops cross-frame spoofing).
+      if (agentOriginRef.current && ev.origin !== agentOriginRef.current) return;
       const data = ev.data && typeof ev.data === 'object' ? (ev.data as Record<string, unknown>) : null;
       const t = data?.type;
       if (t === 'canvas:ready') {
@@ -267,7 +278,7 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
     // Ask an already-mounted agent whether it's ready (covers reloads / late host mount).
     if (win) {
       try {
-        win.postMessage({ type: 'canvas:ping' }, '*');
+        win.postMessage({ type: 'canvas:ping' }, agentOriginRef.current || '*');
       } catch {
         /* ignore */
       }
@@ -302,7 +313,7 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
       // Mounted but not ready yet — queue + nudge.
       pendingRef.current = trimmed;
       try {
-        iframeWinRef.current.postMessage({ type: 'canvas:ping' }, '*');
+        iframeWinRef.current.postMessage({ type: 'canvas:ping' }, agentOriginRef.current || '*');
       } catch {
         /* ignore */
       }
