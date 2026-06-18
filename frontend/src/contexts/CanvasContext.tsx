@@ -37,6 +37,10 @@ interface CanvasContextType {
   showCanvas: () => void;
   hideCanvas: () => void;
   toggleCanvas: () => void;
+  /** Whether the canvas is expanded to fill the whole window (vs the panel width). */
+  canvasExpanded: boolean;
+  setCanvasExpanded: (v: boolean) => void;
+  toggleExpand: () => void;
   /** True once the embedded canvas agent has announced it's ready to receive prompts. */
   canvasReady: boolean;
   status: CanvasStatus;
@@ -55,6 +59,7 @@ const CanvasContext = createContext<CanvasContextType | null>(null);
 export function CanvasProvider({ children }: { children: React.ReactNode }) {
   const [agentUrl, setAgentUrlState] = useState(DEFAULT_AGENT_URL);
   const [canvasVisible, setCanvasVisible] = useState(false);
+  const [canvasExpanded, setCanvasExpanded] = useState(false);
   const [canvasReady, setCanvasReady] = useState(false);
   const [status, setStatus] = useState<CanvasStatus>('idle');
   const [lastError, setLastError] = useState<string | null>(null);
@@ -115,6 +120,7 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
   const showCanvas = useCallback(() => setCanvasVisible(true), []);
   const hideCanvas = useCallback(() => setCanvasVisible(false), []);
   const toggleCanvas = useCallback(() => setCanvasVisible((v) => !v), []);
+  const toggleExpand = useCallback(() => setCanvasExpanded((v) => !v), []);
 
   // Listen for the bridge's readiness announcement (and flush any queued prompt).
   useEffect(() => {
@@ -195,6 +201,9 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
       showCanvas,
       hideCanvas,
       toggleCanvas,
+      canvasExpanded,
+      setCanvasExpanded,
+      toggleExpand,
       canvasReady,
       status,
       lastError,
@@ -210,6 +219,9 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
       showCanvas,
       hideCanvas,
       toggleCanvas,
+      canvasExpanded,
+      setCanvasExpanded,
+      toggleExpand,
       canvasReady,
       status,
       lastError,

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X, Send, AlertCircle, Square, Check, Shield, Paperclip, Mic, FolderOpen, Code, SlidersHorizontal, ChevronDown, Plus, PenTool } from 'lucide-react';
+import { X, Send, AlertCircle, Square, Check, Shield, Paperclip, Mic, FolderOpen, Code, SlidersHorizontal, ChevronDown, Plus, PenTool, Maximize2, Minimize2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { useClaude, MODEL_OPTIONS } from '@/contexts/ClaudeContext';
@@ -579,7 +579,7 @@ export function ClaudePanel() {
 
       <div
         className={`fixed right-0 top-0 bottom-0 bg-background border-l border-border shadow-lg z-40 flex flex-col ${isResizing ? '' : 'transition-transform duration-200'} ${isPanelOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}
-        style={{ width: panelWidth }}
+        style={{ width: canvas.canvasVisible && canvas.canvasExpanded ? '100vw' : panelWidth }}
         onDragOver={(e) => { if (e.dataTransfer?.types.includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } }}
         onDrop={(e) => { if (e.dataTransfer?.files?.length) { e.preventDefault(); handleFileDrop(e); } }}
       >
@@ -653,6 +653,16 @@ export function ClaudePanel() {
             >
               <PenTool className="w-4 h-4" />
             </button>
+            {canvas.canvasVisible && (
+              <button
+                onClick={() => canvas.toggleExpand()}
+                className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                title={canvas.canvasExpanded ? 'Restore panel width' : 'Expand canvas to full screen'}
+                aria-pressed={canvas.canvasExpanded}
+              >
+                {canvas.canvasExpanded ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+              </button>
+            )}
             {sessionId && (
               <button
                 onClick={clearSession}
