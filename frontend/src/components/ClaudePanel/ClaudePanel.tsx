@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X, Send, AlertCircle, Square, Check, Shield, Paperclip, Mic, FolderOpen, Code, SlidersHorizontal, ChevronDown, Plus, PenTool, Maximize2, Minimize2 } from 'lucide-react';
+import { X, Send, AlertCircle, Square, Check, Shield, Paperclip, Mic, FolderOpen, Code, SlidersHorizontal, ChevronDown, Plus, PenTool, Maximize2, Minimize2, History } from 'lucide-react';
 import { toast } from 'sonner';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { useClaude, MODEL_OPTIONS } from '@/contexts/ClaudeContext';
@@ -24,6 +24,15 @@ import { parseDocument, isSupportedDocument } from '@/services/claudeService';
 import { writeTaskHandoff, getRecentTranscripts, HANDOFF_TRANSCRIPT_WINDOW_SECS, TaskHandoffData, ensureTandemClaudeMd } from '@/services/handoffService';
 import { useSoloMode } from '@/contexts/SoloModeContext';
 import type { ContextBasketItem } from '@/contexts/ContextBasketContext';
+
+/** A saved whiteboard in a client's library (mirrors the Rust WhiteboardMeta). */
+interface WhiteboardMeta {
+  id: string;
+  title: string;
+  saved_at_ms: number;
+  json_path: string;
+  png_path: string | null;
+}
 
 export function ClaudePanel() {
   const {
@@ -253,8 +262,37 @@ export function ClaudePanel() {
 
   // F047: Feed new transcript segments into voice command capture while listening
   const { transcripts } = useTranscripts();
-  const { sessionFolder } = useSoloMode();
+  const { sessionFolder, activeProject } = useSoloMode();
   const canvas = useCanvas();
+
+  // Previous-boards picker: lists this client's (Solo project's) saved whiteboards.
+  const [previousBoards, setPreviousBoards] = useState<WhiteboardMeta[]>([]);
+  const [loadingBoards, setLoadingBoards] = useState(false);
+  const fetchPreviousBoards = useCallback(async () => {
+    if (!activeProject?.path) return;
+    setLoadingBoards(true);
+    try {
+      setPreviousBoards(await invoke<WhiteboardMeta[]>('list_whiteboards', { projectPath: activeProject.path }));
+    } catch (e) {
+      console.error('[Canvas] list_whiteboards failed', e);
+      setPreviousBoards([]);
+    } finally {
+      setLoadingBoards(false);
+    }
+  }, [activeProject?.path]);
+  const openPreviousBoard = useCallback(async (board: WhiteboardMeta) => {
+    try {
+      const raw = await invoke<string | null>('read_file_if_exists', { path: board.json_path });
+      if (!raw) { toast.error('Could not read that whiteboard.'); return; }
+      canvas.showCanvas();
+      await canvas.loadSnapshot(JSON.parse(raw));
+      toast.success(`Loaded "${board.title}"`);
+    } catch (e) {
+      console.error('[Canvas] open previous board failed', e);
+      toast.error('Failed to load that whiteboard.');
+    }
+  }, [canvas]);
+
   const lastFedTranscriptIdRef = useRef<string | null>(null);
   const prevIsListeningRef = useRef(false);
 
@@ -672,6 +710,43 @@ export function ClaudePanel() {
               >
                 {canvas.canvasExpanded ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
               </button>
+            )}
+            {canvas.canvasVisible && activeProject && (
+              <Popover onOpenChange={(open) => { if (open) fetchPreviousBoards(); }}>
+                <PopoverTrigger asChild>
+                  <button
+                    className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                    title={`Previous whiteboards for ${activeProject.name}`}
+                  >
+                    <History className="w-4 h-4" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent align="end" side="bottom" className="w-72 p-1">
+                  <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground truncate">
+                    Previous boards · {activeProject.name}
+                  </div>
+                  {loadingBoards ? (
+                    <div className="px-2 py-2 text-xs text-muted-foreground">Loading…</div>
+                  ) : previousBoards.length === 0 ? (
+                    <div className="px-2 py-2 text-xs text-muted-foreground">No saved boards for this client yet.</div>
+                  ) : (
+                    <div className="max-h-72 overflow-y-auto">
+                      {previousBoards.map((b) => (
+                        <button
+                          key={b.id}
+                          onClick={() => openPreviousBoard(b)}
+                          className="flex w-full flex-col items-start rounded-md px-2 py-1.5 text-left hover:bg-muted transition-colors"
+                        >
+                          <span className="w-full truncate text-xs font-medium text-foreground">{b.title}</span>
+                          <span className="text-[10px] text-muted-foreground tabular-nums">
+                            {new Date(b.saved_at_ms).toLocaleString()}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </PopoverContent>
+              </Popover>
             )}
             {sessionId && (
               <button

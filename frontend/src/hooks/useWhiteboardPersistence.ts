@@ -16,7 +16,9 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { useCanvas } from '@/contexts/CanvasContext';
+import { useCanvas, type CanvasSaveResult } from '@/contexts/CanvasContext';
+import { useSoloMode } from '@/contexts/SoloModeContext';
+import { useClaude } from '@/contexts/ClaudeContext';
 import { logger } from '@/lib/logger';
 
 export const WHITEBOARD_FILE = 'whiteboard.tldr.json';
@@ -24,10 +26,32 @@ export const WHITEBOARD_FILE = 'whiteboard.tldr.json';
 const inTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 const joinPath = (folder: string, file: string) => `${folder}${folder.includes('\\') ? '\\' : '/'}${file}`;
 
+/** Write a board's three artifacts ({stem}.tldr.json / .md / .png) into a directory. */
+async function writeBoardArtifacts(dir: string, stem: string, result: CanvasSaveResult): Promise<void> {
+  await invoke('save_transcript', { filePath: joinPath(dir, `${stem}.tldr.json`), content: JSON.stringify(result.snapshot) });
+  if (result.markdown) {
+    await invoke('save_transcript', { filePath: joinPath(dir, `${stem}.md`), content: result.markdown }).catch((e) =>
+      logger.warn('[Whiteboard] md save failed', e),
+    );
+  }
+  if (result.png) {
+    await invoke('save_base64_file', { path: joinPath(dir, `${stem}.png`), base64: result.png }).catch((e) =>
+      logger.warn('[Whiteboard] png save failed', e),
+    );
+  }
+}
+
 export function useWhiteboardPersistence() {
   const { canvasVisible, showCanvas, saveSnapshot, loadSnapshot, clearCanvas } = useCanvas();
+  const { activeProject } = useSoloMode();
+  const { meetingTitle } = useClaude();
   const currentFolderRef = useRef<string | null>(null);
   const prevVisibleRef = useRef(false);
+  // Live refs so the (stable) save callback always sees the current client + title.
+  const activeProjectRef = useRef(activeProject);
+  activeProjectRef.current = activeProject;
+  const titleRef = useRef(meetingTitle);
+  titleRef.current = meetingTitle;
   // Marks that the next canvas-open was triggered by the "open this saved board" path, so the live
   // open effect doesn't overwrite it with the active meeting's board.
   const openedSavedRef = useRef<string | null>(null);
@@ -45,22 +69,20 @@ export function useWhiteboardPersistence() {
         try {
           const result = await saveSnapshot();
           if (!result?.snapshot) return; // board unreachable — don't clobber a good save with an empty one
-          // .tldr.json = full fidelity (restore). .md + .png = agent-friendly companions.
-          await invoke('save_transcript', {
-            filePath: joinPath(folder, WHITEBOARD_FILE),
-            content: JSON.stringify(result.snapshot),
-          });
-          if (result.markdown) {
+          // 1) Per-meeting save (unchanged): <folder>/whiteboard.{tldr.json,md,png}.
+          await writeBoardArtifacts(folder, 'whiteboard', result);
+          // 2) Per-client library mirror (Solo project = client) — what the "Previous boards" picker
+          //    reads. Keyed by the meeting folder leaf so re-saves overwrite the same entry, not pile up.
+          const project = activeProjectRef.current;
+          if (project?.path) {
+            const sep = project.path.includes('\\') ? '\\' : '/';
+            const dir = `${project.path}${sep}.tandem${sep}whiteboards`;
+            const stem = folder.split(/[\\/]/).filter(Boolean).pop() || 'board';
+            await writeBoardArtifacts(dir, stem, result);
             await invoke('save_transcript', {
-              filePath: joinPath(folder, 'whiteboard.md'),
-              content: result.markdown,
-            }).catch((e) => logger.warn('[Whiteboard] md save failed', e));
-          }
-          if (result.png) {
-            await invoke('save_base64_file', {
-              path: joinPath(folder, 'whiteboard.png'),
-              base64: result.png,
-            }).catch((e) => logger.warn('[Whiteboard] png save failed', e));
+              filePath: joinPath(dir, `${stem}.meta.json`),
+              content: JSON.stringify({ title: titleRef.current || stem, savedAt: Date.now() }),
+            }).catch((e) => logger.warn('[Whiteboard] meta save failed', e));
           }
         } catch (e) {
           logger.warn('[Whiteboard] save failed', e);

@@ -298,6 +298,68 @@ async fn save_base64_file(path: String, base64: String) -> Result<(), String> {
     Ok(())
 }
 
+/// One saved whiteboard in a client's library ({project}/.tandem/whiteboards/).
+#[derive(serde::Serialize)]
+pub struct WhiteboardMeta {
+    /// Stable id = the filename stem (the originating meeting folder leaf).
+    id: String,
+    /// Friendly title (from the sibling .meta.json, else the id).
+    title: String,
+    /// Last-modified time of the board JSON, ms since epoch.
+    saved_at_ms: u64,
+    json_path: String,
+    png_path: Option<String>,
+}
+
+/// List the saved whiteboards for a client, newest first. Anchored on the Solo project folder:
+/// scans `{project_path}/.tandem/whiteboards/*.tldr.json`. Empty if the folder doesn't exist.
+#[tauri::command]
+async fn list_whiteboards(project_path: String) -> Result<Vec<WhiteboardMeta>, String> {
+    let dir = std::path::Path::new(&project_path)
+        .join(".tandem")
+        .join("whiteboards");
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut out: Vec<WhiteboardMeta> = Vec::new();
+    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+        let path = entry.path();
+        let fname = match path.file_name().and_then(|s| s.to_str()) {
+            Some(f) if f.ends_with(".tldr.json") => f.to_string(),
+            _ => continue,
+        };
+        let stem = fname.trim_end_matches(".tldr.json").to_string();
+        let saved_at_ms = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let title = std::fs::read_to_string(dir.join(format!("{}.meta.json", stem)))
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("title").and_then(|t| t.as_str().map(str::to_string)))
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| stem.clone());
+        let png = dir.join(format!("{}.png", stem));
+        let png_path = if png.exists() {
+            Some(png.to_string_lossy().to_string())
+        } else {
+            None
+        };
+        out.push(WhiteboardMeta {
+            id: stem,
+            title,
+            saved_at_ms,
+            json_path: path.to_string_lossy().to_string(),
+            png_path,
+        });
+    }
+    out.sort_by(|a, b| b.saved_at_ms.cmp(&a.saved_at_ms));
+    Ok(out)
+}
+
 // Audio level monitoring commands
 #[tauri::command]
 async fn start_audio_level_monitoring<R: Runtime>(
@@ -724,6 +786,7 @@ pub fn run() {
             copy_file,
             read_file_if_exists,
             save_base64_file,
+            list_whiteboards,
             analytics::commands::init_analytics,
             analytics::commands::disable_analytics,
             analytics::commands::track_event,
