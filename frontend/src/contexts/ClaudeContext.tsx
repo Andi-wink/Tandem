@@ -10,7 +10,9 @@ import {
   ClaudeFrontendEvent,
 } from '@/services/claudeService';
 import { anonymizeTexts, checkAnonymizationHealth } from '@/services/anonymizationService';
+import { saveConversation, loadConversation } from '@/services/aiConversationService';
 import { toast } from 'sonner';
+import { listen } from '@tauri-apps/api/event';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useContextBasket } from '@/contexts/ContextBasketContext';
 
@@ -381,6 +383,10 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
   const openPanel = useCallback(async (meetingId: string, meetingTitle: string, defaultProjectDir: string) => {
     const isSameMeeting = meetingIdRef.current === meetingId;
 
+    // A different meeting must start fresh: drop the previous meeting's context basket too (not just
+    // the conversation), so nothing carries over.
+    if (!isSameMeeting) clearBasket();
+
     setState(prev => ({
       ...prev,
       isPanelOpen: true,
@@ -400,7 +406,21 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // 404 (no session) returns null above; other errors land here — not critical
     }
-  }, []);
+
+    // Reviewing a past meeting: restore the conversation that was saved to its folder, so "what was
+    // discussed in the AI panel" is visible again (like the transcript/whiteboard). Skip for the same
+    // meeting (don't clobber a live conversation) and guard against a fast meeting switch.
+    if (!isSameMeeting && defaultProjectDir) {
+      try {
+        const saved = await loadConversation<ClaudeMessage>(defaultProjectDir);
+        if (saved?.length) {
+          setState(prev => (prev.meetingId === meetingId ? { ...prev, conversation: saved } : prev));
+        }
+      } catch {
+        // no saved conversation — fine
+      }
+    }
+  }, [clearBasket]);
 
   const closePanel = useCallback(() => {
     setState(prev => ({ ...prev, isPanelOpen: false }));
@@ -654,6 +674,27 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       text: `📋 **Claude Code:**\n\n${text}`,
     };
     setState(prev => ({ ...prev, conversation: [...prev.conversation, msg] }));
+  }, []);
+
+  // Persist the conversation to the meeting folder when the recording stops, so it can be reviewed
+  // later (mirrors how screenshots/clipboard/whiteboard are saved). The event carries folder_path.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listen<{ folder_path?: string }>('recording-stopped', (event) => {
+      const folder = event.payload?.folder_path;
+      const conv = stateRef.current.conversation;
+      if (folder && conv.length) {
+        saveConversation(folder, conv).catch((e) => console.error('[Claude] save conversation failed', e));
+      }
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, []);
 
   // Listen for backend notifications with show_in_panel=true (dispatched by NotificationContext)

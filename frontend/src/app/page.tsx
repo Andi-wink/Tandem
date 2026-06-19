@@ -283,9 +283,14 @@ export default function Home() {
   // F054: Auto-open AI panel when recording starts so projectDir is set for live transcript writer
   // Always call openPanel when recording starts — even if panel is already open — so projectDir
   // is updated with the pre-selected directory and ClaudePanel doesn't prompt again.
+  const liveRecordingIdRef = useRef<string>('live-recording');
   useEffect(() => {
     if (recordingState.isRecording) {
-      openPanel('live-recording', meetingTitle || 'Live Recording', preRecordDirRef.current);
+      // Fresh identity per recording: a new id means openPanel starts the AI panel clean (no
+      // carryover conversation/basket from the previous meeting) and won't restore the prior live
+      // session from the backend.
+      liveRecordingIdRef.current = `live-${Date.now()}`;
+      openPanel(liveRecordingIdRef.current, meetingTitle || 'Live Recording', preRecordDirRef.current);
     }
   }, [recordingState.isRecording]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -401,7 +406,7 @@ export default function Home() {
                   projectDir = folder || '';
                 } catch { /* use empty string */ }
                 openPanel(
-                  'live-recording',
+                  liveRecordingIdRef.current,
                   meetingTitle || 'Live Recording',
                   projectDir,
                 );
