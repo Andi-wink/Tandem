@@ -1,8 +1,8 @@
 'use client';
 
-import React, { createContext, useContext, useState, useCallback, useMemo, useRef } from 'react';
+import React, { createContext, useContext, useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { toast } from 'sonner';
-import { emit } from '@tauri-apps/api/event';
+import { emit, listen } from '@tauri-apps/api/event';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { Project } from '@/services/projectService';
 import { setActiveSoloProject } from '@/services/screenshotService';
@@ -100,6 +100,45 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
 
   // Keep a ref for the current history index (for closing entries on switch)
   const historyRef = useRef<ProjectHistoryEntry[]>([]);
+
+  // Mirror the live HUD-relevant state into a ref so the `solo-hud-ready`
+  // handshake (below) can replay it without re-subscribing on every change.
+  const hudStateRef = useRef<{ isActive: boolean; id: string | null; name: string | null }>({
+    isActive: false,
+    id: null,
+    name: null,
+  });
+  hudStateRef.current = {
+    isActive: state.isActive,
+    id: state.activeProject?.id ?? null,
+    name: state.activeProject?.name ?? null,
+  };
+
+  // The Solo HUD runs in a separate window with its own React tree. It only
+  // receives `solo-active-project` events emitted AFTER its listener mounts, so
+  // a HUD that opens (or hot-reloads in dev) after a project switch would sit
+  // blank. The HUD announces itself with `solo-hud-ready`; replay the current
+  // state in response so it always reflects reality.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listen('solo-hud-ready', () => {
+      const { isActive, id, name } = hudStateRef.current;
+      if (isActive && isHudEnabled()) {
+        setHudWindowVisible(true);
+        emitHudActiveProject(id, name);
+      } else {
+        emit('solo-session-stopped', {}).catch(() => {});
+      }
+    }).then(fn => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   const startSoloSession = useCallback(() => {
     console.log('[SoloMode] Starting solo session');

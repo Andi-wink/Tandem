@@ -110,7 +110,18 @@ export default function SoloHudPage() {
         }
         playChime();
       }
-    }).then(track);
+    }).then(fn => {
+      track(fn);
+      // Announce we're mounted ONLY after the active-project listener is live, so
+      // the main window's replayed `solo-active-project` reply can't race ahead of
+      // our subscription. Without this, a HUD that opens/reloads after a project
+      // switch would stay blank (the event is only pushed on change).
+      if (!cancelled) {
+        emit('solo-hud-ready', {}).catch(err =>
+          console.warn('[SoloHUD] failed to announce ready:', err),
+        );
+      }
+    });
 
     listen('solo-session-stopped', () => {
       setActive({ id: null, name: null });

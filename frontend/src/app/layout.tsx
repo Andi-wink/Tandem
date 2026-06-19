@@ -9,6 +9,7 @@ import AnalyticsProvider from '@/components/AnalyticsProvider'
 import { Toaster, toast } from 'sonner'
 import "sonner/dist/styles.css"
 import { useState, useEffect } from 'react'
+import { usePathname } from 'next/navigation'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -53,6 +54,14 @@ export default function RootLayout({
 }) {
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [onboardingCompleted, setOnboardingCompleted] = useState(false)
+
+  // The floating Solo HUD runs in its OWN always-on-top transparent window but
+  // loads this same Next.js app at the `/solo-hud` route. It must NOT inherit the
+  // full app shell (Sidebar / MainContent / ClaudePanel / onboarding gate / all the
+  // providers) — that shell squished the pill and could cover it entirely. Render a
+  // minimal, transparent tree instead: just the theme tokens + the pill itself.
+  const pathname = usePathname()
+  const isSoloHud = pathname === '/solo-hud'
 
   useEffect(() => {
     // Check onboarding status first
@@ -111,6 +120,22 @@ export default function RootLayout({
     setOnboardingCompleted(true)
     // Optionally reload the window to ensure all state is fresh
     window.location.reload()
+  }
+
+  // Solo HUD: minimal transparent shell. `solo-hud-root` / `solo-hud-body` make
+  // the window background transparent (see globals.css) so only the pill paints
+  // over whatever app is underneath. ThemeProvider stays so the pill's design
+  // tokens (bg-card, text-foreground, bg-brand, …) resolve.
+  if (isSoloHud) {
+    return (
+      <html lang="en" className="solo-hud-root" suppressHydrationWarning>
+        <body className={`${sourceSans3.variable} font-sans antialiased solo-hud-body`}>
+          <ThemeProvider attribute="class" defaultTheme="dark" storageKey="tandem-theme" enableSystem={false}>
+            {children}
+          </ThemeProvider>
+        </body>
+      </html>
+    )
   }
 
   return (
