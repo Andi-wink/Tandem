@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { toast } from 'sonner';
-import { emit, listen } from '@tauri-apps/api/event';
+import { emitTo, listen } from '@tauri-apps/api/event';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { Project } from '@/services/projectService';
 import { setActiveSoloProject } from '@/services/screenshotService';
@@ -29,9 +29,14 @@ async function setHudWindowVisible(visible: boolean): Promise<void> {
   }
 }
 
-/** Push the active project to the HUD window via Tauri event. */
+/** The label of the floating HUD window (see tauri.conf.json). */
+const HUD_WINDOW = 'solo-hud';
+
+/** Push the active project to the HUD window. Targeted (`emitTo`) at the HUD
+ *  window specifically rather than broadcast — window-to-window delivery is the
+ *  correct, reliable channel for this. */
 function emitHudActiveProject(id: string | null, name: string | null): void {
-  emit('solo-active-project', { id, name }).catch(err =>
+  emitTo(HUD_WINDOW, 'solo-active-project', { id, name }).catch(err =>
     console.warn('[SoloMode] Failed to emit solo-active-project:', err),
   );
 }
@@ -128,7 +133,7 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
         setHudWindowVisible(true);
         emitHudActiveProject(id, name);
       } else {
-        emit('solo-session-stopped', {}).catch(() => {});
+        emitTo(HUD_WINDOW, 'solo-session-stopped', {}).catch(() => {});
       }
     }).then(fn => {
       if (cancelled) fn();
@@ -187,7 +192,7 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     );
 
     // Hide the floating HUD and notify it to self-reset.
-    emit('solo-session-stopped', {}).catch(() => {});
+    emitTo(HUD_WINDOW, 'solo-session-stopped', {}).catch(() => {});
     setHudWindowVisible(false);
   }, []);
 

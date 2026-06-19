@@ -349,8 +349,20 @@ export function useSoloModeRouter() {
     listen<{ projectId: string }>('solo-hud-switch', async event => {
       const projectId = event.payload?.projectId;
       if (!projectId) return;
+      console.log('[SoloRouter] HUD switch requested:', projectId);
 
-      const matched = projectsRef.current.find(p => p.id === projectId);
+      let matched = projectsRef.current.find(p => p.id === projectId);
+      if (!matched) {
+        // The project cache may not have loaded yet (or is stale) — re-fetch
+        // once and retry before giving up, so a manual pick never silently no-ops.
+        try {
+          const fresh = await listProjects();
+          projectsRef.current = fresh;
+          matched = fresh.find(p => p.id === projectId);
+        } catch (err) {
+          console.warn('[SoloRouter] HUD switch: project re-fetch failed', err);
+        }
+      }
       if (!matched) {
         console.warn('[SoloRouter] HUD switch: unknown project id', projectId);
         return;

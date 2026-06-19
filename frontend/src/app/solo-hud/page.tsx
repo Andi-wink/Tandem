@@ -20,7 +20,7 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { listen, emit, type UnlistenFn } from '@tauri-apps/api/event';
+import { listen, emitTo, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { listProjects, type Project } from '@/services/projectService';
@@ -117,7 +117,7 @@ export default function SoloHudPage() {
       // our subscription. Without this, a HUD that opens/reloads after a project
       // switch would stay blank (the event is only pushed on change).
       if (!cancelled) {
-        emit('solo-hud-ready', {}).catch(err =>
+        emitTo('main', 'solo-hud-ready', {}).catch(err =>
           console.warn('[SoloHUD] failed to announce ready:', err),
         );
       }
@@ -183,7 +183,7 @@ export default function SoloHudPage() {
   const handlePick = useCallback(
     (project: Project) => {
       if (project.id !== activeIdRef.current) {
-        emit('solo-hud-switch', { projectId: project.id }).catch(err =>
+        emitTo('main', 'solo-hud-switch', { projectId: project.id }).catch(err =>
           console.warn('[SoloHUD] emit switch failed:', err),
         );
       }
