@@ -298,6 +298,25 @@ async fn save_base64_file(path: String, base64: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Relay a Tauri event between windows by broadcasting it through the Rust core.
+///
+/// The JS `emit`/`emitTo` APIs did not reliably cross the `main` <-> `solo-hud`
+/// window boundary in this app, but Rust `AppHandle::emit` broadcasts to ALL
+/// webviews (the same path the audio/recording events use, which the frontend
+/// receives reliably). The Solo HUD and main window use this to talk to each
+/// other (project switch picks, active-project pill updates, ready/stopped
+/// handshakes); the receiving side keeps its normal JS `listen(event, ...)`.
+#[tauri::command]
+async fn relay_event<R: Runtime>(
+    app: AppHandle<R>,
+    event: String,
+    payload: serde_json::Value,
+) -> Result<(), String> {
+    use tauri::Emitter as _;
+    app.emit(&event, payload)
+        .map_err(|e| format!("relay_event('{}') failed: {}", event, e))
+}
+
 /// One saved whiteboard in a client's library ({project}/.tandem/whiteboards/).
 #[derive(serde::Serialize)]
 pub struct WhiteboardMeta {
@@ -786,6 +805,7 @@ pub fn run() {
             copy_file,
             read_file_if_exists,
             save_base64_file,
+            relay_event,
             list_whiteboards,
             analytics::commands::init_analytics,
             analytics::commands::disable_analytics,

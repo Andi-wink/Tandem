@@ -20,8 +20,15 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { listen, emitTo, type UnlistenFn } from '@tauri-apps/api/event';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+
+/** Broadcast an event to the other window via the Rust core (JS cross-window
+ *  emit/emitTo is unreliable here; Rust `app.emit` reaches all webviews). */
+function relay(event: string, payload: unknown = {}): Promise<void> {
+  return invoke('relay_event', { event, payload });
+}
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { listProjects, type Project } from '@/services/projectService';
 
@@ -117,7 +124,7 @@ export default function SoloHudPage() {
       // our subscription. Without this, a HUD that opens/reloads after a project
       // switch would stay blank (the event is only pushed on change).
       if (!cancelled) {
-        emitTo('main', 'solo-hud-ready', {}).catch(err =>
+        relay('solo-hud-ready').catch(err =>
           console.warn('[SoloHUD] failed to announce ready:', err),
         );
       }
@@ -183,7 +190,7 @@ export default function SoloHudPage() {
   const handlePick = useCallback(
     (project: Project) => {
       if (project.id !== activeIdRef.current) {
-        emitTo('main', 'solo-hud-switch', { projectId: project.id }).catch(err =>
+        relay('solo-hud-switch', { projectId: project.id }).catch(err =>
           console.warn('[SoloHUD] emit switch failed:', err),
         );
       }

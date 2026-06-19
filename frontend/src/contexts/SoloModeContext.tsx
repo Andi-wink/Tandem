@@ -2,7 +2,8 @@
 
 import React, { createContext, useContext, useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { toast } from 'sonner';
-import { emitTo, listen } from '@tauri-apps/api/event';
+import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { Project } from '@/services/projectService';
 import { setActiveSoloProject } from '@/services/screenshotService';
@@ -29,16 +30,18 @@ async function setHudWindowVisible(visible: boolean): Promise<void> {
   }
 }
 
-/** The label of the floating HUD window (see tauri.conf.json). */
-const HUD_WINDOW = 'solo-hud';
-
-/** Push the active project to the HUD window. Targeted (`emitTo`) at the HUD
- *  window specifically rather than broadcast — window-to-window delivery is the
- *  correct, reliable channel for this. */
-function emitHudActiveProject(id: string | null, name: string | null): void {
-  emitTo(HUD_WINDOW, 'solo-active-project', { id, name }).catch(err =>
-    console.warn('[SoloMode] Failed to emit solo-active-project:', err),
+/** Relay an event to the HUD window through the Rust core. JS cross-window
+ *  emit/emitTo did not reliably reach the separate `solo-hud` webview, so we
+ *  broadcast via Rust `app.emit` (reaches all webviews) instead. */
+function relayToHud(event: string, payload: unknown = {}): void {
+  invoke('relay_event', { event, payload }).catch(err =>
+    console.warn(`[SoloMode] relay '${event}' failed:`, err),
   );
+}
+
+/** Push the active project to the HUD window. */
+function emitHudActiveProject(id: string | null, name: string | null): void {
+  relayToHud('solo-active-project', { id, name });
 }
 
 interface SoloModeState {
@@ -133,7 +136,7 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
         setHudWindowVisible(true);
         emitHudActiveProject(id, name);
       } else {
-        emitTo(HUD_WINDOW, 'solo-session-stopped', {}).catch(() => {});
+        relayToHud('solo-session-stopped');
       }
     }).then(fn => {
       if (cancelled) fn();
@@ -192,7 +195,7 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     );
 
     // Hide the floating HUD and notify it to self-reset.
-    emitTo(HUD_WINDOW, 'solo-session-stopped', {}).catch(() => {});
+    relayToHud('solo-session-stopped');
     setHudWindowVisible(false);
   }, []);
 
