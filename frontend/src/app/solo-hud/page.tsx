@@ -231,22 +231,34 @@ export default function SoloHudPage() {
           {isListening ? 'Listening…' : active.name}
         </span>
 
-        {/* Caret */}
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className={`text-muted-foreground pointer-events-none transition-transform ${
-            expanded ? 'rotate-180' : ''
-          }`}
+        {/* Caret — a real button (NOT pointer-events-none) so the click lands here
+            instead of being swallowed by the pill's drag region. `no-drag` keeps
+            Tauri from treating it as a window-drag handle. */}
+        <button
+          type="button"
+          onClick={e => {
+            e.stopPropagation();
+            togglePicker();
+          }}
+          aria-label={expanded ? 'Close project picker' : 'Open project picker'}
+          className="no-drag pointer-events-auto -mr-1 flex items-center justify-center rounded p-0.5
+                     text-muted-foreground hover:text-foreground transition-colors
+                     focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={`transition-transform ${expanded ? 'rotate-180' : ''}`}
+          >
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
       </div>
 
       {/* Project picker */}

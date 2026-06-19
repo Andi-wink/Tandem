@@ -4,6 +4,7 @@ import {
   analyzeTranscript,
   matchProjectByName,
   warmupModel,
+  detectProjectSwitchFastPath,
 } from './soloRoutingService';
 import { Project } from './projectService';
 import { Transcript } from '@/types';
@@ -82,6 +83,67 @@ describe('matchProjectByName', () => {
 
   it('returns null for unrelated word that exceeds fuzzy threshold', () => {
     expect(matchProjectByName('bicycle', projects)).toBeNull();
+  });
+});
+
+describe('detectProjectSwitchFastPath', () => {
+  const projects: Project[] = [
+    mkProject({ id: '1', name: 'Tandem', aliases: ['the meeting app'] }),
+    mkProject({ id: '2', name: 'Jos', aliases: ['joss'] }),
+    mkProject({ id: '4', name: 'Hirepath_IQ', aliases: ['Hirepath'] }),
+  ];
+
+  it('matches "I\'m working on the Tandem project"', () => {
+    expect(detectProjectSwitchFastPath("I'm working on the Tandem project", projects)?.id).toBe('1');
+  });
+
+  it('matches "switch to Tandem"', () => {
+    expect(detectProjectSwitchFastPath('ok lets switch to Tandem now', projects)?.id).toBe('1');
+  });
+
+  it('matches "back to Jos"', () => {
+    expect(detectProjectSwitchFastPath('alright, back to Jos', projects)?.id).toBe('2');
+  });
+
+  it('matches "moving over to Hirepath"', () => {
+    expect(detectProjectSwitchFastPath('moving over to Hirepath', projects)?.id).toBe('4');
+  });
+
+  it('matches even with a trailing clause after the name', () => {
+    expect(
+      detectProjectSwitchFastPath('working on the Tandem project, fixing the HUD', projects)?.id,
+    ).toBe('1');
+  });
+
+  it('does NOT switch on negation ("not working on Tandem")', () => {
+    expect(detectProjectSwitchFastPath("I'm not working on Tandem anymore", projects)).toBeNull();
+  });
+
+  it('does NOT switch on "done with" past-tense', () => {
+    expect(detectProjectSwitchFastPath("I'm done working on Tandem", projects)).toBeNull();
+  });
+
+  it('honours a later clause after an earlier negation', () => {
+    expect(
+      detectProjectSwitchFastPath("I'm done with Jos. Now working on Tandem.", projects)?.id,
+    ).toBe('1');
+  });
+
+  it('returns null for an unregistered project name', () => {
+    expect(detectProjectSwitchFastPath("I'm working on the Photoshop project", projects)).toBeNull();
+  });
+
+  it('returns null when there is no switch cue (passing mention)', () => {
+    expect(detectProjectSwitchFastPath('Tandem is built on Tauri', projects)).toBeNull();
+  });
+
+  it('does not falsely trigger on "networking"', () => {
+    expect(detectProjectSwitchFastPath('we were networking on Tandem topics', projects)).toBeNull();
+  });
+
+  it('returns null for empty text or no projects', () => {
+    expect(detectProjectSwitchFastPath('', projects)).toBeNull();
+    expect(detectProjectSwitchFastPath('switch to Tandem', [])).toBeNull();
   });
 });
 

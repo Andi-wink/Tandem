@@ -19,7 +19,7 @@ import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useSoloMode } from '@/contexts/SoloModeContext';
 import { listProjects, Project } from '@/services/projectService';
-import { analyzeTranscript, matchProjectByName, warmupModel } from '@/services/soloRoutingService';
+import { analyzeTranscript, matchProjectByName, warmupModel, detectProjectSwitchFastPath } from '@/services/soloRoutingService';
 import {
   writeLiveTranscript,
   writeLiveScreenshots,
@@ -183,7 +183,27 @@ export function useSoloModeRouter() {
     console.log(`[SoloRouter] Analyzing ${newSegments.length} new segments`);
     lastProcessedIndexRef.current = currentTranscripts.length;
 
+    // Carries the project switched-to THIS cycle (fast-path or LLM) so later
+    // appends in this cycle attribute to it, and so we never double-switch.
+    let switchedTo: Project | null = null;
+    let activeSessionFolder = sessionFolderRef.current;
+
     try {
+      // ── Fast-path switch (no LLM) ─────────────────────────────────────
+      // Explicit declarations ("I'm working on the X project", "switch to X")
+      // switch instantly and deterministically — even if Ollama is slow/cold/
+      // down. Only matches REGISTERED projects; everything else falls through to
+      // the LLM below, so coverage never drops.
+      const fastMatch = detectProjectSwitchFastPath(
+        newSegments.map(s => s.text).join(' '),
+        projects,
+      );
+      if (fastMatch && fastMatch.id !== activeProjectRef.current?.id) {
+        console.log(`[SoloRouter] Fast-path switch → ${fastMatch.name} (no LLM)`);
+        activeSessionFolder = await performProjectSwitch(fastMatch, currentTranscripts.length);
+        switchedTo = fastMatch;
+      }
+
       const decision = await analyzeTranscript(
         newSegments,
         projects,
@@ -224,11 +244,10 @@ export function useSoloModeRouter() {
       // it's reused across the rest of this Solo session — even if the user
       // switches projects, each project's `.tandem/{folder}/` mirrors the same
       // session folder name so the user can grep / archive by name.
-      let activeSessionFolder = sessionFolderRef.current;
+      activeSessionFolder = sessionFolderRef.current ?? activeSessionFolder;
 
-      // Project switch — capture switched-to project locally so later appends in THIS cycle go to it
-      let switchedTo: Project | null = null;
-      if (decision.project_switch.detected && decision.project_switch.project_name) {
+      // Project switch — only if the fast-path didn't already switch this cycle.
+      if (!switchedTo && decision.project_switch.detected && decision.project_switch.project_name) {
         const matched = matchProjectByName(decision.project_switch.project_name, projects);
         if (matched && matched.id !== activeProjectRef.current?.id) {
           activeSessionFolder = await performProjectSwitch(matched, currentTranscripts.length);

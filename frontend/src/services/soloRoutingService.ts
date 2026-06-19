@@ -181,6 +181,44 @@ function normalizeForFuzzy(s: string): string {
     .replace(/[^a-z0-9]/g, '');
 }
 
+// Explicit switch CUES — the user declaring what they're working on. Captures
+// the spoken name (group 1), optionally trailing "project"/"app"/"repo"/etc.
+const SWITCH_CUE_RE =
+  /\b(?:working on|work on|i'?m on|i am on|switch(?:ing)?(?:\s+(?:to|over to))?|mov(?:e|ing)(?:\s+over)?\s+to|back\s+(?:to|on)|jump(?:ing)?\s+(?:to|on)|let'?s\s+(?:do|work on|switch to)|today\s+(?:i'?m|i am)\s+(?:on|doing|working on))\s+(?:the\s+)?([a-z0-9][\w'’\- ]{0,40}?)(?:\s+(?:project|projects|app|repo|repository|codebase|code\s*base))?\s*[.,!?]?(?:\s|$)/i;
+
+// Negation / past-tense markers that flip a cue from "I'm on X" to "I'm NOT on X".
+const SWITCH_NEGATION_RE = /\b(?:not|never|don'?t|stop|stopped|done|finished|no longer|quit|quitting|leaving)\b/i;
+
+/**
+ * Deterministic project-switch detection — NO LLM.
+ *
+ * Catches the common, explicit case ("I'm working on the X project", "switch to
+ * X", "back to Y") so switching is instant and survives a slow/cold/offline
+ * Ollama. Deliberately conservative:
+ *  - fires only on an explicit switch CUE (above),
+ *  - skips negated/past clauses ("not working on X", "done with X"),
+ *  - only returns a REGISTERED project (via matchProjectByName) — it can't
+ *    invent a switch to something that isn't set up.
+ * Anything it doesn't catch falls through to the LLM router, so coverage never
+ * drops. Returns the matched project, or null.
+ */
+export function detectProjectSwitchFastPath(text: string, projects: Project[]): Project | null {
+  if (!text || projects.length === 0) return null;
+  // Split into clauses so a negation in one sentence can't suppress a real cue
+  // in another ("I'm done with Foo. Now working on Bar.").
+  for (const clause of text.split(/[.!?\n]+/)) {
+    const m = clause.match(SWITCH_CUE_RE);
+    if (!m) continue;
+    const before = clause.slice(0, m.index ?? 0);
+    if (SWITCH_NEGATION_RE.test(before)) continue; // "I'm not working on X"
+    const candidate = m[1]?.trim();
+    if (!candidate) continue;
+    const matched = matchProjectByName(candidate, projects);
+    if (matched) return matched;
+  }
+  return null;
+}
+
 export function matchProjectByName(name: string | null, projects: Project[]): Project | null {
   if (!name) return null;
   const lower = name.toLowerCase();
