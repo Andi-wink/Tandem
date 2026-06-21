@@ -74,7 +74,10 @@ interface ClaudeContextValue extends ClaudeState {
   removeFromBasket: (itemId: string) => void;
   clearBasket: () => void;
   // Session
-  openPanel: (meetingId: string, meetingTitle: string, defaultProjectDir: string) => void;
+  // `reveal` (default true) controls whether the panel is shown. Pass false to
+  // establish the meeting context (projectDir/meetingId, for the live transcript
+  // writer) WITHOUT popping the panel open over the main view.
+  openPanel: (meetingId: string, meetingTitle: string, defaultProjectDir: string, reveal?: boolean) => void;
   closePanel: () => void;
   sendMessage: (message: string) => Promise<void>;
   clearSession: () => Promise<void>;
@@ -380,7 +383,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const openPanel = useCallback(async (meetingId: string, meetingTitle: string, defaultProjectDir: string) => {
+  const openPanel = useCallback(async (meetingId: string, meetingTitle: string, defaultProjectDir: string, reveal = true) => {
     const isSameMeeting = meetingIdRef.current === meetingId;
 
     // A different meeting must start fresh: drop the previous meeting's context basket too (not just
@@ -389,7 +392,9 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
 
     setState(prev => ({
       ...prev,
-      isPanelOpen: true,
+      // reveal=false establishes the meeting context without showing the panel
+      // (recording start needs projectDir set, but shouldn't cover the transcript).
+      ...(reveal ? { isPanelOpen: true } : {}),
       meetingId,
       meetingTitle,
       projectDir: defaultProjectDir,

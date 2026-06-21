@@ -194,9 +194,14 @@ export function useWhiteboardPersistence() {
         event.preventDefault();
         closing = true;
         try {
-          await save(folder);
+          // NEVER trap the user in an unclosable window: the save is a postMessage round-trip to the
+          // canvas iframe and can hang if the canvas isn't ready, so cap it. Whichever wins, we destroy.
+          await Promise.race([
+            save(folder),
+            new Promise(resolve => setTimeout(resolve, 2500)),
+          ]);
         } catch {
-          /* ignore — don't trap the user in an unclosable window */
+          /* ignore — best-effort save */
         }
         await win.destroy();
       });
