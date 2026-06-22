@@ -203,7 +203,11 @@ export function useWhiteboardPersistence() {
         } catch {
           /* ignore — best-effort save */
         }
-        await win.destroy();
+        // Use close() (not destroy()) to let the close proceed through Tauri's normal teardown.
+        // `closing` is now true, so the re-entrant onCloseRequested below returns early without
+        // preventDefault. destroy() here races tao's event loop and panics ("cannot move state
+        // from Destroyed") on Windows.
+        await win.close();
       });
       if (cancelled) fn();
       else unlisten = fn;
