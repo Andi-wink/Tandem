@@ -61,6 +61,10 @@ export function useCanvasVoice() {
   const [listening, setListening] = useState(false);
   const captureRef = useRef<Capture | null>(null);
   const startingRef = useRef(false);
+  // Set when a stop arrives while startCapture is still awaiting getUserMedia. Without this, a fast
+  // press+release would leave an orphaned open mic stream (stop ran before captureRef existed, then
+  // the late-resolving start mounted a capture that nothing ever stops).
+  const stopRequestedRef = useRef(false);
   const transcriptsRef = useRef(transcripts);
   transcriptsRef.current = transcripts;
   const optInRef = useRef(transcriptOptIn);
@@ -93,6 +97,7 @@ export function useCanvasVoice() {
   const startCapture = useCallback(async () => {
     if (captureRef.current || startingRef.current) return;
     startingRef.current = true;
+    stopRequestedRef.current = false;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
@@ -109,6 +114,13 @@ export function useCanvasVoice() {
       source.connect(processor);
       processor.connect(ctx.destination);
       captureRef.current = { stream, ctx, source, processor, chunks };
+      // A stop fired before getUserMedia resolved — discard this just-mounted capture instead of
+      // leaving the mic open with no stop coming. (The clip would be ~0ms anyway.)
+      if (stopRequestedRef.current) {
+        stopRequestedRef.current = false;
+        teardown();
+        return;
+      }
       setListening(true);
     } catch (e) {
       logger.error('[CanvasVoice] mic capture failed', e);
@@ -125,7 +137,7 @@ export function useCanvasVoice() {
     } finally {
       startingRef.current = false;
     }
-  }, []);
+  }, [teardown]);
 
   const stopAndSend = useCallback(async () => {
     const captured = teardown();
@@ -179,6 +191,10 @@ export function useCanvasVoice() {
     }).then((fn) => (cancelled ? fn() : unlistens.push(fn)));
 
     listen('canvas-voice-stop', () => {
+      // If startCapture is still awaiting getUserMedia, let it self-abort (it checks this flag once
+      // the capture mounts) rather than running stopAndSend now against a null capture.
+      stopRequestedRef.current = true;
+      if (startingRef.current) return;
       void stopAndSend();
     }).then((fn) => (cancelled ? fn() : unlistens.push(fn)));
 
