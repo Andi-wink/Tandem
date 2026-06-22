@@ -218,9 +218,15 @@ export function useWhiteboardPersistence() {
     };
   }, [save]);
 
-  // Reliable save on app quit: intercept the window close, finish the (async) save, then close.
+  // Reliable save on app quit: intercept the window close, finish the (async) save, then quit.
   // beforeunload alone can't do this — the window tears down before the postMessage+IPC round-trip
   // completes — so we hold the close until the save resolves.
+  //
+  // We quit via the process plugin's exit() rather than win.close()/win.destroy(). Calling close()
+  // from inside a preventDefault'd close-requested handler does NOT reliably tear the window down on
+  // Tauri v2/tao (the X appears dead — the bug this replaces), and destroy() races tao's event loop
+  // and panics ("cannot move state from Destroyed") on Windows. exit(0) ends the app decisively and
+  // still fires RunEvent::Exit, so the DB checkpoint + sidecar shutdown cleanup runs.
   useEffect(() => {
     if (!inTauri()) return;
     let unlisten: (() => void) | undefined;
@@ -230,25 +236,28 @@ export function useWhiteboardPersistence() {
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
       const win = getCurrentWindow();
       const fn = await win.onCloseRequested(async (event) => {
-        const folder = currentFolderRef.current;
-        if (closing || !folder) return; // nothing to persist — let the close proceed normally
-        event.preventDefault();
+        if (closing) return; // quit already in progress — let it proceed
         closing = true;
-        try {
-          // NEVER trap the user in an unclosable window: the save is a postMessage round-trip to the
-          // canvas iframe and can hang if the canvas isn't ready, so cap it. Whichever wins, we destroy.
-          await Promise.race([
-            save(folder),
-            new Promise(resolve => setTimeout(resolve, 2500)),
-          ]);
-        } catch {
-          /* ignore — best-effort save */
+        event.preventDefault();
+        const folder = currentFolderRef.current;
+        if (folder) {
+          try {
+            // NEVER trap the user in an unclosable window: the save is a postMessage round-trip to
+            // the canvas iframe and can hang if the canvas isn't ready, so cap it.
+            await Promise.race([save(folder), new Promise((resolve) => setTimeout(resolve, 2500))]);
+          } catch {
+            /* ignore — best-effort save */
+          }
         }
-        // Use close() (not destroy()) to let the close proceed through Tauri's normal teardown.
-        // `closing` is now true, so the re-entrant onCloseRequested below returns early without
-        // preventDefault. destroy() here races tao's event loop and panics ("cannot move state
-        // from Destroyed") on Windows.
-        await win.close();
+        try {
+          const { exit } = await import('@tauri-apps/plugin-process');
+          await exit(0);
+        } catch (e) {
+          // Process plugin unavailable — fall back to a plain close (re-enters with closing=true,
+          // which returns early without preventDefault, so the teardown proceeds).
+          logger.warn('[Whiteboard] process.exit failed; falling back to window close', e);
+          await win.close().catch(() => {});
+        }
       });
       if (cancelled) fn();
       else unlisten = fn;
