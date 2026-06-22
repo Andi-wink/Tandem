@@ -294,14 +294,17 @@ export function ClaudePanel() {
     try {
       const raw = await invoke<string | null>('read_file_if_exists', { path: board.json_path });
       if (!raw) { toast.error('Could not read that whiteboard.'); return; }
-      canvas.showCanvas();
-      await canvas.loadSnapshot(JSON.parse(raw));
-      toast.success(`Loaded "${board.title}"`);
+      // View READ-ONLY: the persistence hook loads it for inspection but won't save it back, so it
+      // can't overwrite the live meeting's board. "Edit here" (in the canvas) adopts it if wanted.
+      window.dispatchEvent(
+        new CustomEvent('tandem:canvas-view-board', { detail: { snapshot: JSON.parse(raw), title: board.title } }),
+      );
+      toast.success(`Viewing "${board.title}" (read-only)`);
     } catch (e) {
       console.error('[Canvas] open previous board failed', e);
       toast.error('Failed to load that whiteboard.');
     }
-  }, [canvas]);
+  }, []);
 
   const lastFedTranscriptIdRef = useRef<string | null>(null);
   const prevIsListeningRef = useRef(false);

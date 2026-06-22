@@ -53,6 +53,13 @@ interface CanvasContextType {
   toggleExpand: () => void;
   /** True once the embedded canvas agent has announced it's ready to receive prompts. */
   canvasReady: boolean;
+  /**
+   * True while VIEWING a saved board from the client library (the "Previous boards" picker). In this
+   * mode persistence is suppressed so a peeked-at past board can never overwrite the live meeting's
+   * board on close. "Edit here" clears it to adopt the board into the current meeting.
+   */
+  boardReadOnly: boolean;
+  setBoardReadOnly: (v: boolean) => void;
   status: CanvasStatus;
   lastError: string | null;
   transcriptOptIn: boolean;
@@ -78,6 +85,7 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
   const [canvasVisible, setCanvasVisible] = useState(false);
   const [canvasExpanded, setCanvasExpanded] = useState(false);
   const [canvasReady, setCanvasReady] = useState(false);
+  const [boardReadOnly, setBoardReadOnly] = useState(false);
   const [status, setStatus] = useState<CanvasStatus>('idle');
   const [lastError, setLastError] = useState<string | null>(null);
   const [transcriptOptIn, setTranscriptOptInState] = useState(false);
@@ -362,6 +370,8 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
       setCanvasExpanded,
       toggleExpand,
       canvasReady,
+      boardReadOnly,
+      setBoardReadOnly,
       status,
       lastError,
       transcriptOptIn,
@@ -383,6 +393,7 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
       setCanvasExpanded,
       toggleExpand,
       canvasReady,
+      boardReadOnly,
       status,
       lastError,
       transcriptOptIn,

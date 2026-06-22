@@ -15,7 +15,7 @@ import { useCanvas } from '@/contexts/CanvasContext';
 const READY_GRACE_MS = 6000;
 
 export function CanvasIframe() {
-  const { agentUrl, canvasVisible, canvasReady, registerCanvasIframe } = useCanvas();
+  const { agentUrl, canvasVisible, canvasReady, registerCanvasIframe, boardReadOnly, setBoardReadOnly } = useCanvas();
   const ref = useRef<HTMLIFrameElement | null>(null);
   const [unreachable, setUnreachable] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -57,6 +57,24 @@ export function CanvasIframe() {
         allow="microphone; clipboard-read; clipboard-write"
         className="h-full w-full border-0"
       />
+      {boardReadOnly && (
+        <div className="absolute inset-x-0 top-0 z-20 flex items-center justify-between gap-3 border-b border-warning/20 bg-warning-muted px-3 py-1.5">
+          <span className="text-xs text-warning-foreground">
+            Viewing a saved board · changes won&apos;t be saved
+          </span>
+          <button
+            onClick={() => {
+              const ok = window.confirm(
+                "Edit here? Changes will be saved into the CURRENT meeting's board, replacing whatever it holds.",
+              );
+              if (ok) setBoardReadOnly(false);
+            }}
+            className="flex-shrink-0 rounded-md bg-brand px-2.5 py-1 text-xs font-medium text-brand-foreground transition-colors hover:bg-brand-hover"
+          >
+            Edit here
+          </button>
+        </div>
+      )}
       {unreachable && !canvasReady && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-background p-6 text-center">
           <p className="text-sm font-medium text-foreground">Canvas server not reachable</p>

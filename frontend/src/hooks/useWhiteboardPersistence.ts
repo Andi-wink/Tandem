@@ -42,7 +42,8 @@ async function writeBoardArtifacts(dir: string, stem: string, result: CanvasSave
 }
 
 export function useWhiteboardPersistence() {
-  const { canvasVisible, showCanvas, saveSnapshot, loadSnapshot, clearCanvas } = useCanvas();
+  const { canvasVisible, showCanvas, saveSnapshot, loadSnapshot, clearCanvas, boardReadOnly, setBoardReadOnly } =
+    useCanvas();
   const { activeProject } = useSoloMode();
   const { meetingTitle } = useClaude();
   const currentFolderRef = useRef<string | null>(null);
@@ -52,6 +53,9 @@ export function useWhiteboardPersistence() {
   activeProjectRef.current = activeProject;
   const titleRef = useRef(meetingTitle);
   titleRef.current = meetingTitle;
+  // Live ref so the (stable) save callback can short-circuit while viewing a library board.
+  const readOnlyRef = useRef(boardReadOnly);
+  readOnlyRef.current = boardReadOnly;
   // Marks that the next canvas-open was triggered by the "open this saved board" path, so the live
   // open effect doesn't overwrite it with the active meeting's board.
   const openedSavedRef = useRef<string | null>(null);
@@ -62,6 +66,10 @@ export function useWhiteboardPersistence() {
   const save = useCallback(
     (folder: string | null): Promise<void> => {
       if (!folder || !inTauri()) return Promise.resolve();
+      // Viewing a saved board from the client library: never persist it, so a peeked-at past board
+      // can't overwrite the live meeting's board on close/stop/quit. (Adopting it via "Edit here"
+      // clears boardReadOnly first, so saves resume into the current meeting.)
+      if (readOnlyRef.current) return Promise.resolve();
       // Coalesce concurrent saves of the same folder onto one in-flight round-trip.
       const inflight = savingRef.current.get(folder);
       if (inflight) return inflight;
@@ -131,12 +139,40 @@ export function useWhiteboardPersistence() {
       // Flag + target synchronously so the live-open effect doesn't re-resolve to the active meeting.
       openedSavedRef.current = folder;
       currentFolderRef.current = folder;
+      // Reopening a past MEETING's board is editable (saves back to that meeting), unlike the
+      // library "view" path below.
+      readOnlyRef.current = false;
+      setBoardReadOnly(false);
       showCanvas();
       void load(folder);
     };
     window.addEventListener('tandem:canvas-open-saved', onOpenSaved as EventListener);
     return () => window.removeEventListener('tandem:canvas-open-saved', onOpenSaved as EventListener);
-  }, [load, showCanvas]);
+  }, [load, showCanvas, setBoardReadOnly]);
+
+  // View a saved board from the client library ("Previous boards" picker) — READ-ONLY: it loads for
+  // inspection but is never written back, so it can't clobber the live meeting's board. "Edit here"
+  // clears boardReadOnly to adopt it into the current meeting.
+  useEffect(() => {
+    const onViewBoard = (e: Event) => {
+      const snapshot = (e as CustomEvent<{ snapshot?: unknown }>).detail?.snapshot;
+      if (snapshot === undefined) return;
+      void (async () => {
+        // Persist the editable board currently open before replacing it with the read-only view.
+        if (!readOnlyRef.current) await save(currentFolderRef.current);
+        readOnlyRef.current = true;
+        setBoardReadOnly(true);
+        showCanvas();
+        try {
+          await loadSnapshot(snapshot ?? null);
+        } catch {
+          /* ignore */
+        }
+      })();
+    };
+    window.addEventListener('tandem:canvas-view-board', onViewBoard as EventListener);
+    return () => window.removeEventListener('tandem:canvas-view-board', onViewBoard as EventListener);
+  }, [save, loadSnapshot, showCanvas, setBoardReadOnly]);
 
   // Live meeting: load the active meeting's board when the canvas opens; save it when it closes.
   useEffect(() => {
@@ -148,6 +184,8 @@ export function useWhiteboardPersistence() {
         openedSavedRef.current = null;
         return;
       }
+      // Viewing a library board (read-only) — don't replace it with the live meeting's board.
+      if (readOnlyRef.current) return;
       // Live open: load the ACTIVE meeting's board, swapping if it differs from what's loaded.
       invoke<string | null>('get_meeting_folder_path')
         .then((f) => {
@@ -157,8 +195,11 @@ export function useWhiteboardPersistence() {
     } else if (!canvasVisible && wasVisible) {
       void save(currentFolderRef.current);
       openedSavedRef.current = null;
+      // Closing clears any read-only view so the next open is the editable live board.
+      readOnlyRef.current = false;
+      setBoardReadOnly(false);
     }
-  }, [canvasVisible, load, save]);
+  }, [canvasVisible, load, save, setBoardReadOnly]);
 
   // Auto-save when a recording ends (mirrors screenshot/clipboard persistence).
   useEffect(() => {
