@@ -24,7 +24,11 @@ import React, {
 import { toast } from 'sonner';
 import { logger } from '@/lib/logger';
 
-const DEFAULT_AGENT_URL = 'http://localhost:5174';
+// 127.0.0.1 (not "localhost"): the server binds loopback IPv4, and on dual-stack Windows "localhost"
+// can resolve to ::1 first and fail to connect. Using the explicit IPv4 loopback keeps host + client
+// in agreement.
+const DEFAULT_AGENT_URL = 'http://127.0.0.1:5174';
+const LEGACY_AGENT_URL = 'http://localhost:5174';
 const URL_STORAGE_KEY = 'tandem-canvas-url';
 const PRIVACY_STORAGE_KEY = 'tandem-canvas-transcript-optin';
 
@@ -116,7 +120,12 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     try {
       const u = localStorage.getItem(URL_STORAGE_KEY);
-      if (u) setAgentUrlState(u);
+      // Migrate the old localhost default to the 127.0.0.1 default (loopback bind, see above).
+      if (u && u !== LEGACY_AGENT_URL) {
+        setAgentUrlState(u);
+      } else if (u === LEGACY_AGENT_URL) {
+        localStorage.setItem(URL_STORAGE_KEY, DEFAULT_AGENT_URL);
+      }
       setTranscriptOptInState(localStorage.getItem(PRIVACY_STORAGE_KEY) === '1');
     } catch {
       /* ignore */

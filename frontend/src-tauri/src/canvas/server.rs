@@ -122,11 +122,33 @@ impl CanvasServerManager {
             const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
             while !this.should_shutdown.load(Ordering::SeqCst) {
+                // If something already serves the port — a server orphaned by a force-killed run, a
+                // manual `pnpm dev`, or a second Tandem instance — adopt it instead of spawning.
+                // Spawning would just EADDRINUSE-crash-loop forever. We didn't start it, so we never
+                // kill it; we wait until it goes away and then take over.
+                if this.port_healthy().await {
+                    log::info!("[canvas] :{} already serving; reusing it (not spawning)", this.port);
+                    while !this.should_shutdown.load(Ordering::SeqCst) && this.port_healthy().await {
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                    }
+                    continue;
+                }
+
                 let started = Instant::now();
                 match this.spawn_once().await {
-                    Ok(()) => {
+                    Ok(true) => {
                         this.clone().log_when_ready();
                         this.supervise_until_exit().await;
+                    }
+                    Ok(false) => break, // shutdown requested mid-spawn
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        log::error!(
+                            "[canvas] `node` not found on PATH — cannot start the whiteboard server. \
+                             Install Node.js (or bundle a runtime). Retrying in {:?}.",
+                            MAX_BACKOFF
+                        );
+                        tokio::time::sleep(MAX_BACKOFF).await;
+                        continue;
                     }
                     Err(e) => {
                         log::error!("[canvas] failed to spawn whiteboard server: {e}");
@@ -137,7 +159,7 @@ impl CanvasServerManager {
                 }
                 // Crash-loop guard: only back off if the process barely lived.
                 if started.elapsed() < Duration::from_secs(5) {
-                    log::warn!("[canvas] server died quickly; backing off {:?}", backoff);
+                    log::warn!("[canvas] server exited quickly; backing off {:?}", backoff);
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(MAX_BACKOFF);
                 } else {
@@ -149,8 +171,11 @@ impl CanvasServerManager {
         });
     }
 
-    /// Spawn `node serve.js` and store the handle.
-    async fn spawn_once(&self) -> std::io::Result<()> {
+    /// Spawn `node serve.js` and store the handle. Returns `Ok(false)` if shutdown was requested
+    /// before the child was stored (so the caller stops). The shutdown flag is checked while holding
+    /// the `child` lock, so a concurrent `shutdown()` can never slip past and leave an orphan: either
+    /// it sees the flag and skips spawning, or it stores the child where `kill_current()` will find it.
+    async fn spawn_once(&self) -> std::io::Result<bool> {
         let mut cmd = Command::new("node");
         cmd.arg(&self.serve_js)
             .current_dir(&self.app_root)
@@ -174,14 +199,35 @@ impl CanvasServerManager {
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
 
+        let mut guard = self.child.lock().await;
+        if self.should_shutdown.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
         let child = cmd.spawn()?;
-        *self.child.lock().await = Some(child);
+        *guard = Some(child);
+        drop(guard);
         log::info!(
             "[canvas] spawned whiteboard server (node {}, PORT={})",
             self.serve_js.display(),
             self.port
         );
-        Ok(())
+        Ok(true)
+    }
+
+    /// True if something is already answering HTTP on the canvas port (loopback).
+    async fn port_healthy(&self) -> bool {
+        let url = format!("http://127.0.0.1:{}/", self.port);
+        let client = match reqwest::Client::builder()
+            .timeout(Duration::from_millis(1200))
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        match client.get(&url).send().await {
+            Ok(resp) => resp.status().is_success() || resp.status().is_redirection(),
+            Err(_) => false,
+        }
     }
 
     /// Poll the running child until it exits (or shutdown is requested, in which case we kill it).
