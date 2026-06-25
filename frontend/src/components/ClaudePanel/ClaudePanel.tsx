@@ -607,12 +607,13 @@ export function ClaudePanel() {
     }
   };
 
-  // Canvas layout: expanded = full-screen with the chat as a white column on the right; narrow-canvas
-  // = canvas fills the panel with just the input bar below (history hidden); chat-only = normal chat.
+  // Canvas layout: expanded = full-screen with the chat as a dark column on the right (matches
+  // Tandem's dark theme); narrow-canvas = canvas fills the panel with just the input bar below
+  // (history hidden); chat-only = normal chat.
   const canvasExpanded = canvas.canvasVisible && canvas.canvasExpanded;
   const conversationHidden = canvas.canvasVisible && !canvas.canvasExpanded;
   const chatRegionClass = canvasExpanded
-    ? 'canvas-chat-light flex flex-col w-[400px] flex-shrink-0 min-h-0 border-l border-border bg-background'
+    ? 'flex flex-col w-[400px] flex-shrink-0 min-h-0 border-l border-border bg-background'
     : canvas.canvasVisible
       ? 'flex flex-col flex-shrink-0'
       : 'flex flex-col flex-1 min-h-0';
@@ -789,7 +790,7 @@ export function ClaudePanel() {
         </div>
 
         {/* Panel body. Canvas + chat are flex SIBLINGS (never overlapping): expanded -> row (canvas
-            left, white chat column right); narrow canvas -> column (canvas fills, input bar below);
+            left, dark chat column right); narrow canvas -> column (canvas fills, input bar below);
             chat-only -> column (full-width chat). The canvas iframe stays mounted across all three. */}
         <div className={canvasExpanded ? 'flex flex-row flex-1 min-h-0' : 'flex flex-col flex-1 min-h-0'}>
         <CanvasIframe />
