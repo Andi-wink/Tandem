@@ -9,6 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { RecordingStatusBar } from "./RecordingStatusBar";
 import { motion, AnimatePresence } from "framer-motion";
 import { TranscriptSegmentData, ScreenshotData, ClipboardData, TimelineItem, TimelineFilter } from "@/types";
+import { getSpeakerColor, formatSpeakerLabel } from "@/lib/speakerColors";
 import { TimelineFilterBar } from "./TimelineFilterBar";
 import { ScreenshotThumbnail } from "./ScreenshotThumbnail";
 import { Clipboard } from "lucide-react";
@@ -156,6 +157,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     onEditSave,
     onEditCancel,
     onEditKeyDown,
+    speaker_label,
 }: {
     id: string;
     timestamp: number;
@@ -173,6 +175,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     onEditSave?: () => void;
     onEditCancel?: () => void;
     onEditKeyDown?: (e: React.KeyboardEvent) => void;
+    speaker_label?: string;
 }) {
     const { isDragging, dragHandlers } = useDraggableBasketItem(basketItem ?? null, selectedItems);
     const displayText = cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
@@ -192,6 +195,11 @@ const TranscriptSegment = memo(function TranscriptSegment({
     return (
         <div id={`segment-${id}`} data-selectable-id={`segment-${id}`} className="mb-3" {...(isEditing ? {} : dragHandlers)}>
             <div className={`flex items-start gap-2 select-none transition-all ${isDragging ? 'opacity-60 ring-2 ring-blue-400 shadow-[0_0_12px_rgba(59,130,246,0.4)] scale-[0.97] rounded-lg' : ''} ${isSelected && !isEditing ? 'bg-blue-50 dark:bg-blue-900/30 ring-1 ring-blue-300 rounded-lg px-1' : ''} ${basketItem && !isEditing ? 'cursor-grab' : ''}`}>
+                {speaker_label && (
+                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold mt-1 flex-shrink-0 ${getSpeakerColor(speaker_label)}`}>
+                        {formatSpeakerLabel(speaker_label)}
+                    </span>
+                )}
                 <Tooltip>
                     <TooltipTrigger>
                         <span className="text-xs text-muted-foreground mt-1 flex-shrink-0 min-w-[50px]">
@@ -607,6 +615,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         onEditSave={handleEditSave}
                                         onEditCancel={handleEditCancel}
                                         onEditKeyDown={handleEditKeyDown}
+                                        speaker_label={seg.speaker_label}
                                     />
                                 </motion.div>
                             );
@@ -671,6 +680,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         onEditSave={handleEditSave}
                                         onEditCancel={handleEditCancel}
                                         onEditKeyDown={handleEditKeyDown}
+                                        speaker_label={segment.speaker_label}
                                     />
                                 </div>
                             );
@@ -738,6 +748,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         onEditSave={handleEditSave}
                                         onEditCancel={handleEditCancel}
                                         onEditKeyDown={handleEditKeyDown}
+                                        speaker_label={segment.speaker_label}
                                     />
                                 </motion.div>
                             );

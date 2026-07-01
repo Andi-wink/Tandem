@@ -179,6 +179,57 @@ class DatabaseManager:
                 )
             """)
 
+            # F022: Speaker Diarization tables
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS diarization_processes (
+                    meeting_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    progress_pct INTEGER DEFAULT 0,
+                    num_speakers INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    error TEXT,
+                    result TEXT,
+                    processing_time REAL DEFAULT 0.0,
+                    FOREIGN KEY (meeting_id) REFERENCES meetings(id)
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS speaker_names (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    meeting_id TEXT NOT NULL,
+                    speaker_label TEXT NOT NULL,
+                    display_name TEXT,
+                    FOREIGN KEY (meeting_id) REFERENCES meetings(id),
+                    UNIQUE(meeting_id, speaker_label)
+                )
+            """)
+
+            # Phase 6 future tables (schema only, not populated yet)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS speaker_profiles (
+                    id TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL,
+                    embedding BLOB,
+                    sample_count INTEGER DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS meeting_speakers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    meeting_id TEXT NOT NULL,
+                    speaker_label TEXT NOT NULL,
+                    speaker_profile_id TEXT,
+                    confidence REAL,
+                    FOREIGN KEY (meeting_id) REFERENCES meetings(id),
+                    FOREIGN KEY (speaker_profile_id) REFERENCES speaker_profiles(id)
+                )
+            """)
+
             conn.commit()
 
     @asynccontextmanager
@@ -519,12 +570,17 @@ class DatabaseManager:
                     # Delete in proper order to respect foreign key constraints
                     # Delete from transcript_chunks
                     await conn.execute("DELETE FROM transcript_chunks WHERE meeting_id = ?", (meeting_id,))
-                    
+
                     # Delete from summary_processes
                     await conn.execute("DELETE FROM summary_processes WHERE meeting_id = ?", (meeting_id,))
-                    
+
                     # Delete from transcripts
                     await conn.execute("DELETE FROM transcripts WHERE meeting_id = ?", (meeting_id,))
+
+                    # F022: Delete diarization data
+                    await conn.execute("DELETE FROM diarization_processes WHERE meeting_id = ?", (meeting_id,))
+                    await conn.execute("DELETE FROM speaker_names WHERE meeting_id = ?", (meeting_id,))
+                    await conn.execute("DELETE FROM meeting_speakers WHERE meeting_id = ?", (meeting_id,))
                     
                     # Delete from meetings
                     cursor = await conn.execute("DELETE FROM meetings WHERE id = ?", (meeting_id,))
@@ -843,6 +899,118 @@ class DatabaseManager:
             await conn.execute(f"UPDATE settings SET {api_key_name} = NULL WHERE id = '1'")
             await conn.commit()
     
+    # ------------------------------------------------------------------
+    # F022: Speaker Diarization CRUD
+    # ------------------------------------------------------------------
+
+    async def create_diarization_process(self, meeting_id: str) -> str:
+        """Create or reset a diarization process entry."""
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                "UPDATE diarization_processes SET status = 'pending', progress_pct = 0, "
+                "error = NULL, result = NULL, updated_at = ? WHERE meeting_id = ?",
+                (now, meeting_id),
+            )
+            if cursor.rowcount == 0:
+                await conn.execute(
+                    "INSERT INTO diarization_processes (meeting_id, status, progress_pct, created_at, updated_at) "
+                    "VALUES (?, 'pending', 0, ?, ?)",
+                    (meeting_id, now, now),
+                )
+            await conn.commit()
+        return meeting_id
+
+    async def update_diarization_process(
+        self,
+        meeting_id: str,
+        status: str,
+        progress_pct: int = 0,
+        result: Optional[Dict] = None,
+        error: Optional[str] = None,
+        num_speakers: Optional[int] = None,
+        processing_time: Optional[float] = None,
+    ):
+        """Update diarization process status."""
+        now = datetime.now(timezone.utc).isoformat()
+        fields = ["status = ?", "progress_pct = ?", "updated_at = ?"]
+        params: list = [status, progress_pct, now]
+
+        if result is not None:
+            fields.append("result = ?")
+            params.append(json.dumps(result))
+        if error is not None:
+            fields.append("error = ?")
+            params.append(str(error)[:1000])
+        if num_speakers is not None:
+            fields.append("num_speakers = ?")
+            params.append(num_speakers)
+        if processing_time is not None:
+            fields.append("processing_time = ?")
+            params.append(processing_time)
+
+        params.append(meeting_id)
+        async with self._get_connection() as conn:
+            await conn.execute(
+                f"UPDATE diarization_processes SET {', '.join(fields)} WHERE meeting_id = ?",
+                params,
+            )
+            await conn.commit()
+
+    async def get_diarization_status(self, meeting_id: str) -> Optional[Dict]:
+        """Get diarization process status for a meeting."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT meeting_id, status, progress_pct, num_speakers, error, processing_time "
+                "FROM diarization_processes WHERE meeting_id = ?",
+                (meeting_id,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "meeting_id": row[0],
+                "status": row[1],
+                "progress_pct": row[2],
+                "num_speakers": row[3],
+                "error": row[4],
+                "processing_time": row[5],
+            }
+
+    async def get_diarization_result(self, meeting_id: str) -> Optional[Dict]:
+        """Get full diarization result JSON for a meeting."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT result FROM diarization_processes WHERE meeting_id = ? AND status = 'completed'",
+                (meeting_id,),
+            )
+            row = await cursor.fetchone()
+            if row and row[0]:
+                return json.loads(row[0])
+            return None
+
+    async def save_speaker_names(self, meeting_id: str, speaker_names: Dict[str, str]):
+        """Save or update speaker display names for a meeting."""
+        async with self._get_connection() as conn:
+            for label, name in speaker_names.items():
+                await conn.execute(
+                    "INSERT INTO speaker_names (meeting_id, speaker_label, display_name) "
+                    "VALUES (?, ?, ?) ON CONFLICT(meeting_id, speaker_label) "
+                    "DO UPDATE SET display_name = ?",
+                    (meeting_id, label, name, name),
+                )
+            await conn.commit()
+
+    async def get_speaker_names(self, meeting_id: str) -> Dict[str, str]:
+        """Get speaker display names for a meeting."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT speaker_label, display_name FROM speaker_names WHERE meeting_id = ?",
+                (meeting_id,),
+            )
+            rows = await cursor.fetchall()
+            return {row[0]: row[1] for row in rows if row[1]}
+
     async def update_meeting_summary(self, meeting_id: str, summary: dict):
         """Update a meeting's summary"""
         now = datetime.now(timezone.utc).isoformat()

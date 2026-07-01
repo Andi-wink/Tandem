@@ -2,12 +2,14 @@
 
 import { useEffect, useState, useRef } from "react"
 import { Switch } from "./ui/switch"
-import { FolderOpen, Eye, EyeOff } from "lucide-react"
+import { FolderOpen, Eye, EyeOff, Loader2 } from "lucide-react"
 import { invoke } from "@tauri-apps/api/core"
 import Analytics from "@/lib/analytics"
 import AnalyticsConsentSwitch from "./AnalyticsConsentSwitch"
 import { useConfig, NotificationSettings } from "@/contexts/ConfigContext"
 import { useClaude } from "@/contexts/ClaudeContext"
+import { getDiarizationHealth, setupDiarizationModel, DiarizationHealth } from "@/services/diarizationService"
+import { toast } from "sonner"
 
 export function PreferenceSettings() {
   const {
@@ -31,6 +33,15 @@ export function PreferenceSettings() {
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [previousNotificationsEnabled, setPreviousNotificationsEnabled] = useState<boolean | null>(null);
   const hasTrackedViewRef = useRef(false);
+
+  // F022: Speaker Diarization settings
+  const [diarHealth, setDiarHealth] = useState<DiarizationHealth | null>(null);
+  const [hfTokenInput, setHfTokenInput] = useState('');
+  const [hfTokenVisible, setHfTokenVisible] = useState(false);
+  const [diarSetupLoading, setDiarSetupLoading] = useState(false);
+  const [autoDiarize, setAutoDiarize] = useState(() =>
+    typeof window !== 'undefined' ? localStorage.getItem('tandem_auto_diarize') === 'true' : false
+  );
 
   // Lazy load preferences on mount (only loads if not already cached)
   useEffect(() => {
@@ -61,6 +72,11 @@ export function PreferenceSettings() {
 
     trackPreferencesViewed();
   }, [notificationSettings, isLoadingPreferences]);
+
+  // F022: Load diarization health on mount
+  useEffect(() => {
+    getDiarizationHealth().then(setDiarHealth).catch(() => setDiarHealth(null));
+  }, []);
 
   // Update notificationsEnabled when notificationSettings are loaded from global state
   useEffect(() => {
@@ -233,6 +249,97 @@ export function PreferenceSettings() {
       {/* Analytics Section */}
       <div className="bg-background rounded-lg border border-border p-6 shadow-sm">
         <AnalyticsConsentSwitch />
+      </div>
+
+      {/* F022: Speaker Diarization Section */}
+      <div className="bg-background rounded-lg border border-border p-6 shadow-sm">
+        <h3 className="text-lg font-semibold text-foreground mb-1">Speaker Diarization</h3>
+        <p className="text-sm text-muted-foreground mb-4">
+          Identify who said what using on-device speaker recognition (pyannote.audio).
+        </p>
+
+        {/* Status indicator */}
+        <div className="mb-4 p-3 rounded-md border border-border bg-muted">
+          <div className="flex items-center gap-2 text-sm">
+            <span className={`w-2 h-2 rounded-full ${diarHealth?.available ? 'bg-green-500' : diarHealth?.installed ? 'bg-yellow-500' : 'bg-red-500'}`} />
+            <span className="text-foreground font-medium">
+              {diarHealth?.available
+                ? `Model loaded (${diarHealth.device?.toUpperCase()})`
+                : diarHealth?.installed
+                  ? 'Package installed, model not loaded'
+                  : 'Not installed'}
+            </span>
+          </div>
+        </div>
+
+        {/* HuggingFace token + Download Model */}
+        {!diarHealth?.available && diarHealth?.installed && (
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-foreground mb-1">
+              HuggingFace Token
+            </label>
+            <p className="text-xs text-muted-foreground mb-2">
+              Required for one-time model download (~1GB). Get a free token at{' '}
+              <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                huggingface.co/settings/tokens
+              </a>
+            </p>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <input
+                  type={hfTokenVisible ? 'text' : 'password'}
+                  value={hfTokenInput}
+                  onChange={(e) => setHfTokenInput(e.target.value)}
+                  placeholder="hf_..."
+                  className="w-full px-3 py-2 text-sm bg-background border border-border rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setHfTokenVisible(!hfTokenVisible)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  {hfTokenVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              <button
+                onClick={async () => {
+                  if (!hfTokenInput.trim()) return;
+                  setDiarSetupLoading(true);
+                  try {
+                    const result = await setupDiarizationModel(hfTokenInput.trim());
+                    toast.success(result.message);
+                    setDiarHealth({ installed: true, available: true, device: result.device });
+                  } catch (err) {
+                    toast.error(`Setup failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+                  } finally {
+                    setDiarSetupLoading(false);
+                  }
+                }}
+                disabled={!hfTokenInput.trim() || diarSetupLoading}
+                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 flex items-center gap-1.5"
+              >
+                {diarSetupLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                {diarSetupLoading ? 'Downloading...' : 'Download Model'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Auto-diarize toggle */}
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-foreground">Auto-identify speakers</p>
+            <p className="text-xs text-muted-foreground">Automatically run diarization after each recording stops</p>
+          </div>
+          <Switch
+            checked={autoDiarize}
+            onCheckedChange={(checked) => {
+              setAutoDiarize(checked);
+              localStorage.setItem('tandem_auto_diarize', String(checked));
+            }}
+            disabled={!diarHealth?.available}
+          />
+        </div>
       </div>
 
       {/* AI Assistant API Key Section */}

@@ -7,6 +7,7 @@ import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { storageService } from '@/services/storageService';
 import { transcriptService } from '@/services/transcriptService';
+import { startDiarization, getDiarizationHealth } from '@/services/diarizationService';
 import Analytics from '@/lib/analytics';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
@@ -310,6 +311,19 @@ export function useRecordingStop(
 
           // Mark as completed
           setStatus(RecordingStatus.COMPLETED);
+
+          // F022: Auto-trigger speaker diarization if enabled
+          if (folderPath && localStorage.getItem('tandem_auto_diarize') === 'true') {
+            getDiarizationHealth().then(h => {
+              if (h.available) {
+                startDiarization(meetingId, `${folderPath}/audio.mp4`).then(() => {
+                  toast.info('Speaker diarization started in background');
+                }).catch(err => {
+                  console.warn('Auto-diarization failed to start:', err);
+                });
+              }
+            }).catch(() => {});
+          }
 
           // Show success toast with navigation option
           toast.success('Recording saved successfully!', {

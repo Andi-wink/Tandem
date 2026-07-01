@@ -18,7 +18,15 @@ import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useClaude } from '@/contexts/ClaudeContext';
-import { Bot, PenTool } from 'lucide-react';
+import { Bot, PenTool, Users, Loader2 } from 'lucide-react';
+import {
+  startDiarization,
+  getDiarizationStatus,
+  getDiarizationResult,
+  getDiarizationHealth,
+} from '@/services/diarizationService';
+import { SpeakerNamingModal } from '@/components/SpeakerNamingModal';
+import { formatSpeakerLabel } from '@/lib/speakerColors';
 
 export default function PageContent({
   meeting,
@@ -62,6 +70,16 @@ export default function PageContent({
   const [customPrompt, setCustomPrompt] = useState<string>('');
   const [isRecording] = useState(false);
   const [summaryResponse] = useState<SummaryResponse | null>(null);
+
+  // F022: Speaker diarization state
+  const [diarAvailable, setDiarAvailable] = useState(false);
+  const [diarStatus, setDiarStatus] = useState<string | null>(null); // null | pending | processing | completed | failed
+  const [diarProgress, setDiarProgress] = useState(0);
+  const [showNamingModal, setShowNamingModal] = useState(false);
+  const [diarSpeakerLabels, setDiarSpeakerLabels] = useState<string[]>([]);
+  const [diarSampleQuotes, setDiarSampleQuotes] = useState<Record<string, string>>({});
+  const [diarSpeakerNames, setDiarSpeakerNames] = useState<Record<string, string>>({});
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Ref to store the modal open function from SummaryGeneratorButtonGroup
   const openModelSettingsRef = useRef<(() => void) | null>(null);
@@ -146,6 +164,97 @@ export default function PageContent({
   useEffect(() => {
     Analytics.trackPageView('meeting_details');
   }, []);
+
+  // F022: Check diarization availability and existing results
+  useEffect(() => {
+    getDiarizationHealth().then(h => setDiarAvailable(h.available)).catch(() => {});
+
+    // Check if diarization already ran for this meeting
+    getDiarizationStatus(meeting.id).then(s => {
+      if (s) {
+        setDiarStatus(s.status);
+        setDiarProgress(s.progress_pct);
+        if (s.status === 'completed') {
+          // Load result to apply speaker labels
+          getDiarizationResult(meeting.id).then(result => {
+            applySpeakerLabels(result);
+          }).catch(() => {});
+        } else if (s.status === 'processing' || s.status === 'pending') {
+          startPolling();
+        }
+      }
+    }).catch(() => {});
+
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [meeting.id]);
+
+  const startPolling = () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const s = await getDiarizationStatus(meeting.id);
+        setDiarStatus(s.status);
+        setDiarProgress(s.progress_pct);
+        if (s.status === 'completed') {
+          clearInterval(pollRef.current!);
+          pollRef.current = null;
+          const result = await getDiarizationResult(meeting.id);
+          applySpeakerLabels(result);
+          toast.success(`Speaker diarization complete: ${s.num_speakers} speakers found`);
+        } else if (s.status === 'failed') {
+          clearInterval(pollRef.current!);
+          pollRef.current = null;
+          toast.error(`Diarization failed: ${s.error || 'Unknown error'}`);
+        }
+      } catch {
+        // Polling error, ignore
+      }
+    }, 2000);
+  };
+
+  const applySpeakerLabels = (result: Awaited<ReturnType<typeof getDiarizationResult>>) => {
+    if (!result) return;
+    const labels = [...new Set(result.aligned_segments.map(s => s.speaker_label))].filter(l => l !== 'UNKNOWN');
+    setDiarSpeakerLabels(labels);
+    setDiarSpeakerNames(result.speaker_names || {});
+
+    // Build sample quotes for naming modal
+    const quotes: Record<string, string> = {};
+    for (const seg of result.aligned_segments) {
+      if (seg.text && seg.speaker_label && !quotes[seg.speaker_label]) {
+        quotes[seg.speaker_label] = seg.text.slice(0, 80);
+      }
+    }
+    setDiarSampleQuotes(quotes);
+
+    // Apply speaker labels to segments (merge by audio_start_time)
+    if (segments) {
+      const labelMap = new Map(
+        result.aligned_segments.map(s => [s.audio_start_time, s.speaker_display_name || formatSpeakerLabel(s.speaker_label, result.speaker_names?.[s.speaker_label])])
+      );
+      for (const seg of segments) {
+        const label = labelMap.get(seg.timestamp);
+        if (label) seg.speaker_label = label;
+      }
+    }
+  };
+
+  const handleStartDiarization = async () => {
+    if (!meeting.folder_path) {
+      toast.error('No audio file found for this meeting');
+      return;
+    }
+    try {
+      const audioPath = `${meeting.folder_path}/audio.mp4`;
+      await startDiarization(meeting.id, audioPath);
+      setDiarStatus('pending');
+      setDiarProgress(0);
+      toast.info('Speaker diarization started...');
+      startPolling();
+    } catch (err) {
+      toast.error(`Failed to start diarization: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
+  };
 
   // Auto-generate summary when flag is set
   useEffect(() => {
@@ -286,7 +395,54 @@ export default function PageContent({
             <PenTool className="w-5 h-5 text-muted-foreground" />
           </button>
         )}
+
+        {/* F022: Identify Speakers button */}
+        {diarAvailable && (
+          <div className="fixed right-4 top-14 z-30 flex flex-col items-end gap-1">
+            {diarStatus === 'completed' ? (
+              <button
+                onClick={() => setShowNamingModal(true)}
+                className="bg-card border border-border rounded-full p-2 shadow-md hover:shadow-lg hover:bg-muted transition-all"
+                title="Rename Speakers"
+              >
+                <Users className="w-5 h-5 text-green-600 dark:text-green-400" />
+              </button>
+            ) : diarStatus === 'processing' || diarStatus === 'pending' ? (
+              <div className="bg-card border border-border rounded-full p-2 shadow-md" title={`Diarizing... ${diarProgress}%`}>
+                <Loader2 className="w-5 h-5 text-blue-500 animate-spin" />
+              </div>
+            ) : (
+              <button
+                onClick={handleStartDiarization}
+                className="bg-card border border-border rounded-full p-2 shadow-md hover:shadow-lg hover:bg-muted transition-all"
+                title="Identify Speakers"
+              >
+                <Users className="w-5 h-5 text-muted-foreground" />
+              </button>
+            )}
+          </div>
+        )}
       </div>
+
+      {/* F022: Speaker naming modal */}
+      <SpeakerNamingModal
+        open={showNamingModal}
+        onClose={() => setShowNamingModal(false)}
+        meetingId={meeting.id}
+        speakerLabels={diarSpeakerLabels}
+        sampleQuotes={diarSampleQuotes}
+        initialNames={diarSpeakerNames}
+        onSave={(names) => {
+          setDiarSpeakerNames(names);
+          // Re-apply labels with new display names
+          getDiarizationResult(meeting.id).then(result => {
+            if (result) {
+              result.speaker_names = names;
+              applySpeakerLabels(result);
+            }
+          }).catch(() => {});
+        }}
+      />
     </motion.div>
   );
 }

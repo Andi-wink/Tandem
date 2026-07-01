@@ -97,7 +97,10 @@ export function useTranscriptChunks(segments: TranscriptSegmentData[]): Transcri
 
 function buildChunk(segs: TranscriptSegmentData[], startSecs: number): TranscriptChunk {
   const endSecs = startSecs + CHUNK_WINDOW_SECS;
-  const fullText = segs.map(s => s.text).join(' ');
+  // F022: prefix each segment with speaker label when available
+  const fullText = segs.map(s =>
+    s.speaker_label ? `${s.speaker_label}: ${s.text}` : s.text
+  ).join('\n');
   return {
     id: `chunk-${startSecs}-${endSecs}`,
     startSecs,

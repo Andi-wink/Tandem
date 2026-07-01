@@ -67,6 +67,7 @@ export function TranscriptPanel({
       endTime: t.audio_end_time,
       text: t.text,
       confidence: t.confidence,
+      speaker_label: t.speaker_label,
     }));
   }, [transcripts, usePagination, segments]);
 
