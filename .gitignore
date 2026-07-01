@@ -77,7 +77,12 @@ experiments/
 target/
 
 frontend/src-tauri/binaries/
+# Ignore Cargo.lock everywhere (vendored/sub-crate locks) EXCEPT the workspace
+# root lock: this is a Tauri application, so its lock is committed to guarantee
+# reproducible builds across worktrees/CI (an unpinned tauri caret range drifts
+# to versions whose macros break generate_handler!).
 Cargo.lock
+!/Cargo.lock
 
 # Python
 .venv/
