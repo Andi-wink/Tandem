@@ -56,6 +56,14 @@ The local gate is done ([wer_gate.py](audio_testing/wer_gate.py), [README](audio
 ### Security
 - [ ] Anthropic API key is stored in plaintext in the Rust `settings` table (meeting_minutes.sqlite), contradicting CLAUDE.md's "localStorage only / never stored server-side" claim. Decide on encryption-at-rest or removal.
 
+### Channel-based speaker labels (you / Client) — shipped on feature/speaker-diarization
+The simple 1:1-call approach: mic channel = your name (default "Andrew", set in Preferences), system channel = "Client". Surfaced as transcript badges + in summaries + AI/@code context, reusing the `source` label already on every segment. Pyannote stays optional (takes precedence when present). Commit 9733d49; `tsc` + `cargo check` clean. Adversarial QA done (3 skeptics). Follow-ups / known limits:
+- [ ] Echo bleed (the #1 real-world accuracy risk): on open speakers the client's voice re-enters your mic and can be labelled as you. AEC runs but is undercut by ring-buffer drift + no `set_stream_delay_ms` hint. Options: feed AEC a delay hint / align channels before AEC; detect headphones and nudge the user; add a "use headphones for best speaker accuracy" note near recording. Headphones eliminate it today.
+- [ ] Device-role validation: if the mic slot is a loopback / "Stereo Mix" / virtual cable / the same device as system, "your" channel is poisoned with client audio. Warn when the mic device looks like a loopback or duplicates the system device.
+- [ ] Multiple remote speakers all show as "Client" (inherent). Layer pyannote-on-system (the eval harness already supports `--mode channels`) if per-remote-speaker splitting is ever needed.
+- [ ] pyannote `speaker_label` is not persisted (no column), so its precedence only applies to a freshly-diarized, still-open meeting. Add a column + model/API field if pyannote labels should survive a reload.
+- [ ] "Client" label is fixed (not per-meeting editable). Add a remote-name setting if desired.
+
 ### Speaker Diarization (F022) — recovered onto main, harness built
 Recovered the orphaned F022 work onto `feature/speaker-diarization` (rebased off main) and built an eval harness in [audio_testing/diarization/](audio_testing/diarization/). Approach chosen: **channel split + pyannote on the system channel** (mic = local speaker, trusted). Remaining:
 - [ ] Phase 5.5 runtime: `pip install pyannote.audio torchaudio scipy requests`, accept the `pyannote/speaker-diarization-community-1` terms on HuggingFace, set `HF_TOKEN`. (torch already installed; pyannote is NOT.)
