@@ -929,7 +929,9 @@
         "✅ Phase 3 — Alignment: Built into diarizer.align_with_transcripts() — midpoint matching with overlap fallback, UNKNOWN as last resort",
         "✅ Phase 4 — Frontend: Added speaker_label to types, color-coded speaker badges in VirtualizedTranscriptView, speaker prefix in transcript chunks for AI context, pass-through in usePaginatedTranscripts and TranscriptPanel",
         "✅ Phase 5 — Speaker naming UI + triggers: SpeakerNamingModal component, diarization settings in PreferenceSettings (HF token, model download, auto-diarize toggle), Identify Speakers button in meeting details, auto-trigger in useRecordingStop",
-        "⏳ Phase 5.5 — Runtime setup: Install pyannote.audio + torch CUDA deps, get HuggingFace token, download model via Settings UI, test end-to-end on a real recording",
+        "✅ Recovery (2026-07-01) — Recovered the orphaned Phase 1-5 work onto feature/speaker-diarization (rebased off main, 3-way merge). Frontend tsc passes; backend py-compiles.",
+        "✅ Eval harness (2026-07-01) — audio_testing/diarization/: Word Speaker Accuracy scorer w/ optimal label mapping (self-tested), ElevenLabs ground-truth bootstrap, pyannote config-sweep loop. Supports mixed + channel-split (mic=LOCAL) modes. Target approach: channel split + pyannote on system channel.",
+        "⏳ Phase 5.5 — Runtime setup: Install pyannote.audio + torchaudio (torch already present), get HuggingFace token + accept community-1 terms, ELEVENLABS_API_KEY to bootstrap ground truth, then run the harness loop and test end-to-end on a real recording",
         "Phase 6 — Voice fingerprinting: extract 192-dim embeddings via pyannote/embedding model, store in speaker_profiles table (BLOB). On new meetings, match unknown speakers against known profiles via cosine similarity (threshold ~0.75). Running average updates embedding over multiple meetings",
         "Phase 7 — Export: include speaker labels in all export formats (F010). Add speaker filter to transcript search"
       ],

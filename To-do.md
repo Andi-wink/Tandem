@@ -56,6 +56,15 @@ The local gate is done ([wer_gate.py](audio_testing/wer_gate.py), [README](audio
 ### Security
 - [ ] Anthropic API key is stored in plaintext in the Rust `settings` table (meeting_minutes.sqlite), contradicting CLAUDE.md's "localStorage only / never stored server-side" claim. Decide on encryption-at-rest or removal.
 
+### Speaker Diarization (F022) — recovered onto main, harness built
+Recovered the orphaned F022 work onto `feature/speaker-diarization` (rebased off main) and built an eval harness in [audio_testing/diarization/](audio_testing/diarization/). Approach chosen: **channel split + pyannote on the system channel** (mic = local speaker, trusted). Remaining:
+- [ ] Phase 5.5 runtime: `pip install pyannote.audio torchaudio scipy requests`, accept the `pyannote/speaker-diarization-community-1` terms on HuggingFace, set `HF_TOKEN`. (torch already installed; pyannote is NOT.)
+- [ ] Bootstrap ground truth: `ELEVENLABS_API_KEY` set, run [fetch_elevenlabs_refs.py](audio_testing/diarization/fetch_elevenlabs_refs.py), then hand-correct `refs/<clip>.diar.json` into the perfect examples.
+- [ ] Run the loop ([run_diarization.py](audio_testing/diarization/run_diarization.py)) in `--mode mixed`, iterate `CONFIGS`, push pooled WSA toward ~100%.
+- [ ] Channel-split (`--mode channels`) needs split-track clips `clips/<clip>_mic.wav` + `clips/<clip>_system.wav`. Record a few short calls with `TANDEM_SAVE_RAW_TRACKS=1` (the audio-aec worktree saves raw tracks) to unlock the production-target evaluation.
+- [ ] End-to-end product test: install deps, download model via Settings, diarize a real recording, verify speaker badges render (recovered UI compiles; not yet runtime-tested).
+- [ ] Cleanup: once recovery is confirmed good, delete the stale `D:/Dev-projects/Tandem-f022-orphan` directory (kept as the recovery source).
+
 ## Done
 - Established transcription WER baseline for the current engine (Parakeet TDT v3 int8) vs ElevenLabs ground truth: 31.4% pooled (exact meeting pipeline).
 - Implemented engine improvements #1 (de-stutter), #3 (domain correction), #4 (sensitive VAD, ~99.5% word coverage), #5 (12s context window): pooled WER 31.4% -> 26.0%. `cargo check` passes.
