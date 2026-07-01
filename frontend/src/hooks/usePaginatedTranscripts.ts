@@ -40,6 +40,8 @@ function convertTranscriptsToSegments(transcripts: Transcript[]): TranscriptSegm
         endTime: t.audio_end_time,
         text: t.text,
         confidence: t.confidence,
+        // DB `speaker` column holds the audio-channel source ("Local"/"Remote")
+        source: t.source ?? t.speaker,
         speaker_label: t.speaker_label,
     }));
 }

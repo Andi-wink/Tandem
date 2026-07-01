@@ -9,6 +9,7 @@ import AnalyticsConsentSwitch from "./AnalyticsConsentSwitch"
 import { useConfig, NotificationSettings } from "@/contexts/ConfigContext"
 import { useClaude } from "@/contexts/ClaudeContext"
 import { getDiarizationHealth, setupDiarizationModel, DiarizationHealth } from "@/services/diarizationService"
+import { DEFAULT_LOCAL_SPEAKER_NAME, getLocalSpeakerName, setLocalSpeakerName as persistLocalSpeakerName } from "@/lib/speakerNames"
 import { toast } from "sonner"
 
 export function PreferenceSettings() {
@@ -42,6 +43,9 @@ export function PreferenceSettings() {
   const [autoDiarize, setAutoDiarize] = useState(() =>
     typeof window !== 'undefined' ? localStorage.getItem('tandem_auto_diarize') === 'true' : false
   );
+
+  // Your name: used as the "Local" (microphone) speaker label in transcripts, summaries and AI context
+  const [localSpeakerName, setLocalSpeakerName] = useState(() => getLocalSpeakerName());
 
   // Lazy load preferences on mount (only loads if not already cached)
   useEffect(() => {
@@ -249,6 +253,32 @@ export function PreferenceSettings() {
       {/* Analytics Section */}
       <div className="bg-background rounded-lg border border-border p-6 shadow-sm">
         <AnalyticsConsentSwitch />
+      </div>
+
+      {/* Your Name Section (channel-based speaker labels) */}
+      <div className="bg-background rounded-lg border border-border p-6 shadow-sm">
+        <h3 className="text-lg font-semibold text-foreground mb-1">Your Name</h3>
+        <p className="text-sm text-muted-foreground mb-4">
+          Shown as the speaker label for your microphone in transcripts, summaries and the AI assistant.
+          The other party is labelled "Client".
+        </p>
+        <label htmlFor="local-speaker-name" className="block text-sm font-medium text-foreground mb-1">
+          Display name
+        </label>
+        <input
+          id="local-speaker-name"
+          type="text"
+          value={localSpeakerName}
+          maxLength={40}
+          onChange={(e) => {
+            const value = e.target.value;
+            setLocalSpeakerName(value);
+            // Persist + notify open transcript views (empty clears to the default)
+            persistLocalSpeakerName(value);
+          }}
+          placeholder={DEFAULT_LOCAL_SPEAKER_NAME}
+          className="w-full max-w-xs px-3 py-2 text-sm bg-background border border-border rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+        />
       </div>
 
       {/* F022: Speaker Diarization Section */}

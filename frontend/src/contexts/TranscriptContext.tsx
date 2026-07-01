@@ -319,6 +319,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             chunk_start_time: update.chunk_start_time,
             is_partial: update.is_partial,
             confidence: update.confidence,
+            source: update.source,
             // NEW: Recording-relative timestamps for playback sync
             audio_start_time: update.audio_start_time,
             audio_end_time: update.audio_end_time,
@@ -432,6 +433,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       chunk_start_time: update.chunk_start_time,
       is_partial: update.is_partial,
       confidence: update.confidence,
+      source: update.source,
       audio_start_time: update.audio_start_time,
       audio_end_time: update.audio_end_time,
       duration: update.duration,

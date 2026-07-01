@@ -1,5 +1,7 @@
 import { useMemo } from 'react';
 import { TranscriptSegmentData, ScreenshotData, ClipboardData, TimelineItem, TimelineFilter, TranscriptChunk } from '@/types';
+import { resolveSpeaker } from '@/lib/speakerNames';
+import { useLocalSpeakerName } from '@/hooks/useLocalSpeakerName';
 
 export function useTimeline(
   segments: TranscriptSegmentData[],
@@ -66,6 +68,7 @@ function formatSecsToTime(secs: number): string {
 const CHUNK_WINDOW_SECS = 300; // 5 minutes
 
 export function useTranscriptChunks(segments: TranscriptSegmentData[]): TranscriptChunk[] {
+  const localName = useLocalSpeakerName();
   return useMemo(() => {
     if (segments.length === 0) return [];
 
@@ -78,7 +81,7 @@ export function useTranscriptChunks(segments: TranscriptSegmentData[]): Transcri
 
       if (seg.timestamp >= windowEnd && chunkSegments.length > 0) {
         // Flush current chunk
-        chunks.push(buildChunk(chunkSegments, chunkStart));
+        chunks.push(buildChunk(chunkSegments, chunkStart, localName));
         chunkStart = Math.floor(seg.timestamp / CHUNK_WINDOW_SECS) * CHUNK_WINDOW_SECS;
         chunkSegments = [seg];
       } else {
@@ -88,19 +91,20 @@ export function useTranscriptChunks(segments: TranscriptSegmentData[]): Transcri
 
     // Flush final chunk
     if (chunkSegments.length > 0) {
-      chunks.push(buildChunk(chunkSegments, chunkStart));
+      chunks.push(buildChunk(chunkSegments, chunkStart, localName));
     }
 
     return chunks;
-  }, [segments]);
+  }, [segments, localName]);
 }
 
-function buildChunk(segs: TranscriptSegmentData[], startSecs: number): TranscriptChunk {
+function buildChunk(segs: TranscriptSegmentData[], startSecs: number, localName: string): TranscriptChunk {
   const endSecs = startSecs + CHUNK_WINDOW_SECS;
-  // F022: prefix each segment with speaker label when available
-  const fullText = segs.map(s =>
-    s.speaker_label ? `${s.speaker_label}: ${s.text}` : s.text
-  ).join('\n');
+  // Prefix each segment with the resolved speaker (pyannote label or channel name) when available
+  const fullText = segs.map(s => {
+    const speaker = resolveSpeaker(s, localName);
+    return speaker ? `${speaker}: ${s.text}` : s.text;
+  }).join('\n');
   return {
     id: `chunk-${startSecs}-${endSecs}`,
     startSecs,

@@ -21,19 +21,32 @@ const SPEAKER_COLORS = [
  *
  * - "SPEAKER_00" → index 0 → blue
  * - "SPEAKER_01" → index 1 → green
- * - Custom names → hash-based assignment
+ * - "Client" (the channel remote label) → reserved teal
+ * - Custom names → hash-based assignment (never the reserved Client color, so
+ *   the two channel speakers always render in distinct colors)
  */
+// Reserved for the "Client" channel label so a custom local name can never
+// hash to the same color as the remote party (keep in sync with
+// CLIENT_SPEAKER_NAME in speakerNames.ts).
+const CLIENT_COLOR_INDEX = 5; // teal
+const CLIENT_LABEL = 'Client';
+
 export function getSpeakerColor(speakerLabel: string): string {
   const match = speakerLabel.match(/SPEAKER_(\d+)/);
   if (match) {
     return SPEAKER_COLORS[parseInt(match[1], 10) % SPEAKER_COLORS.length];
   }
-  // Hash-based for custom names
+  if (speakerLabel === CLIENT_LABEL) {
+    return SPEAKER_COLORS[CLIENT_COLOR_INDEX];
+  }
+  // Hash-based for custom names, skipping the reserved Client color.
   let hash = 0;
   for (let i = 0; i < speakerLabel.length; i++) {
     hash = ((hash << 5) - hash + speakerLabel.charCodeAt(i)) | 0;
   }
-  return SPEAKER_COLORS[Math.abs(hash) % SPEAKER_COLORS.length];
+  let idx = Math.abs(hash) % SPEAKER_COLORS.length;
+  if (idx === CLIENT_COLOR_INDEX) idx = (idx + 1) % SPEAKER_COLORS.length;
+  return SPEAKER_COLORS[idx];
 }
 
 /**

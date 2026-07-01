@@ -9,6 +9,13 @@
 import { invoke } from '@tauri-apps/api/core';
 import { Transcript, ScreenshotData, ClipboardData } from '@/types';
 import { ContextBasketItem } from '@/contexts/ContextBasketContext';
+import { resolveSpeaker, getLocalSpeakerName } from '@/lib/speakerNames';
+
+/** Prefix a transcript line's body with its resolved speaker ("Andrew: ..." / "Client: ..."). */
+function withSpeaker(t: Transcript, localName: string): string {
+  const speaker = resolveSpeaker({ speaker_label: t.speaker_label, source: t.source ?? t.speaker }, localName);
+  return speaker ? `${speaker}: ${t.text.trim()}` : t.text.trim();
+}
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -108,10 +115,11 @@ export function generateTaskMarkdown(data: TaskHandoffData): string {
   // Recent transcript
   if (data.transcripts.length > 0) {
     lines.push(`## Recent Transcript (last ${Math.round(HANDOFF_TRANSCRIPT_WINDOW_SECS / 60)} min)`);
+    const localName = getLocalSpeakerName();
     for (const t of data.transcripts) {
       if (!t.text.trim()) continue;
       const ts = t.audio_start_time != null ? `[${formatTimestamp(t.audio_start_time)}]` : `[${t.timestamp}]`;
-      lines.push(`${ts} ${t.text.trim()}`);
+      lines.push(`${ts} ${withSpeaker(t, localName)}`);
     }
     lines.push('');
   }
@@ -322,6 +330,7 @@ export function generateLiveTranscriptMarkdown(
     | { kind: 'screenshot'; time: number; line: string };
 
   const timeline: TimelineEntry[] = [];
+  const localName = getLocalSpeakerName();
 
   for (const t of transcripts) {
     if (!t.text.trim()) continue;
@@ -329,7 +338,7 @@ export function generateLiveTranscriptMarkdown(
     const ts = t.audio_start_time != null
       ? `[${formatTimestamp(t.audio_start_time)}]`
       : `[${t.timestamp}]`;
-    timeline.push({ kind: 'transcript', time, line: `${ts} ${t.text.trim()}` });
+    timeline.push({ kind: 'transcript', time, line: `${ts} ${withSpeaker(t, localName)}` });
   }
 
   for (const ss of relevantScreenshots) {
