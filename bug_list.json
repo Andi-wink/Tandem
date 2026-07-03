@@ -38,7 +38,7 @@
       "severity": "critical",
       "name": "Dual recording state flags can diverge",
       "description": "Two independent AtomicBool flags track recording state: RECORDING_FLAG in lib.rs (line 66) and IS_RECORDING in recording_commands.rs (line 39). start_recording checks one flag then sets the other after success. If recording init partially fails between those two points, the flags diverge permanently. UI thinks recording is active while backend is idle (or vice versa). Only recovery is app restart.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src-tauri/src/lib.rs",
       "lines": [
         66,

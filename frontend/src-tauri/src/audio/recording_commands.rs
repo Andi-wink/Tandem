@@ -7,7 +7,7 @@ use anyhow::Result;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::Ordering,
     Arc, Mutex,
 };
 use once_cell::sync::Lazy;
@@ -38,9 +38,6 @@ pub use super::transcription::TranscriptUpdate;
 // GLOBAL STATE
 // ============================================================================
 
-// Simple recording state tracking
-static IS_RECORDING: AtomicBool = AtomicBool::new(false);
-
 // Tracks when recording started (for screenshot elapsed-time calculation)
 static RECORDING_START_TIME: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
@@ -60,6 +57,21 @@ pub fn update_audio_elapsed_secs(secs: f64) {
 static RECORDING_MANAGER: Lazy<tokio::sync::Mutex<Option<RecordingManager>>> =
     Lazy::new(|| tokio::sync::Mutex::new(None));
 static TRANSCRIPTION_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
+
+/// B002: Single source of truth for "is recording".
+/// Derives recording state from the RecordingManager itself rather than a
+/// separate AtomicBool, so the UI/tray and the audio backend can never diverge.
+/// The manager is only present in RECORDING_MANAGER after start_recording fully
+/// succeeds and is taken back out on stop, so its presence plus its own
+/// is_recording() flag is authoritative.
+async fn recording_active() -> bool {
+    RECORDING_MANAGER
+        .lock()
+        .await
+        .as_ref()
+        .map(|m| m.is_recording())
+        .unwrap_or(false)
+}
 
 // Listener ID for proper cleanup - prevents microphone from staying active after recording stops
 static TRANSCRIPT_LISTENER_ID: Mutex<Option<tauri::EventId>> = Mutex::new(None);
@@ -144,9 +156,9 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         meeting_name
     );
 
-    // Check if already recording
-    let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
-    info!("🔍 IS_RECORDING state check: {}", current_recording_state);
+    // Check if already recording (single source of truth: the RecordingManager)
+    let current_recording_state = recording_active().await;
+    info!("🔍 recording-active state check: {}", current_recording_state);
     if current_recording_state {
         return Err("Recording already in progress".to_string());
     }
@@ -309,9 +321,10 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         *global_manager = Some(manager);
     }
 
-    // Set recording flag, start time, and reset speech detection flag
-    info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
-    IS_RECORDING.store(true, Ordering::SeqCst);
+    // Record start time and reset speech detection flag.
+    // Recording state itself lives in the RecordingManager (single source of truth),
+    // which is already marked recording now that it is stored above.
+    info!("🔍 Recording manager stored; resetting SPEECH_DETECTED_EMITTED");
     if let Ok(mut start_time) = RECORDING_START_TIME.lock() {
         *start_time = Some(std::time::Instant::now());
     }
@@ -395,9 +408,9 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         mic_device_name, system_device_name, meeting_name
     );
 
-    // Check if already recording
-    let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
-    info!("🔍 IS_RECORDING state check: {}", current_recording_state);
+    // Check if already recording (single source of truth: the RecordingManager)
+    let current_recording_state = recording_active().await;
+    info!("🔍 recording-active state check: {}", current_recording_state);
     if current_recording_state {
         return Err("Recording already in progress".to_string());
     }
@@ -485,9 +498,10 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         *global_manager = Some(manager);
     }
 
-    // Set recording flag, start time, and reset speech detection flag
-    info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
-    IS_RECORDING.store(true, Ordering::SeqCst);
+    // Record start time and reset speech detection flag.
+    // Recording state itself lives in the RecordingManager (single source of truth),
+    // which is already marked recording now that it is stored above.
+    info!("🔍 Recording manager stored; resetting SPEECH_DETECTED_EMITTED");
     if let Ok(mut start_time) = RECORDING_START_TIME.lock() {
         *start_time = Some(std::time::Instant::now());
     }
@@ -562,8 +576,8 @@ pub async fn stop_recording<R: Runtime>(
         "🛑 Starting optimized recording shutdown - ensuring ALL transcript chunks are preserved"
     );
 
-    // Check if recording is active
-    if !IS_RECORDING.load(Ordering::SeqCst) {
+    // Check if recording is active (single source of truth: the RecordingManager)
+    if !recording_active().await {
         info!("Recording was not active");
         return Ok(());
     }
@@ -928,9 +942,9 @@ pub async fn stop_recording<R: Runtime>(
         (None, None)
     };
 
-    // Set recording flag to false and clear start time
-    info!("🔍 Setting IS_RECORDING to false");
-    IS_RECORDING.store(false, Ordering::SeqCst);
+    // Clear start time. Recording state already reads "stopped" because the
+    // RecordingManager was taken out of RECORDING_MANAGER above (single source of truth).
+    info!("🔍 Recording stopped; clearing start time");
     if let Ok(mut start_time) = RECORDING_START_TIME.lock() {
         *start_time = None;
     }
@@ -984,14 +998,14 @@ pub async fn stop_recording<R: Runtime>(
 
 /// Check if recording is active
 pub async fn is_recording() -> bool {
-    IS_RECORDING.load(Ordering::SeqCst)
+    recording_active().await
 }
 
 /// Get recording statistics
 pub async fn get_transcription_status() -> TranscriptionStatus {
     TranscriptionStatus {
         chunks_in_queue: 0,
-        is_processing: IS_RECORDING.load(Ordering::SeqCst),
+        is_processing: recording_active().await,
         last_activity_ms: 0,
     }
 }
@@ -1001,8 +1015,8 @@ pub async fn get_transcription_status() -> TranscriptionStatus {
 pub async fn pause_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     info!("Pausing recording");
 
-    // Check if currently recording
-    if !IS_RECORDING.load(Ordering::SeqCst) {
+    // Check if currently recording (single source of truth: the RecordingManager)
+    if !recording_active().await {
         return Err("No recording is currently active".to_string());
     }
 
@@ -1035,8 +1049,8 @@ pub async fn pause_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String
 pub async fn resume_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     info!("Resuming recording");
 
-    // Check if currently recording
-    if !IS_RECORDING.load(Ordering::SeqCst) {
+    // Check if currently recording (single source of truth: the RecordingManager)
+    if !recording_active().await {
         return Err("No recording is currently active".to_string());
     }
 
@@ -1078,8 +1092,9 @@ pub async fn is_recording_paused() -> Result<bool, String> {
 /// Get detailed recording state
 #[tauri::command]
 pub async fn get_recording_state() -> Result<serde_json::Value, String> {
-    let is_recording = IS_RECORDING.load(Ordering::SeqCst);
+    // Single source of truth: derive recording state from the manager itself.
     let manager_guard = RECORDING_MANAGER.lock().await;
+    let is_recording = manager_guard.as_ref().map(|m| m.is_recording()).unwrap_or(false);
 
     if let Some(manager) = manager_guard.as_ref() {
         Ok(serde_json::json!({
@@ -1305,7 +1320,14 @@ pub async fn attempt_device_reconnect(
 
 /// Get elapsed seconds since recording started, or None if not recording.
 pub fn get_recording_elapsed_secs() -> Option<f64> {
-    if !IS_RECORDING.load(Ordering::Relaxed) {
+    // Single source of truth: derive from the RecordingManager. Uses a non-blocking
+    // try_lock since this is a sync helper on the screenshot/clipboard path.
+    let recording = RECORDING_MANAGER
+        .try_lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|m| m.is_recording()))
+        .unwrap_or(false);
+    if !recording {
         return None;
     }
     // Use audio-elapsed time so screenshot/clipboard timestamps align with
