@@ -17,28 +17,73 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Provider → column name mappings (single source of truth for SQL column resolution)
-_MODEL_API_KEY_COLUMNS: dict[str, str] = {
-    "openai": "openaiApiKey",
-    "claude": "anthropicApiKey",
-    "groq": "groqApiKey",
-    "ollama": "ollamaApiKey",
+# Provider -> fixed, fully literal SQL statements (single source of truth for API key SQL).
+#
+# B011: column/identifier names are NEVER interpolated from a runtime variable. Each
+# statement is a hardcoded string constant with the column name baked in, so there is no
+# path by which a provider value can become part of the SQL identifier text. Only the API
+# key VALUE (and INSERT defaults) are bound via ? placeholders.
+_MODEL_API_KEY_SQL: dict[str, dict[str, str]] = {
+    "openai": {
+        "select": "SELECT openaiApiKey FROM settings WHERE id = '1'",
+        "update": "UPDATE settings SET openaiApiKey = ? WHERE id = '1'",
+        "insert": "INSERT INTO settings (id, provider, model, whisperModel, openaiApiKey) VALUES (?, ?, ?, ?, ?)",
+        "clear": "UPDATE settings SET openaiApiKey = NULL WHERE id = '1'",
+    },
+    "claude": {
+        "select": "SELECT anthropicApiKey FROM settings WHERE id = '1'",
+        "update": "UPDATE settings SET anthropicApiKey = ? WHERE id = '1'",
+        "insert": "INSERT INTO settings (id, provider, model, whisperModel, anthropicApiKey) VALUES (?, ?, ?, ?, ?)",
+        "clear": "UPDATE settings SET anthropicApiKey = NULL WHERE id = '1'",
+    },
+    "groq": {
+        "select": "SELECT groqApiKey FROM settings WHERE id = '1'",
+        "update": "UPDATE settings SET groqApiKey = ? WHERE id = '1'",
+        "insert": "INSERT INTO settings (id, provider, model, whisperModel, groqApiKey) VALUES (?, ?, ?, ?, ?)",
+        "clear": "UPDATE settings SET groqApiKey = NULL WHERE id = '1'",
+    },
+    "ollama": {
+        "select": "SELECT ollamaApiKey FROM settings WHERE id = '1'",
+        "update": "UPDATE settings SET ollamaApiKey = ? WHERE id = '1'",
+        "insert": "INSERT INTO settings (id, provider, model, whisperModel, ollamaApiKey) VALUES (?, ?, ?, ?, ?)",
+        "clear": "UPDATE settings SET ollamaApiKey = NULL WHERE id = '1'",
+    },
 }
 
-_TRANSCRIPT_API_KEY_COLUMNS: dict[str, str] = {
-    "localWhisper": "whisperApiKey",
-    "deepgram": "deepgramApiKey",
-    "elevenLabs": "elevenLabsApiKey",
-    "groq": "groqApiKey",
-    "openai": "openaiApiKey",
+_TRANSCRIPT_API_KEY_SQL: dict[str, dict[str, str]] = {
+    "localWhisper": {
+        "select": "SELECT whisperApiKey FROM transcript_settings WHERE id = '1'",
+        "update": "UPDATE transcript_settings SET whisperApiKey = ? WHERE id = '1'",
+        "insert": "INSERT INTO transcript_settings (id, provider, model, whisperApiKey) VALUES (?, ?, ?, ?)",
+    },
+    "deepgram": {
+        "select": "SELECT deepgramApiKey FROM transcript_settings WHERE id = '1'",
+        "update": "UPDATE transcript_settings SET deepgramApiKey = ? WHERE id = '1'",
+        "insert": "INSERT INTO transcript_settings (id, provider, model, deepgramApiKey) VALUES (?, ?, ?, ?)",
+    },
+    "elevenLabs": {
+        "select": "SELECT elevenLabsApiKey FROM transcript_settings WHERE id = '1'",
+        "update": "UPDATE transcript_settings SET elevenLabsApiKey = ? WHERE id = '1'",
+        "insert": "INSERT INTO transcript_settings (id, provider, model, elevenLabsApiKey) VALUES (?, ?, ?, ?)",
+    },
+    "groq": {
+        "select": "SELECT groqApiKey FROM transcript_settings WHERE id = '1'",
+        "update": "UPDATE transcript_settings SET groqApiKey = ? WHERE id = '1'",
+        "insert": "INSERT INTO transcript_settings (id, provider, model, groqApiKey) VALUES (?, ?, ?, ?)",
+    },
+    "openai": {
+        "select": "SELECT openaiApiKey FROM transcript_settings WHERE id = '1'",
+        "update": "UPDATE transcript_settings SET openaiApiKey = ? WHERE id = '1'",
+        "insert": "INSERT INTO transcript_settings (id, provider, model, openaiApiKey) VALUES (?, ?, ?, ?)",
+    },
 }
 
-def _resolve_api_key_column(provider: str, mapping: dict[str, str]) -> str:
-    """Resolve provider name to its API key column. Raises ValueError if invalid."""
-    col = mapping.get(provider)
-    if col is None:
+def _resolve_api_key_sql(provider: str, mapping: dict[str, dict[str, str]]) -> dict[str, str]:
+    """Resolve provider name to its fixed API key SQL statements. Raises ValueError if invalid."""
+    stmts = mapping.get(provider)
+    if stmts is None:
         raise ValueError(f"Invalid provider: {provider}")
-    return col
+    return stmts
 
 class DatabaseManager:
     def __init__(self, db_path: str = None):
@@ -657,26 +702,23 @@ class DatabaseManager:
 
     async def save_api_key(self, api_key: str, provider: str):
         """Save the API key"""
-        api_key_name = _resolve_api_key_column(provider, _MODEL_API_KEY_COLUMNS)
-            
+        stmts = _resolve_api_key_sql(provider, _MODEL_API_KEY_SQL)
+
         try:
             async with self._get_connection() as conn:
                 await conn.execute("BEGIN TRANSACTION")
-                
+
                 try:
                     # Check if settings row exists
                     cursor = await conn.execute("SELECT id FROM settings WHERE id = '1'")
                     existing_config = await cursor.fetchone()
-                    
+
                     if existing_config:
                         # Update existing configuration
-                        await conn.execute(f"UPDATE settings SET {api_key_name} = ? WHERE id = '1'", (api_key,))
+                        await conn.execute(stmts["update"], (api_key,))
                     else:
                         # Insert new configuration with default values and the API key
-                        await conn.execute(f"""
-                            INSERT INTO settings (id, provider, model, whisperModel, {api_key_name})
-                            VALUES (?, ?, ?, ?, ?)
-                        """, ('1', 'openai', 'gpt-4o-2024-11-20', 'large-v3', api_key))
+                        await conn.execute(stmts["insert"], ('1', 'openai', 'gpt-4o-2024-11-20', 'large-v3', api_key))
                         
                     await conn.commit()
                     logger.info(f"Successfully saved API key for provider: {provider}")
@@ -692,9 +734,9 @@ class DatabaseManager:
 
     async def get_api_key(self, provider: str):
         """Get the API key"""
-        api_key_name = _resolve_api_key_column(provider, _MODEL_API_KEY_COLUMNS)
+        stmts = _resolve_api_key_sql(provider, _MODEL_API_KEY_SQL)
         async with self._get_connection() as conn:
-            cursor = await conn.execute(f"SELECT {api_key_name} FROM settings WHERE id = '1'")
+            cursor = await conn.execute(stmts["select"])
             row = await cursor.fetchone()
             return row[0] if row and row[0] else ""
 
@@ -756,26 +798,23 @@ class DatabaseManager:
 
     async def save_transcript_api_key(self, api_key: str, provider: str):
         """Save the transcript API key"""
-        api_key_name = _resolve_api_key_column(provider, _TRANSCRIPT_API_KEY_COLUMNS)
-            
+        stmts = _resolve_api_key_sql(provider, _TRANSCRIPT_API_KEY_SQL)
+
         try:
             async with self._get_connection() as conn:
                 await conn.execute("BEGIN TRANSACTION")
-                
+
                 try:
                     # Check if transcript settings row exists
                     cursor = await conn.execute("SELECT id FROM transcript_settings WHERE id = '1'")
                     existing_config = await cursor.fetchone()
-                    
+
                     if existing_config:
                         # Update existing configuration
-                        await conn.execute(f"UPDATE transcript_settings SET {api_key_name} = ? WHERE id = '1'", (api_key,))
+                        await conn.execute(stmts["update"], (api_key,))
                     else:
                         # Insert new configuration with default values and the API key
-                        await conn.execute(f"""
-                            INSERT INTO transcript_settings (id, provider, model, {api_key_name})
-                            VALUES (?, ?, ?, ?)
-                        """, ('1', 'localWhisper', 'large-v3', api_key))
+                        await conn.execute(stmts["insert"], ('1', 'localWhisper', 'large-v3', api_key))
                         
                     await conn.commit()
                     logger.info(f"Successfully saved transcript API key for provider: {provider}")
@@ -792,9 +831,9 @@ class DatabaseManager:
 
     async def get_transcript_api_key(self, provider: str):
         """Get the transcript API key"""
-        api_key_name = _resolve_api_key_column(provider, _TRANSCRIPT_API_KEY_COLUMNS)
+        stmts = _resolve_api_key_sql(provider, _TRANSCRIPT_API_KEY_SQL)
         async with self._get_connection() as conn:
-            cursor = await conn.execute(f"SELECT {api_key_name} FROM transcript_settings WHERE id = '1'")
+            cursor = await conn.execute(stmts["select"])
             row = await cursor.fetchone()
             return row[0] if row and row[0] else ""
 
@@ -894,9 +933,9 @@ class DatabaseManager:
         
     async def delete_api_key(self, provider: str):
         """Delete the API key"""
-        api_key_name = _resolve_api_key_column(provider, _MODEL_API_KEY_COLUMNS)
+        stmts = _resolve_api_key_sql(provider, _MODEL_API_KEY_SQL)
         async with self._get_connection() as conn:
-            await conn.execute(f"UPDATE settings SET {api_key_name} = NULL WHERE id = '1'")
+            await conn.execute(stmts["clear"])
             await conn.commit()
     
     # ------------------------------------------------------------------

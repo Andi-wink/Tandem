@@ -213,7 +213,7 @@
       "severity": "high",
       "name": "Dynamic SQL column names via f-strings",
       "description": "Column names are interpolated directly into SQL queries using f-strings in save_api_key, save_transcript_api_key, and related methods. Currently validated against a whitelist, but the pattern is fragile. Any future change that bypasses or extends the whitelist opens a SQL injection vulnerability.",
-      "status": "open",
+      "status": "fixed",
       "file": "backend/app/db.py",
       "lines": [
         607,
