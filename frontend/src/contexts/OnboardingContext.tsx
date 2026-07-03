@@ -198,7 +198,10 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
 
   // Listen to Parakeet download progress
   useEffect(() => {
-    const unlisten = listen<{
+    let cancelled = false;
+    const unlistens: Array<() => void> = [];
+
+    listen<{
       modelName: string;
       progress: number;
       downloaded_mb?: number;
@@ -222,9 +225,9 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
           }
         }
       }
-    );
+    ).then((fn) => (cancelled ? fn() : unlistens.push(fn)));
 
-    const unlistenComplete = listen<{ modelName: string }>(
+    listen<{ modelName: string }>(
       'parakeet-model-download-complete',
       (event) => {
         const { modelName } = event.payload;
@@ -233,9 +236,9 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
           setParakeetProgress(100);
         }
       }
-    );
+    ).then((fn) => (cancelled ? fn() : unlistens.push(fn)));
 
-    const unlistenError = listen<{ modelName: string; error: string }>(
+    listen<{ modelName: string; error: string }>(
       'parakeet-model-download-error',
       (event) => {
         const { modelName } = event.payload;
@@ -243,18 +246,20 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
           console.error('Parakeet download error:', event.payload.error);
         }
       }
-    );
+    ).then((fn) => (cancelled ? fn() : unlistens.push(fn)));
 
     return () => {
-      unlisten.then(fn => fn());
-      unlistenComplete.then(fn => fn());
-      unlistenError.then(fn => fn());
+      cancelled = true;
+      unlistens.forEach((fn) => fn());
     };
   }, [selectedSummaryModel]);
 
   // Listen to summary model (Built-in AI) download progress
   useEffect(() => {
-    const unlisten = listen<{
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    listen<{
       model: string;
       progress: number;
       downloaded_mb?: number;
@@ -279,10 +284,11 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
           }
         }
       }
-    );
+    ).then((fn) => (cancelled ? fn() : (unlisten = fn)));
 
     return () => {
-      unlisten.then(fn => fn());
+      cancelled = true;
+      unlisten?.();
     };
   }, [selectedSummaryModel]);
 
