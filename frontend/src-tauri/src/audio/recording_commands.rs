@@ -651,26 +651,36 @@ pub async fn stop_recording<R: Runtime>(
     if let Some(task_handle) = transcription_task {
         info!("⏳ Waiting for ALL transcription chunks to be processed (no timeout - preserving every chunk)");
 
-        // Enhanced progress monitoring during shutdown
+        // Enhanced progress monitoring during shutdown.
+        // A watch channel lets the progress loop exit promptly once transcription
+        // finishes, instead of relying solely on the outer .abort() below.
         let progress_app = app.clone();
+        let (done_tx, mut done_rx) = tokio::sync::watch::channel(false);
         let progress_task = tokio::spawn(async move {
             let last_update = std::time::Instant::now();
 
             loop {
-                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-                // Emit periodic progress updates during shutdown
-                let elapsed = last_update.elapsed().as_secs();
-                let _ = progress_app.emit(
-                    "recording-shutdown-progress",
-                    serde_json::json!({
-                        "stage": "processing_transcripts",
-                        "message": format!("Processing transcripts... ({}s elapsed)", elapsed),
-                        "progress": 40,
-                        "detailed": true,
-                        "elapsed_seconds": elapsed
-                    }),
-                );
+                tokio::select! {
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => {
+                        // Emit periodic progress updates during shutdown
+                        let elapsed = last_update.elapsed().as_secs();
+                        let _ = progress_app.emit(
+                            "recording-shutdown-progress",
+                            serde_json::json!({
+                                "stage": "processing_transcripts",
+                                "message": format!("Processing transcripts... ({}s elapsed)", elapsed),
+                                "progress": 40,
+                                "detailed": true,
+                                "elapsed_seconds": elapsed
+                            }),
+                        );
+                    }
+                    // Exit as soon as transcription is done (success, error, or timeout),
+                    // or if the sender is dropped, so no stale progress events leak out.
+                    _ = done_rx.changed() => {
+                        break;
+                    }
+                }
             }
         });
 
@@ -692,7 +702,12 @@ pub async fn stop_recording<R: Runtime>(
             }
         }
 
-        // Stop progress monitoring
+        // Signal the progress loop to stop now that transcription has finished.
+        // This runs on all paths above (success, error, and timeout), so the task
+        // exits within one tick instead of lingering until a later abort/timeout.
+        let _ = done_tx.send(true);
+
+        // Backstop: ensure the task is fully stopped even if the signal was missed.
         progress_task.abort();
     } else {
         info!("ℹ️ No transcription task found to wait for");

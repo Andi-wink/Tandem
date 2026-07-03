@@ -164,7 +164,7 @@
       "severity": "high",
       "name": "Progress task infinite loop with no exit condition",
       "description": "The progress_task spawned at line 571 runs an infinite loop emitting events every 500ms. Only cancelled via .abort() after the transcription timeout. If transcription completes quickly, the progress task keeps running until the full timeout. Can emit stale events for 10+ minutes.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src-tauri/src/audio/recording_commands.rs",
       "lines": [
         571,
