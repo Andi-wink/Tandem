@@ -236,7 +236,7 @@
       "severity": "medium",
       "name": "Async listener setup race in RecordingStateContext",
       "description": "setupListeners() is async but not awaited. If the component unmounts before listeners are set up, the cleanup function runs but unsubscribers array is incomplete, leaking event listeners.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src/contexts/RecordingStateContext.tsx",
       "lines": [
         210
@@ -251,7 +251,7 @@
       "severity": "medium",
       "name": "Stale closure in setStatus callback",
       "description": "setStatus useCallback depends on state.status, state.isRecording, state.isPaused, causing a new callback reference on every state change. This triggers unnecessary re-renders in all consumers and creates timing windows where the callback captures stale values.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src/contexts/RecordingStateContext.tsx",
       "lines": [
         73,

@@ -148,6 +148,10 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
    */
   useEffect(() => {
     console.log('[RecordingStateContext] Setting up event listeners');
+    // Guard against the async-setup race: if cleanup runs before setupListeners finishes
+    // awaiting a registration, `cancelled` short-circuits any remaining registrations and
+    // immediately unsubscribes the one that just resolved, so no listener leaks past unmount.
+    let cancelled = false;
     const unsubscribers: (() => void)[] = [];
 
     const setupListeners = async () => {
@@ -165,6 +169,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
           toast.success('Recording started', { duration: 2000 });
           startPolling();
         });
+        if (cancelled) { unlistenStarted(); return; }
         unsubscribers.push(unlistenStarted);
 
         // Recording stopped
@@ -194,6 +199,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
           });
           stopPolling();
         });
+        if (cancelled) { unlistenStopped(); return; }
         unsubscribers.push(unlistenStopped);
 
         // Recording paused
@@ -206,6 +212,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
           }));
           toast.info('Recording paused', { duration: 2000 });
         });
+        if (cancelled) { unlistenPaused(); return; }
         unsubscribers.push(unlistenPaused);
 
         // Recording resumed
@@ -218,6 +225,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
           }));
           toast.success('Recording resumed', { duration: 2000 });
         });
+        if (cancelled) { unlistenResumed(); return; }
         unsubscribers.push(unlistenResumed);
 
         console.log('[RecordingStateContext] Event listeners set up successfully');
@@ -230,6 +238,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
 
     return () => {
       console.log('[RecordingStateContext] Cleaning up event listeners');
+      cancelled = true;
       unsubscribers.forEach(unsub => unsub());
       stopPolling();
     };
