@@ -112,7 +112,10 @@ export function useRecordingStop(
         unlistenFn();
       }
     };
-  }, [router]);
+    // B014: register the listener ONCE. The handler does not use router, so the
+    // former [router] dependency was spurious and only churned the Tauri listener
+    // (tear down + re-register on every router reference change).
+  }, []);
 
   // Main recording stop handler
   const handleRecordingStop = useCallback(async (isCallApi: boolean) => {

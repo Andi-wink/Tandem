@@ -39,6 +39,12 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const finalFlushRef = useRef<(() => void) | null>(null);
 
+  // B016: keep currentMeetingId in a ref (updated each render) so the
+  // recording-listeners effect can read the latest value WITHOUT re-subscribing
+  // the Tauri listeners every time the meeting id changes.
+  const currentMeetingIdRef = useRef(currentMeetingId);
+  currentMeetingIdRef.current = currentMeetingId;
+
   // Keep ref updated with current transcripts
   useEffect(() => {
     transcriptsRef.current = transcripts;
@@ -149,9 +155,12 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         // Listen for recording-stopped event
         const stoppedUnlisten = await recordingService.onRecordingStopped(async (payload) => {
           try {
-            if (currentMeetingId) {
+            // B016: read latest meeting id from ref to avoid a stale capture
+            // without re-subscribing this listener on every id change.
+            const activeMeetingId = currentMeetingIdRef.current;
+            if (activeMeetingId) {
               // Update folder path in IndexedDB
-              const metadata = await indexedDBService.getMeetingMetadata(currentMeetingId);
+              const metadata = await indexedDBService.getMeetingMetadata(activeMeetingId);
 
               if (metadata && payload.folder_path) {
                 metadata.folderPath = payload.folder_path;
@@ -182,7 +191,10 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         console.log('🧹 Recording stopped listener cleaned up');
       }
     };
-  }, [currentMeetingId]);
+    // B016: register the recording listeners ONCE. currentMeetingId is read via
+    // currentMeetingIdRef.current inside the handlers, so it is not a dependency
+    // and the Tauri listeners are not torn down / re-subscribed on every change.
+  }, []);
 
   // Main transcript buffering logic with sequence_id ordering
   useEffect(() => {
