@@ -197,7 +197,7 @@
       "severity": "high",
       "name": "Event listener cleanup race condition in layout.tsx",
       "description": "Uses .then(fn => fn()) pattern for Tauri unlisten cleanup. The cleanup function can execute before the listener promise resolves, meaning the listener is never unsubscribed and leaks memory.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src/app/layout.tsx",
       "lines": [
         91,
