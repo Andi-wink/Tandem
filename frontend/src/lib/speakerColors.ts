@@ -17,18 +17,13 @@ const SPEAKER_COLORS = [
 ] as const;
 
 /**
- * Get deterministic Tailwind color classes for a speaker label.
+ * Get Tailwind color classes for a speaker label.
  *
- * - "SPEAKER_00" → index 0 → blue
- * - "SPEAKER_01" → index 1 → green
- * - "Client" (the channel remote label) → reserved teal
- * - Custom names → hash-based assignment (never the reserved Client color, so
- *   the two channel speakers always render in distinct colors)
+ * Channel-based labels are white badges differentiated by text color:
+ * - "Client" (the remote party) → white square, blue text
+ * - the local speaker (any other name) → white square, black text
+ * Pyannote "SPEAKER_NN" labels keep their distinct palette colors.
  */
-// Reserved for the "Client" channel label so a custom local name can never
-// hash to the same color as the remote party (keep in sync with
-// CLIENT_SPEAKER_NAME in speakerNames.ts).
-const CLIENT_COLOR_INDEX = 5; // teal
 const CLIENT_LABEL = 'Client';
 
 export function getSpeakerColor(speakerLabel: string): string {
@@ -37,16 +32,11 @@ export function getSpeakerColor(speakerLabel: string): string {
     return SPEAKER_COLORS[parseInt(match[1], 10) % SPEAKER_COLORS.length];
   }
   if (speakerLabel === CLIENT_LABEL) {
-    return SPEAKER_COLORS[CLIENT_COLOR_INDEX];
+    // Client: white square, blue text
+    return 'bg-white text-blue-600 border border-border';
   }
-  // Hash-based for custom names, skipping the reserved Client color.
-  let hash = 0;
-  for (let i = 0; i < speakerLabel.length; i++) {
-    hash = ((hash << 5) - hash + speakerLabel.charCodeAt(i)) | 0;
-  }
-  let idx = Math.abs(hash) % SPEAKER_COLORS.length;
-  if (idx === CLIENT_COLOR_INDEX) idx = (idx + 1) % SPEAKER_COLORS.length;
-  return SPEAKER_COLORS[idx];
+  // Local speaker: white square, black text
+  return 'bg-white text-black border border-border';
 }
 
 /**
