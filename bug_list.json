@@ -289,7 +289,7 @@
       "severity": "medium",
       "name": "Async cleanup race in ConfigContext",
       "description": "Cleanup variable is set via .then() callback but may still be undefined when component unmounts before setup completes. The cleanup function runs, finds undefined, and the event listener leaks.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src/contexts/ConfigContext.tsx",
       "lines": [
         313
