@@ -368,6 +368,14 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
             }
         });
         let mut global_listener = TRANSCRIPT_LISTENER_ID.lock().map_err(|e| format!("Failed to lock transcript listener: {e}"))?;
+        // B017: if start_recording is called twice without an intervening stop_recording,
+        // unlisten any listener left over from the prior start before overwriting the stored
+        // id. Otherwise the stale listener keeps receiving transcript-update events and saving
+        // duplicate segments forever (leaked listener + memory bloat).
+        if let Some(previous_id) = global_listener.take() {
+            app.unlisten(previous_id);
+            info!("⚠️ Removed stale transcript-update listener from a prior start_recording");
+        }
         *global_listener = Some(listener_id);
         info!("✅ Transcript-update event listener registered for history persistence");
     }
@@ -545,6 +553,14 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
             }
         });
         let mut global_listener = TRANSCRIPT_LISTENER_ID.lock().map_err(|e| format!("Failed to lock transcript listener: {e}"))?;
+        // B017: if start_recording is called twice without an intervening stop_recording,
+        // unlisten any listener left over from the prior start before overwriting the stored
+        // id. Otherwise the stale listener keeps receiving transcript-update events and saving
+        // duplicate segments forever (leaked listener + memory bloat).
+        if let Some(previous_id) = global_listener.take() {
+            app.unlisten(previous_id);
+            info!("⚠️ Removed stale transcript-update listener from a prior start_recording");
+        }
         *global_listener = Some(listener_id);
         info!("✅ Transcript-update event listener registered for history persistence");
     }

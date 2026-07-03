@@ -319,7 +319,7 @@
       "severity": "medium",
       "name": "Dangling event listeners from rapid start calls",
       "description": "Two rapid start_recording calls without an intervening stop_recording will overwrite TRANSCRIPT_LISTENER_ID with the second listener ID, leaking the first. The first listener continues receiving transcript-update events and storing transcripts, causing memory bloat.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src-tauri/src/audio/recording_commands.rs",
       "lines": [
         291,
