@@ -353,7 +353,7 @@
       "severity": "medium",
       "name": "IS_RECORDING flag updated too late during stop",
       "description": "IS_RECORDING is set to false at line 854, after 600+ lines of cleanup including transcription wait, model unload, and analytics. During this time, commands like pause_recording and get_recording_state see IS_RECORDING=true but the manager may already be released, risking crashes.",
-      "status": "open",
+      "status": "obsolete",
       "file": "frontend/src-tauri/src/audio/recording_commands.rs",
       "lines": [
         854
@@ -405,7 +405,7 @@
       "severity": "medium",
       "name": "Race condition in concurrent process creation",
       "description": "create_process() uses a non-atomic read-then-write pattern (UPDATE then INSERT if 0 rows). Two concurrent requests for the same meeting_id can both see 0 rows from UPDATE, then both attempt INSERT, causing a PRIMARY KEY constraint violation.",
-      "status": "open",
+      "status": "fixed",
       "file": "backend/app/db.py",
       "lines": [
         170,

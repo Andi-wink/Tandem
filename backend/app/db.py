@@ -296,23 +296,27 @@ class DatabaseManager:
                 await conn.execute("BEGIN TRANSACTION")
                 
                 try:
-                    # First try to update existing process
-                    cursor = await conn.execute(
+                    # B022: atomic upsert keyed on the meeting_id PRIMARY KEY. A single
+                    # statement avoids the previous non-atomic read-then-write, where two
+                    # concurrent requests for the same meeting_id could both see 0 updated
+                    # rows and both INSERT, causing a PRIMARY KEY constraint violation.
+                    # The DO UPDATE branch sets exactly the columns the old UPDATE set
+                    # (status, updated_at, start_time, error=NULL, result=NULL) and leaves
+                    # created_at untouched so an existing row keeps its original timestamp.
+                    await conn.execute(
                         """
-                        UPDATE summary_processes
-                        SET status = ?, updated_at = ?, start_time = ?, error = NULL, result = NULL
-                        WHERE meeting_id = ?
+                        INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, start_time)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(meeting_id) DO UPDATE SET
+                            status = excluded.status,
+                            updated_at = excluded.updated_at,
+                            start_time = excluded.start_time,
+                            error = NULL,
+                            result = NULL
                         """,
-                        ("PENDING", now, now, meeting_id)
+                        (meeting_id, "PENDING", now, now, now)
                     )
 
-                    # If no rows were updated, insert a new one
-                    if cursor.rowcount == 0:
-                        await conn.execute(
-                            "INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, start_time) VALUES (?, ?, ?, ?, ?)",
-                            (meeting_id, "PENDING", now, now, now)
-                        )
-                    
                     await conn.commit()
                     logger.info(f"Successfully created/updated process for meeting_id: {meeting_id}")
                     
