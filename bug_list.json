@@ -134,7 +134,7 @@
       "severity": "high",
       "name": "Mutex poisoning from .unwrap() on all lock calls",
       "description": "RecordingState has 20+ .lock().unwrap() calls. If any thread panics while holding a mutex lock, the mutex becomes poisoned and ALL subsequent lock attempts will panic. This is especially dangerous in the error callback path (line 312-315) where a panicking callback poisons the error_callback mutex, preventing all future error recovery.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src-tauri/src/audio/recording_state.rs",
       "lines": [
         154,
