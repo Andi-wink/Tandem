@@ -529,6 +529,10 @@ pub fn get_language_preference_internal() -> Option<String> {
     LANGUAGE_PREFERENCE.lock().ok().map(|lang| lang.clone())
 }
 
+/// Supervisor for the agent-whiteboard server. Set in `setup()`, killed in `RunEvent::Exit`.
+static CANVAS_SERVER: std::sync::OnceLock<std::sync::Arc<canvas::server::CanvasServerManager>> =
+    std::sync::OnceLock::new();
+
 pub fn run() {
     log::set_max_level(log::LevelFilter::Info);
 
@@ -708,6 +712,16 @@ pub fn run() {
 
             // Global shortcuts are registered via .with_shortcuts() on the plugin builder
             log::info!("Global shortcuts registered via plugin builder (Alt+Shift+S, Alt+Shift+R, Alt+Shift+V, Alt+Shift+A)");
+
+            // Canvas: spawn + supervise the agent-whiteboard server so the whiteboard is reachable on
+            // localhost the moment Tandem launches (no manual `pnpm dev`). Killed on exit (RunEvent::Exit).
+            match canvas::server::CanvasServerManager::locate() {
+                Some(mgr) => {
+                    mgr.start();
+                    let _ = CANVAS_SERVER.set(mgr);
+                }
+                None => log::warn!("Canvas server not started (bundle not found) — canvas will be unavailable"),
+            }
 
             // Initialize notification system with proper defaults
             log::info!("Initializing notification system...");
@@ -1059,6 +1073,11 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 log::info!("Application exiting, cleaning up resources...");
                 tauri::async_runtime::block_on(async {
+                    // Kill the supervised whiteboard server so no node process is orphaned.
+                    if let Some(mgr) = CANVAS_SERVER.get() {
+                        log::info!("Shutting down canvas server...");
+                        mgr.shutdown().await;
+                    }
                     // Clean up database connection and checkpoint WAL
                     if let Some(app_state) = _app_handle.try_state::<state::AppState>() {
                         log::info!("Starting database cleanup...");

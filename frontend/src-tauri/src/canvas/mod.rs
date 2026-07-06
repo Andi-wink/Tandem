@@ -12,6 +12,7 @@
 //! available, but we don't rely on it here.)
 
 pub mod commands;
+pub mod server;
 
 /// The fixed window label for the canvas/agent webview.
 pub const CANVAS_WINDOW_LABEL: &str = "canvas-agent";
