@@ -19,9 +19,11 @@ const SPEAKER_COLORS = [
 /**
  * Get Tailwind color classes for a speaker label.
  *
- * Channel-based labels are white badges differentiated by text color:
- * - "Client" (the remote party) → white square, blue text
- * - the local speaker (any other name) → white square, black text
+ * Channel-based labels are compact chips differentiated by fill:
+ * - the local speaker (any other name) → dark chip, white text (readable in
+ *   both light and dark themes; avoids the black-on-dark unreadability of a
+ *   plain white square)
+ * - "Client" (the remote party) → white chip, blue text
  * Pyannote "SPEAKER_NN" labels keep their distinct palette colors.
  */
 const CLIENT_LABEL = 'Client';
@@ -32,11 +34,11 @@ export function getSpeakerColor(speakerLabel: string): string {
     return SPEAKER_COLORS[parseInt(match[1], 10) % SPEAKER_COLORS.length];
   }
   if (speakerLabel === CLIENT_LABEL) {
-    // Client: white square, blue text
+    // Client: white chip, blue text
     return 'bg-white text-blue-600 border border-border';
   }
-  // Local speaker: white square, black text
-  return 'bg-white text-black border border-border';
+  // Local speaker: dark chip, white text
+  return 'bg-neutral-800 text-white border border-neutral-700';
 }
 
 /**
