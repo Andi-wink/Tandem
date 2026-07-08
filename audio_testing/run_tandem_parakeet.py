@@ -359,13 +359,47 @@ def clean_repetitive_text(text: str) -> str:
 DOMAIN_TERMS = [
     "n8n", "tandem", "excalidraw", "meetily", "anthropic", "claude", "powershell",
     "shopify", "webhook", "workflow", "json", "ollama", "parakeet", "whisper",
-    "coworker", "github", "api",
-]
+    "coworker", "github",
+]  # must mirror TERMS in parakeet_engine.rs ("api" removed: engine never had it)
 DOMAIN_ALIASES = {
     "nan": "n8n", "n8n": "n8n", "anan": "n8n",
     "excalidor": "excalidraw", "excalidra": "excalidraw",
     "meetly": "meetily", "meetilly": "meetily",
 }
+
+# #3b Phrase-level domain correction (mirrors ParakeetEngine::apply_phrase_corrections).
+# (misheard token sequence -> canonical term), longest first. Sequences must be
+# essentially-never-real-speech: adversarial review rejected "drop if i" -> shopify
+# and "cowork" -> coworker as too aggressive for genuine English.
+PHRASE_ALIASES = [
+    (("n", "a", "n"), "n8n"),
+]
+
+_PUNCT = ".,!?;:"
+
+
+def apply_phrase_corrections(text: str) -> str:
+    words = text.split()
+    out = []
+    i = 0
+    while i < len(words):
+        matched = False
+        for seq, canon in PHRASE_ALIASES:
+            if i + len(seq) > len(words):
+                continue
+            window = words[i:i + len(seq)]
+            inner_clean = all(w.lower() == s for w, s in zip(window[:-1], seq[:-1]))
+            last = window[-1]
+            last_trimmed = last.rstrip(_PUNCT)
+            if inner_clean and last_trimmed.lower() == seq[-1]:
+                out.append(canon + last[len(last_trimmed):])
+                i += len(seq)
+                matched = True
+                break
+        if not matched:
+            out.append(words[i])
+            i += 1
+    return " ".join(out)
 
 
 def _difflib_ratio(a, b):
@@ -416,7 +450,7 @@ def postprocess(text: str, do_reps=True, do_domain=True, gentle=True) -> str:
     if do_reps:
         text = collapse_runaways(text) if gentle else clean_repetitive_text(text)
     if do_domain:
-        text = apply_domain_corrections(text)
+        text = apply_domain_corrections(apply_phrase_corrections(text))
     return text
 
 

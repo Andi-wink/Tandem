@@ -49,6 +49,15 @@ The local gate is done ([wer_gate.py](audio_testing/wer_gate.py), [README](audio
 - [ ] Add a Rust `transcribe_file` entry point (e.g. `cargo run --bin transcribe_file <wav>`) so the gate scores the actual shipped engine, not the Python replica/mirror.
 - [ ] Wire into [.github/workflows/pr-main-check.yml](.github/workflows/) with model download + cache (int8 encoder is 652MB, can't be committed). Until then, run locally / nightly.
 
+### Transcription accuracy loop (2026-07-08) — deferred items
+Iteration 1 done (phrase-level "n a n" -> n8n fix, pooled WER 22.03% -> 21.54%, log: [accuracy_loop_log.md](audio_testing/results/accuracy_loop_log.md)). Loop stopped by user after iteration 1; queued aspects + review-mandated follow-ups:
+- [ ] Held-out clips: current WER gains are measured on the same 5 clips corrections are derived from (adversarial review flagged train/test contamination). Validate future corrections on clips they were not authored against.
+- [ ] User-editable custom vocabulary (SQLite settings) instead of growing the compiled alias tables in [parakeet_engine.rs](frontend/src-tauri/src/parakeet_engine/parakeet_engine.rs); reviewers rejected hardcoding one user's domain terms globally.
+- [ ] Casing of corrected terms: corrections emit lowercase; WER scoring is case-insensitive so casing regressions are invisible to the gate.
+- [ ] Deletions aspect (iteration 2, not run): clip_02 drops a whole phrase block (D=13, "go back go back home...") — investigate VAD segment/buffer coverage for that region.
+- [ ] Scoring-normalization fairness (iteration 5, not run): "ah"/"uh", "kinda"/"kind of", "i'm"/"i am" count as errors; consider a Whisper-style English text normalizer for scoring only.
+- [ ] Rust/Python fuzzy tie-break divergence (Iterator::max_by returns last on tie, Python max() returns first) — theoretical, flagged by review.
+
 ### Transcription quality — larger levers not yet explored (from the WER review)
 - [ ] #6 Benchmark fp32 Parakeet vs int8 on the same clips to quantify the quantization WER cost (RTX 3090 makes the speed hit likely irrelevant).
 - [ ] #7 Language routing: the German clip is ~65% WER. Detect language and route non-English to a stronger model or surface a low-confidence warning.

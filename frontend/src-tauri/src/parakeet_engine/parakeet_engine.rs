@@ -475,7 +475,9 @@ impl ParakeetEngine {
         // returned directly). Two cheap, measured fixes:
         //  #1 de-stutter: collapse TDT runaway repetitions ("a a a a", "st st st").
         //  #3 domain correction: fix known vocabulary misfires (n8n, Shopify, ...).
-        let cleaned = Self::apply_domain_corrections(&Self::collapse_runaways(&result.text));
+        let cleaned = Self::apply_domain_corrections(&Self::apply_phrase_corrections(
+            &Self::collapse_runaways(&result.text),
+        ));
         if cleaned != result.text {
             log::debug!("Parakeet transcription result (cleaned): '{}'", cleaned);
         }
@@ -503,6 +505,50 @@ impl ParakeetEngine {
                 out.extend_from_slice(&words[i..j]); // keep natural short repeats
             }
             i = j;
+        }
+        out.join(" ")
+    }
+
+    /// #3b Phrase-level domain correction. Parakeet sometimes shatters a domain
+    /// term across several tokens ("N A N" for n8n, "drop if I" for Shopify,
+    /// heard as shop-if-eye), which the per-word alias/fuzzy pass cannot see.
+    /// Only exact, case-insensitive token sequences from this table are replaced;
+    /// a sequence with internal punctuation (a comma inside the window) is left
+    /// alone since that signals a genuine phrase boundary.
+    fn apply_phrase_corrections(text: &str) -> String {
+        // (misheard token sequence -> canonical term), longest first.
+        // Keep this table to sequences that are essentially never real speech:
+        // adversarial review rejected "drop if i" -> shopify (plausible English
+        // clause) and "cowork" -> coworker (legitimate verb) as too aggressive.
+        const PHRASES: &[(&[&str], &str)] = &[
+            (&["n", "a", "n"], "n8n"),
+        ];
+
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let mut out: Vec<String> = Vec::with_capacity(words.len());
+        let mut i = 0;
+        'outer: while i < words.len() {
+            for (seq, canon) in PHRASES {
+                if i + seq.len() > words.len() {
+                    continue;
+                }
+                let window = &words[i..i + seq.len()];
+                // all but the last token must be bare words (no punctuation)
+                let inner_clean = window[..seq.len() - 1]
+                    .iter()
+                    .zip(seq.iter())
+                    .all(|(w, s)| w.eq_ignore_ascii_case(s));
+                let last = window[seq.len() - 1];
+                let last_trimmed = last.trim_end_matches(|c: char| ".,!?;:".contains(c));
+                if inner_clean && last_trimmed.eq_ignore_ascii_case(seq[seq.len() - 1]) {
+                    let tail = &last[last_trimmed.len()..];
+                    out.push(format!("{}{}", canon, tail));
+                    i += seq.len();
+                    continue 'outer;
+                }
+            }
+            out.push(words[i].to_string());
+            i += 1;
         }
         out.join(" ")
     }
