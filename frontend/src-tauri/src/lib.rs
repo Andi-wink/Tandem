@@ -529,8 +529,9 @@ pub fn get_language_preference_internal() -> Option<String> {
     LANGUAGE_PREFERENCE.lock().ok().map(|lang| lang.clone())
 }
 
-/// Supervisor for the agent-whiteboard server. Set in `setup()`, killed in `RunEvent::Exit`.
-static CANVAS_SERVER: std::sync::OnceLock<std::sync::Arc<canvas::server::CanvasServerManager>> =
+/// Supervisors for the agent-whiteboard servers (app server :5174 + MCP canvas server :3939). Set in
+/// `setup()`, killed in `RunEvent::Exit`.
+static CANVAS_SERVERS: std::sync::OnceLock<Vec<std::sync::Arc<canvas::server::CanvasServerManager>>> =
     std::sync::OnceLock::new();
 
 pub fn run() {
@@ -548,9 +549,10 @@ pub fn run() {
             let region_shortcut: Shortcut = "Alt+Shift+R".parse().expect("Invalid shortcut: Alt+Shift+R");
             let clipboard_shortcut: Shortcut = "Alt+Shift+V".parse().expect("Invalid shortcut: Alt+Shift+V");
             let canvas_shortcut: Shortcut = "Alt+Shift+A".parse().expect("Invalid shortcut: Alt+Shift+A");
+            let voice_command_shortcut: Shortcut = "Alt+Shift+Q".parse().expect("Invalid shortcut: Alt+Shift+Q");
 
             tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcuts(["Alt+Shift+S", "Alt+Shift+R", "Alt+Shift+V", "Alt+Shift+A"])
+                .with_shortcuts(["Alt+Shift+S", "Alt+Shift+R", "Alt+Shift+V", "Alt+Shift+A", "Alt+Shift+Q"])
                 .expect("Failed to parse global shortcuts")
                 .with_handler(move |app, shortcut, event| {
                     use tauri::Emitter as _;
@@ -567,6 +569,24 @@ pub fn run() {
                             ShortcutState::Released => {
                                 log::info!("Global shortcut released: Alt+Shift+A (canvas voice — stop)");
                                 let _ = app.emit("canvas-voice-stop", ());
+                            }
+                        }
+                        return;
+                    }
+
+                    // AI panel push-to-talk (F047, Alt+Shift+Q — replaces the old webview-level
+                    // Ctrl+Space, which Windows can intercept as an IME toggle and swallow the
+                    // release of). Registered at the OS level via this plugin instead, so it works
+                    // regardless of webview focus/IME state, mirroring the canvas-voice shortcut above.
+                    if shortcut == &voice_command_shortcut {
+                        match event.state {
+                            ShortcutState::Pressed => {
+                                log::info!("Global shortcut pressed: Alt+Shift+Q (voice command — start)");
+                                let _ = app.emit("voice-command-start", ());
+                            }
+                            ShortcutState::Released => {
+                                log::info!("Global shortcut released: Alt+Shift+Q (voice command — stop)");
+                                let _ = app.emit("voice-command-stop", ());
                             }
                         }
                         return;
@@ -711,16 +731,24 @@ pub fn run() {
             }
 
             // Global shortcuts are registered via .with_shortcuts() on the plugin builder
-            log::info!("Global shortcuts registered via plugin builder (Alt+Shift+S, Alt+Shift+R, Alt+Shift+V, Alt+Shift+A)");
+            log::info!("Global shortcuts registered via plugin builder (Alt+Shift+S, Alt+Shift+R, Alt+Shift+V, Alt+Shift+A, Alt+Shift+Q)");
 
-            // Canvas: spawn + supervise the agent-whiteboard server so the whiteboard is reachable on
-            // localhost the moment Tandem launches (no manual `pnpm dev`). Killed on exit (RunEvent::Exit).
-            match canvas::server::CanvasServerManager::locate() {
-                Some(mgr) => {
-                    mgr.start();
-                    let _ = CANVAS_SERVER.set(mgr);
+            // Canvas: spawn + supervise the agent-whiteboard servers so the whiteboard (and its MCP
+            // canvas server, for "Connect MCP") are reachable on localhost the moment Tandem launches
+            // (no manual `pnpm dev`). Killed on exit (RunEvent::Exit).
+            {
+                let servers: Vec<_> = [
+                    canvas::server::CanvasServerManager::locate_app(),
+                    canvas::server::CanvasServerManager::locate_mcp(),
+                ]
+                .into_iter()
+                .flatten()
+                .inspect(|mgr| mgr.start())
+                .collect();
+                if servers.is_empty() {
+                    log::warn!("Canvas servers not started (bundles not found) — canvas will be unavailable");
                 }
-                None => log::warn!("Canvas server not started (bundle not found) — canvas will be unavailable"),
+                let _ = CANVAS_SERVERS.set(servers);
             }
 
             // Initialize notification system with proper defaults
@@ -1073,10 +1101,12 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 log::info!("Application exiting, cleaning up resources...");
                 tauri::async_runtime::block_on(async {
-                    // Kill the supervised whiteboard server so no node process is orphaned.
-                    if let Some(mgr) = CANVAS_SERVER.get() {
-                        log::info!("Shutting down canvas server...");
-                        mgr.shutdown().await;
+                    // Kill the supervised whiteboard servers so no node process is orphaned.
+                    if let Some(servers) = CANVAS_SERVERS.get() {
+                        log::info!("Shutting down canvas servers...");
+                        for mgr in servers {
+                            mgr.shutdown().await;
+                        }
                     }
                     // Clean up database connection and checkpoint WAL
                     if let Some(app_state) = _app_handle.try_state::<state::AppState>() {

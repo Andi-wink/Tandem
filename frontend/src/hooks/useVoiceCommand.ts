@@ -1,9 +1,18 @@
-// F047: Push-to-talk voice command handling (Ctrl+Space).
+// F047: Push-to-talk voice command handling (Alt+Shift+Q).
 //
 // Wake-word detection has been disabled — it caused commands to fire on any
-// speech during recording. Voice commands are push-to-talk only (Ctrl+Space).
+// speech during recording. Voice commands are push-to-talk only (Alt+Shift+Q).
+//
+// Uses the OS-level Tauri global-shortcut plugin (registered in lib.rs) rather than webview
+// keydown/keyup — the previous Ctrl+Space binding was a webview-level listener, and Windows can
+// intercept Ctrl+Space as an IME toggle and swallow the key-up before the webview ever sees it,
+// leaving the hotkey stuck in "listening" forever. The global shortcut fires reliably regardless
+// of focus/IME state.
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+
+const inTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 export interface VoiceCommandResult {
   /** The raw transcript text captured after wake word */
@@ -84,54 +93,36 @@ export function useVoiceCommand(options: UseVoiceCommandOptions = {}) {
     onCommandRef.current?.(result);
   }, [cancelListening, clearTimers]);
 
-  // Push-to-talk hotkey: Ctrl+Space to start, release Space to execute
+  // Push-to-talk hotkey: hold Alt+Shift+Q to start, release to execute.
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || !inTauri()) return;
+    let cancelled = false;
+    const unlistens: UnlistenFn[] = [];
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Skip interactive elements only for unmodified keypresses — bare Space has native
-      // meaning on buttons/selects/links, but Ctrl+Space is a deliberate hotkey combo
-      // that never inserts text, so it should work regardless of focus.
-      if (!e.ctrlKey) {
-        const target = e.target as HTMLElement;
-        const tag = target?.tagName;
-        if (
-          tag === 'INPUT' ||
-          tag === 'TEXTAREA' ||
-          tag === 'SELECT' ||
-          tag === 'BUTTON' ||
-          tag === 'A' ||
-          target?.isContentEditable
-        ) return;
-      }
-
-      if (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.code === 'Space' && !e.repeat && !isListeningRef.current) {
-        e.preventDefault();
-        console.log('[VoiceCommand] Hotkey pressed — starting push-to-talk');
-        isHotkeyListeningRef.current = true;
-        isListeningRef.current = true;
-        capturedTextRef.current = '';
-        setIsHotkeyListening(true);
-        setIsListening(true);
-        setCapturedText('');
-        clearTimers();
-        // Safety net: if the release is never detected (see handleRelease below), don't just sit
-        // there forever — after 15s, send whatever was captured instead of silently discarding it.
-        timeoutRef.current = setTimeout(() => {
-          console.log('[VoiceCommand] Hotkey safety timeout — finishing with whatever was captured');
-          isHotkeyListeningRef.current = false;
-          setIsHotkeyListening(false);
-          const captured = capturedTextRef.current.trim();
-          if (captured) executeCommand(captured);
-          else cancelListening();
-        }, 15000);
-      }
+    const handlePressed = () => {
+      if (isListeningRef.current) return; // already listening — ignore a duplicate Pressed
+      console.log('[VoiceCommand] Hotkey pressed — starting push-to-talk');
+      isHotkeyListeningRef.current = true;
+      isListeningRef.current = true;
+      capturedTextRef.current = '';
+      setIsHotkeyListening(true);
+      setIsListening(true);
+      setCapturedText('');
+      clearTimers();
+      // Safety net: if the release is never detected (e.g. the app loses focus without a
+      // matching Released event), don't sit there forever — after 15s, send whatever was
+      // captured instead of silently discarding it.
+      timeoutRef.current = setTimeout(() => {
+        console.log('[VoiceCommand] Hotkey safety timeout — finishing with whatever was captured');
+        isHotkeyListeningRef.current = false;
+        setIsHotkeyListening(false);
+        const captured = capturedTextRef.current.trim();
+        if (captured) executeCommand(captured);
+        else cancelListening();
+      }, 15000);
     };
 
-    // Shared "the hotkey was released" path, used both by the real keyup and by the blur fallback
-    // below (Ctrl+Space is intercepted as an IME toggle by some Windows configurations, which can
-    // swallow the keyup before it reaches the webview — losing focus is the next best signal).
-    const handleRelease = () => {
+    const handleReleased = () => {
       if (!isHotkeyListeningRef.current) return;
       console.log('[VoiceCommand] Hotkey released — entering grace period for final transcripts');
       isHotkeyListeningRef.current = false;
@@ -153,26 +144,12 @@ export function useVoiceCommand(options: UseVoiceCommandOptions = {}) {
       }, graceMs);
     };
 
-    const handleKeyUp = (e: KeyboardEvent) => {
-      // Detect Space release (Ctrl may be released first, so just check Space + active flag)
-      if (e.code === 'Space' && isHotkeyListeningRef.current) {
-        e.preventDefault();
-        handleRelease();
-      }
-    };
-
-    // Fallback for a lost keyup (OS/IME swallows Ctrl+Space, alt-tab, etc.): treat losing window
-    // focus while the hotkey is held as a release, so listening can never get stuck indefinitely.
-    const handleBlur = () => handleRelease();
-
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    window.addEventListener('blur', handleBlur);
+    listen('voice-command-start', handlePressed).then((fn) => (cancelled ? fn() : unlistens.push(fn)));
+    listen('voice-command-stop', handleReleased).then((fn) => (cancelled ? fn() : unlistens.push(fn)));
 
     return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-      window.removeEventListener('blur', handleBlur);
+      cancelled = true;
+      unlistens.forEach((fn) => fn());
       // If this effect tears down (enabled flipped false, e.g. recording stopped) while a hotkey
       // hold was in flight, the listeners above go away with it — reset state instead of leaving
       // isListening/isHotkeyListening stuck true with nothing left to ever clear them.
@@ -183,7 +160,7 @@ export function useVoiceCommand(options: UseVoiceCommandOptions = {}) {
   return {
     /** Whether the system is currently listening for a voice command */
     isListening,
-    /** Whether listening was triggered by the push-to-talk hotkey (Ctrl+Space) */
+    /** Whether listening was triggered by the push-to-talk hotkey (Alt+Shift+Q) */
     isHotkeyListening,
     /** Text captured so far while listening */
     capturedText,
