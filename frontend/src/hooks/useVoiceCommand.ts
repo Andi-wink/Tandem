@@ -115,47 +115,68 @@ export function useVoiceCommand(options: UseVoiceCommandOptions = {}) {
         setIsListening(true);
         setCapturedText('');
         clearTimers();
-        // Safety timeout: auto-cancel after 15s if key somehow stays held
+        // Safety net: if the release is never detected (see handleRelease below), don't just sit
+        // there forever — after 15s, send whatever was captured instead of silently discarding it.
         timeoutRef.current = setTimeout(() => {
-          console.log('[VoiceCommand] Hotkey safety timeout — cancelling');
+          console.log('[VoiceCommand] Hotkey safety timeout — finishing with whatever was captured');
           isHotkeyListeningRef.current = false;
           setIsHotkeyListening(false);
-          cancelListening();
+          const captured = capturedTextRef.current.trim();
+          if (captured) executeCommand(captured);
+          else cancelListening();
         }, 15000);
       }
+    };
+
+    // Shared "the hotkey was released" path, used both by the real keyup and by the blur fallback
+    // below (Ctrl+Space is intercepted as an IME toggle by some Windows configurations, which can
+    // swallow the keyup before it reaches the webview — losing focus is the next best signal).
+    const handleRelease = () => {
+      if (!isHotkeyListeningRef.current) return;
+      console.log('[VoiceCommand] Hotkey released — entering grace period for final transcripts');
+      isHotkeyListeningRef.current = false;
+      setIsHotkeyListening(false);
+      // feedTranscript now runs in activity-timer mode (isHotkeyListeningRef is false).
+      // Use a longer grace period when no text has been captured yet, because Whisper
+      // transcription has significant latency (3-10s). If some text was already captured,
+      // a shorter wait suffices. Once transcripts start arriving, feedTranscript's own
+      // 2s activity timer takes over.
+      if (activityTimerRef.current) clearTimeout(activityTimerRef.current);
+      const hasCapturedText = capturedTextRef.current.trim().length > 0;
+      const graceMs = hasCapturedText ? 1500 : 8000;
+      activityTimerRef.current = setTimeout(() => {
+        if (!isListeningRef.current) return;
+        const captured = capturedTextRef.current.trim();
+        console.log('[VoiceCommand] Hotkey grace period done — executing with:', captured);
+        if (captured) executeCommand(captured);
+        else cancelListening();
+      }, graceMs);
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
       // Detect Space release (Ctrl may be released first, so just check Space + active flag)
       if (e.code === 'Space' && isHotkeyListeningRef.current) {
         e.preventDefault();
-        console.log('[VoiceCommand] Hotkey released — entering grace period for final transcripts');
-        isHotkeyListeningRef.current = false;
-        setIsHotkeyListening(false);
-        // feedTranscript now runs in activity-timer mode (isHotkeyListeningRef is false).
-        // Use a longer grace period when no text has been captured yet, because Whisper
-        // transcription has significant latency (3-10s). If some text was already captured,
-        // a shorter wait suffices. Once transcripts start arriving, feedTranscript's own
-        // 2s activity timer takes over.
-        if (activityTimerRef.current) clearTimeout(activityTimerRef.current);
-        const hasCapturedText = capturedTextRef.current.trim().length > 0;
-        const graceMs = hasCapturedText ? 1500 : 8000;
-        activityTimerRef.current = setTimeout(() => {
-          if (!isListeningRef.current) return;
-          const captured = capturedTextRef.current.trim();
-          console.log('[VoiceCommand] Hotkey grace period done — executing with:', captured);
-          if (captured) executeCommand(captured);
-          else cancelListening();
-        }, graceMs);
+        handleRelease();
       }
     };
 
+    // Fallback for a lost keyup (OS/IME swallows Ctrl+Space, alt-tab, etc.): treat losing window
+    // focus while the hotkey is held as a release, so listening can never get stuck indefinitely.
+    const handleBlur = () => handleRelease();
+
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleBlur);
 
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleBlur);
+      // If this effect tears down (enabled flipped false, e.g. recording stopped) while a hotkey
+      // hold was in flight, the listeners above go away with it — reset state instead of leaving
+      // isListening/isHotkeyListening stuck true with nothing left to ever clear them.
+      if (isHotkeyListeningRef.current || isListeningRef.current) cancelListening();
     };
   }, [enabled, executeCommand, cancelListening, clearTimers]);
 
