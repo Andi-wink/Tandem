@@ -92,7 +92,10 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
   const [boardReadOnly, setBoardReadOnly] = useState(false);
   const [status, setStatus] = useState<CanvasStatus>('idle');
   const [lastError, setLastError] = useState<string | null>(null);
-  const [transcriptOptIn, setTranscriptOptInState] = useState(false);
+  // Default ON: the canvas is a call co-pilot, so drawings should use the call transcript by default.
+  // Flipped off only if the user explicitly turned it off before (persisted as '0'). The header
+  // toggle + the "sharing…" indicator keep this visible, per the privacy-is-visible design.
+  const [transcriptOptIn, setTranscriptOptInState] = useState(true);
 
   const iframeWinRef = useRef<Window | null>(null);
   const pendingRef = useRef<string | null>(null);
@@ -126,7 +129,9 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
       } else if (u === LEGACY_AGENT_URL) {
         localStorage.setItem(URL_STORAGE_KEY, DEFAULT_AGENT_URL);
       }
-      setTranscriptOptInState(localStorage.getItem(PRIVACY_STORAGE_KEY) === '1');
+      // Only override the default-on when the user has explicitly stored a choice ('1' or '0').
+      const storedOptIn = localStorage.getItem(PRIVACY_STORAGE_KEY);
+      if (storedOptIn != null) setTranscriptOptInState(storedOptIn === '1');
     } catch {
       /* ignore */
     }

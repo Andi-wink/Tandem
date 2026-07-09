@@ -21,11 +21,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { useCanvas } from '@/contexts/CanvasContext';
 import { useTranscripts } from '@/contexts/TranscriptContext';
-import { getRecentTranscripts } from '@/services/handoffService';
+import { composeCanvasPrompt, CANVAS_CONTEXT_WINDOW_SECS } from '@/services/canvasPrompt';
 import { logger } from '@/lib/logger';
 
-/** How much of the rolling transcript (seconds) to attach as context when opted in. */
-const CONTEXT_WINDOW_SECS = 300;
 const TARGET_SAMPLE_RATE = 16000;
 
 const inTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -165,17 +163,11 @@ export function useCanvasVoice() {
       return;
     }
 
-    // Compose: optional rolling-transcript context + the spoken instruction.
-    let message = instruction;
-    if (optInRef.current) {
-      const ctxText = getRecentTranscripts(transcriptsRef.current, CONTEXT_WINDOW_SECS)
-        .map((t) => t.text)
-        .join(' ')
-        .trim();
-      if (ctxText) {
-        message = `Context from the call so far:\n${ctxText}\n\nNow do this on the canvas: ${instruction}`;
-      }
-    }
+    // Compose: transcript context (default last 5 min, widened if the instruction asks) + instruction.
+    const message = composeCanvasPrompt(instruction, transcriptsRef.current, {
+      enabled: optInRef.current,
+      defaultWindowSecs: CANVAS_CONTEXT_WINDOW_SECS,
+    });
 
     toast.info(`Canvas: "${instruction.slice(0, 60)}${instruction.length > 60 ? '…' : ''}"`);
     await sendPrompt(message);

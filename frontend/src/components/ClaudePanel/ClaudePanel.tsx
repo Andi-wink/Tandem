@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X, Send, AlertCircle, Square, Check, Shield, Paperclip, Mic, FolderOpen, Code, SlidersHorizontal, ChevronDown, Plus, PenTool, Maximize2, Minimize2, History } from 'lucide-react';
+import { X, Send, AlertCircle, Square, Check, Shield, Paperclip, Mic, FolderOpen, Code, SlidersHorizontal, ChevronDown, Plus, PenTool, Maximize2, Minimize2, History, PanelRightClose, PanelRightOpen, FileText } from 'lucide-react';
 import { toast } from 'sonner';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { useClaude, MODEL_OPTIONS } from '@/contexts/ClaudeContext';
@@ -15,6 +15,7 @@ import { useSlashCommand } from '@/hooks/useSlashCommand';
 import { useVoiceCommand, VoiceCommandResult } from '@/hooks/useVoiceCommand';
 import { useCanvas } from '@/contexts/CanvasContext';
 import { routeMessage } from '@/services/canvasRouter';
+import { composeCanvasPrompt, CANVAS_CONTEXT_WINDOW_SECS } from '@/services/canvasPrompt';
 import { CanvasIframe } from '@/components/CanvasPanel/CanvasIframe';
 import { TEXTAREA_MAX_HEIGHT_PX } from '@/lib/constants';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
@@ -72,6 +73,10 @@ export function ClaudePanel() {
   const [pendingFirstMessage, setPendingFirstMessage] = useState<string | null>(null);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editingTitleValue, setEditingTitleValue] = useState('');
+  // Only meaningful in full-screen canvas mode: lets the dark chat column be tucked away so the
+  // board can use the whole window. Resets whenever expanded mode is left, so re-expanding always
+  // shows chat by default.
+  const [chatCollapsed, setChatCollapsed] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const sendMessageRef = useRef(sendMessage);
@@ -224,6 +229,12 @@ export function ClaudePanel() {
   // the race condition where openPanel's setState hasn't propagated to
   // stateRef.current before sendMessage reads it.
   const canvas = useCanvas();
+  // Live ref to the transcript so the (stable) canvas-send callbacks below can attach it as context
+  // without re-creating on every new segment. (`transcripts` itself is also destructured lower down
+  // for the voice-capture feed effects.)
+  const { transcripts } = useTranscripts();
+  const transcriptsRef = useRef(transcripts);
+  transcriptsRef.current = transcripts;
   const handleVoiceCommand = React.useCallback(async (result: VoiceCommandResult) => {
     const message = result.args || result.transcript;
     if (!message?.trim()) {
@@ -242,7 +253,12 @@ export function ClaudePanel() {
     if (!/@code\b/i.test(message)) {
       const route = await routeMessage(message, { anthropicKey: apiKey, canvasOpen: canvas.canvasVisible });
       if (route === 'canvas') {
-        await canvas.sendPrompt(message);
+        await canvas.sendPrompt(
+          composeCanvasPrompt(message, transcriptsRef.current, {
+            enabled: canvas.transcriptOptIn,
+            defaultWindowSecs: CANVAS_CONTEXT_WINDOW_SECS,
+          }),
+        );
         return;
       }
     }
@@ -271,8 +287,7 @@ export function ClaudePanel() {
     onCommand: handleVoiceCommand,
   });
 
-  // F047: Feed new transcript segments into voice command capture while listening
-  const { transcripts } = useTranscripts();
+  // F047: `transcripts` (destructured above) feeds voice-command capture while listening.
   const { sessionFolder, activeProject } = useSoloMode();
 
   // Previous-boards picker: lists this client's (Solo project's) saved whiteboards.
@@ -391,7 +406,12 @@ export function ClaudePanel() {
       if (route === 'canvas') {
         setInputText('');
         if (inputRef.current) inputRef.current.style.height = 'auto';
-        await canvas.sendPrompt(text);
+        await canvas.sendPrompt(
+          composeCanvasPrompt(text, transcriptsRef.current, {
+            enabled: canvas.transcriptOptIn,
+            defaultWindowSecs: CANVAS_CONTEXT_WINDOW_SECS,
+          }),
+        );
         return;
       }
     }
@@ -612,11 +632,19 @@ export function ClaudePanel() {
   // (history hidden); chat-only = normal chat.
   const canvasExpanded = canvas.canvasVisible && canvas.canvasExpanded;
   const conversationHidden = canvas.canvasVisible && !canvas.canvasExpanded;
-  const chatRegionClass = canvasExpanded
-    ? 'flex flex-col w-[400px] flex-shrink-0 min-h-0 border-l border-border bg-background'
-    : canvas.canvasVisible
-      ? 'flex flex-col flex-shrink-0'
-      : 'flex flex-col flex-1 min-h-0';
+  const chatColumnHidden = canvasExpanded && chatCollapsed;
+  const chatRegionClass = chatColumnHidden
+    ? 'hidden'
+    : canvasExpanded
+      ? 'flex flex-col w-[400px] flex-shrink-0 min-h-0 border-l border-border bg-background'
+      : canvas.canvasVisible
+        ? 'flex flex-col flex-shrink-0'
+        : 'flex flex-col flex-1 min-h-0';
+
+  // Leaving expanded mode always restores the chat column, so it isn't stuck hidden next time.
+  useEffect(() => {
+    if (!canvasExpanded) setChatCollapsed(false);
+  }, [canvasExpanded]);
 
   return (
     <>
@@ -717,12 +745,36 @@ export function ClaudePanel() {
             </button>
             {canvas.canvasVisible && (
               <button
+                onClick={() => canvas.setTranscriptOptIn(!canvas.transcriptOptIn)}
+                className={`p-1.5 rounded-md transition-colors ${canvas.transcriptOptIn ? 'text-brand bg-muted' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
+                title={
+                  canvas.transcriptOptIn
+                    ? 'Using the call transcript as canvas context (last 5 min by default; say "grab the full transcript" for the whole call). Click to turn off.'
+                    : 'Canvas drawings ignore the call transcript. Click to use it as context.'
+                }
+                aria-pressed={canvas.transcriptOptIn}
+              >
+                <FileText className="w-4 h-4" />
+              </button>
+            )}
+            {canvas.canvasVisible && (
+              <button
                 onClick={() => canvas.toggleExpand()}
                 className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
                 title={canvas.canvasExpanded ? 'Restore panel width' : 'Expand canvas to full screen'}
                 aria-pressed={canvas.canvasExpanded}
               >
                 {canvas.canvasExpanded ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+              </button>
+            )}
+            {canvasExpanded && (
+              <button
+                onClick={() => setChatCollapsed((v) => !v)}
+                className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                title={chatCollapsed ? 'Show chat' : 'Hide chat'}
+                aria-pressed={chatCollapsed}
+              >
+                {chatCollapsed ? <PanelRightOpen className="w-4 h-4" /> : <PanelRightClose className="w-4 h-4" />}
               </button>
             )}
             {canvas.canvasVisible && activeProject && (
@@ -857,7 +909,7 @@ export function ClaudePanel() {
                 <Mic className="w-3.5 h-3.5 text-purple-500 flex-shrink-0" />
                 <span className="font-medium text-purple-700 dark:text-purple-300 truncate">
                   {isHotkeyListening
-                    ? 'Recording\u2026 release Ctrl+Space to send'
+                    ? 'Recording\u2026 release Alt+Shift+Q to send'
                     : voiceCapturedText
                       ? `Captured: "${voiceCapturedText.slice(0, 60)}${voiceCapturedText.length > 60 ? '\u2026' : ''}"`
                       : 'Waiting for transcription\u2026'}
