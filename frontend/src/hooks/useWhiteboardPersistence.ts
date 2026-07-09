@@ -19,6 +19,10 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useCanvas, type CanvasSaveResult } from '@/contexts/CanvasContext';
 import { useSoloMode } from '@/contexts/SoloModeContext';
 import { useClaude } from '@/contexts/ClaudeContext';
+import { useTranscripts } from '@/contexts/TranscriptContext';
+import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
+import { storageService } from '@/services/storageService';
+import { indexedDBService } from '@/services/indexedDBService';
 import { logger } from '@/lib/logger';
 
 export const WHITEBOARD_FILE = 'whiteboard.tldr.json';
@@ -46,6 +50,15 @@ export function useWhiteboardPersistence() {
     useCanvas();
   const { activeProject } = useSoloMode();
   const { meetingTitle } = useClaude();
+  const { transcriptsRef, meetingTitle: transcriptMeetingTitle, currentMeetingId } = useTranscripts();
+  const { status: recordingStatus } = useRecordingState();
+  // Live refs so the (stable) quit-save callback always sees current recording state.
+  const currentMeetingIdRef = useRef(currentMeetingId);
+  currentMeetingIdRef.current = currentMeetingId;
+  const transcriptMeetingTitleRef = useRef(transcriptMeetingTitle);
+  transcriptMeetingTitleRef.current = transcriptMeetingTitle;
+  const recordingStatusRef = useRef(recordingStatus);
+  recordingStatusRef.current = recordingStatus;
   const currentFolderRef = useRef<string | null>(null);
   const prevVisibleRef = useRef(false);
   // Live refs so the (stable) save callback always sees the current client + title.
@@ -104,6 +117,48 @@ export function useWhiteboardPersistence() {
     },
     [saveSnapshot],
   );
+
+  // On quit, finish saving the current meeting's transcript to SQLite if the normal stop-recording
+  // save (useRecordingStop) hasn't gotten there yet — e.g. the user clicked X right after Stop,
+  // before the ~seconds-long transcription-wait/save chain completed. Without this, the meeting is
+  // left flagged `savedToSQLite: false` in IndexedDB forever, and the next launch's recovery check
+  // (useTranscriptRecovery) always finds it, even though nothing actually crashed.
+  //
+  // We poll the IndexedDB flag (rather than recording status) so we simply back off the instant the
+  // normal save finishes, and only step in with our own fallback save if it hasn't in time — this
+  // avoids writing a second, duplicate meeting row in the common case.
+  const finishMeetingSaveIfNeeded = useCallback(async (): Promise<void> => {
+    const meetingId = currentMeetingIdRef.current;
+    if (!meetingId || !inTauri()) return;
+    // Still actively recording (never stopped) — leave this to the existing crash-recovery path,
+    // which also restores the audio itself from checkpoints. Finish-saving a truncated transcript
+    // here would mark it "saved" and silently skip that audio recovery.
+    if (recordingStatusRef.current === RecordingStatus.RECORDING) return;
+    try {
+      const POLL_MS = 300;
+      const MAX_WAIT_MS = 8000;
+      let waited = 0;
+      let metadata = await indexedDBService.getMeetingMetadata(meetingId);
+      while (metadata && !metadata.savedToSQLite && waited < MAX_WAIT_MS) {
+        await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+        waited += POLL_MS;
+        metadata = await indexedDBService.getMeetingMetadata(meetingId);
+      }
+      if (!metadata || metadata.savedToSQLite) return; // already saved (by us waiting, or the normal flow)
+
+      const transcripts = transcriptsRef.current;
+      if (transcripts.length === 0) return; // nothing to save — let it be recoverable as usual
+
+      const folderPath = metadata.folderPath ?? (await invoke<string | null>('get_meeting_folder_path').catch(() => null));
+      const title = transcriptMeetingTitleRef.current || metadata.title || 'New Meeting';
+      await storageService.saveMeeting(title, transcripts, folderPath ?? null);
+      await indexedDBService.markMeetingSaved(meetingId);
+    } catch (e) {
+      // Best-effort: worse case is the existing recovery prompt on next launch, not data loss
+      // (the raw segments are already in IndexedDB, saved incrementally as they arrived).
+      logger.warn('[Quit] meeting finish-save failed', e);
+    }
+  }, [transcriptsRef]);
 
   const load = useCallback(
     async (folder: string | null) => {
@@ -240,14 +295,16 @@ export function useWhiteboardPersistence() {
         closing = true;
         event.preventDefault();
         const folder = currentFolderRef.current;
-        if (folder) {
-          try {
-            // NEVER trap the user in an unclosable window: the save is a postMessage round-trip to
-            // the canvas iframe and can hang if the canvas isn't ready, so cap it.
-            await Promise.race([save(folder), new Promise((resolve) => setTimeout(resolve, 2500))]);
-          } catch {
-            /* ignore — best-effort save */
-          }
+        try {
+          // NEVER trap the user in an unclosable window: the whiteboard save is a postMessage
+          // round-trip to the canvas iframe (can hang if it's not ready) and the meeting finish-save
+          // polls for the normal stop-recording save to land — so the whole thing is capped.
+          await Promise.race([
+            Promise.all([save(folder), finishMeetingSaveIfNeeded()]),
+            new Promise((resolve) => setTimeout(resolve, 9000)),
+          ]);
+        } catch {
+          /* ignore — best-effort save */
         }
         try {
           const { exit } = await import('@tauri-apps/plugin-process');
@@ -266,7 +323,7 @@ export function useWhiteboardPersistence() {
       cancelled = true;
       unlisten?.();
     };
-  }, [save]);
+  }, [save, finishMeetingSaveIfNeeded]);
 }
 
 /** Mountable null-renderer so the hook can live once near the app root. */
