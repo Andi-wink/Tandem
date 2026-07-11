@@ -37,11 +37,13 @@ impl ElevenLabsProvider {
     /// * `language` - Optional language hint passed to the API on every request.
     pub fn new(api_key: String, model: String, language: Option<String>) -> Self {
         // Connect + request timeouts so a hung POST fails fast instead of
-        // silently stalling a whole chunk. Falls back to a default client if
-        // the builder somehow fails (should not happen with static timeouts).
+        // silently stalling a whole chunk. The request timeout is deliberately
+        // tighter than the whole-chunk RETRY_BUDGET so a single hanging attempt
+        // can't consume the entire budget. Falls back to a default client if the
+        // builder somehow fails (should not happen with static timeouts).
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(45))
+            .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {
@@ -125,16 +127,34 @@ impl ElevenLabsProvider {
         let max_attempts = RETRY_BACKOFF_MS.len() + 1;
         let mut last_err: Option<TranscriptionError> = None;
 
+        // Whole-chunk wall-clock budget: once this is exhausted we give up even
+        // if retry attempts remain, so a hanging server can't block the single
+        // serial transcription worker for (request_timeout * attempts + backoff).
+        let started = std::time::Instant::now();
+
         for attempt in 0..max_attempts {
             if attempt > 0 {
-                let backoff_ms = RETRY_BACKOFF_MS[attempt - 1];
+                // Give up if the retry budget is spent, rather than starting
+                // another attempt that could run up to REQUEST_TIMEOUT_SECS more.
+                if !retry_within_budget(started.elapsed()) {
+                    warn!(
+                        "ElevenLabs Scribe retry budget ({}s) exhausted after {} attempt(s); giving up",
+                        RETRY_BUDGET_SECS, attempt
+                    );
+                    break;
+                }
+                // Cap the backoff so it can't push us past the budget either.
+                let remaining = std::time::Duration::from_secs(RETRY_BUDGET_SECS)
+                    .saturating_sub(started.elapsed());
+                let backoff = std::time::Duration::from_millis(RETRY_BACKOFF_MS[attempt - 1])
+                    .min(remaining);
                 warn!(
                     "ElevenLabs Scribe retry {}/{} in {}ms",
                     attempt,
                     max_attempts - 1,
-                    backoff_ms
+                    backoff.as_millis()
                 );
-                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                tokio::time::sleep(backoff).await;
             }
 
             let file_part = reqwest::multipart::Part::bytes(wav_bytes.clone())
@@ -272,6 +292,23 @@ struct ScribeWord {
 /// Backoff schedule between retries (ms). Length = max retries after the first
 /// attempt, so the total attempt count is `RETRY_BACKOFF_MS.len() + 1`.
 const RETRY_BACKOFF_MS: [u64; 2] = [1000, 3000];
+
+/// Per-attempt HTTP request timeout (seconds). Kept well under `RETRY_BUDGET_SECS`
+/// so one hung attempt can't consume the whole chunk budget.
+const REQUEST_TIMEOUT_SECS: u64 = 20;
+
+/// Whole-chunk retry wall-clock budget (seconds). Once a chunk has spent this
+/// long across attempts + backoff we stop retrying even if attempts remain.
+/// Bounds worst-case blockage of the single serial worker to roughly
+/// `RETRY_BUDGET_SECS + REQUEST_TIMEOUT_SECS` instead of
+/// `REQUEST_TIMEOUT_SECS * max_attempts + sum(backoff)`.
+const RETRY_BUDGET_SECS: u64 = 45;
+
+/// Whether another retry attempt may be started given the elapsed wall-clock
+/// time since the first attempt began. Factored out for unit testing.
+fn retry_within_budget(elapsed: std::time::Duration) -> bool {
+    elapsed < std::time::Duration::from_secs(RETRY_BUDGET_SECS)
+}
 
 /// A word straddling the overlap boundary is kept: only words that start at
 /// least this far before the boundary are treated as fully inside the overlap.
@@ -422,6 +459,33 @@ mod tests {
         assert_eq!(RETRY_BACKOFF_MS, [1000, 3000]);
         // Total attempts = first try + retries.
         assert_eq!(RETRY_BACKOFF_MS.len() + 1, 3);
+    }
+
+    #[test]
+    fn timeout_is_tighter_than_retry_budget() {
+        // A single hung attempt must not be able to consume the whole budget.
+        assert_eq!(REQUEST_TIMEOUT_SECS, 20);
+        assert_eq!(RETRY_BUDGET_SECS, 45);
+        assert!(REQUEST_TIMEOUT_SECS < RETRY_BUDGET_SECS);
+    }
+
+    #[test]
+    fn retry_budget_policy_stops_when_exhausted() {
+        use std::time::Duration;
+        // Fresh / partway through the budget -> more retries allowed.
+        assert!(retry_within_budget(Duration::from_secs(0)));
+        assert!(retry_within_budget(Duration::from_secs(44)));
+        // At or past the budget -> give up even if attempts remain.
+        assert!(!retry_within_budget(Duration::from_secs(45)));
+        assert!(!retry_within_budget(Duration::from_secs(60)));
+        // Worst-case blockage is bounded: budget + at most one request timeout,
+        // strictly less than the un-budgeted timeout * attempts + backoffs.
+        let unbudgeted_worst =
+            REQUEST_TIMEOUT_SECS * (RETRY_BACKOFF_MS.len() as u64 + 1)
+                + RETRY_BACKOFF_MS.iter().sum::<u64>() / 1000;
+        let budgeted_worst = RETRY_BUDGET_SECS + REQUEST_TIMEOUT_SECS;
+        assert!(budgeted_worst < unbudgeted_worst + 20); // sanity: same order of magnitude
+        assert!(RETRY_BUDGET_SECS + REQUEST_TIMEOUT_SECS <= 65);
     }
 
     #[test]

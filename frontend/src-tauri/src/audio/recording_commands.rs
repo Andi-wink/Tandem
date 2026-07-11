@@ -129,6 +129,40 @@ fn spawn_kws_detector<R: Runtime>(app: &AppHandle<R>, manager: &RecordingManager
 // RECORDING COMMANDS
 // ============================================================================
 
+/// Read the configured transcript provider and pick the matching flush profile.
+///
+/// Cloud HTTP providers (ElevenLabs Scribe, Mistral) get a low-latency profile
+/// so transcribed text isn't held back 12-30s while a large buffer fills; local
+/// engines (Parakeet, Whisper) keep the large-context 12s profile. On any config
+/// error we fall back to the conservative LOCAL profile.
+async fn resolve_flush_profile<R: Runtime>(app: &AppHandle<R>) -> super::pipeline::FlushProfile {
+    let provider = match crate::api::api::api_get_transcript_config(
+        app.clone(),
+        app.clone().state(),
+        None,
+    )
+    .await
+    {
+        Ok(Some(config)) => config.provider,
+        Ok(None) => String::new(),
+        Err(e) => {
+            warn!("⚠️ Could not read transcript config for flush profile: {} — using LOCAL", e);
+            String::new()
+        }
+    };
+    let profile = super::pipeline::FlushProfile::for_provider(&provider);
+    info!("🎚️ Flush profile for provider '{}': min {:.1}s / gap {:.1}s / max-block {}",
+          provider,
+          profile.min_samples as f64 / 16000.0,
+          profile.silence_gap_secs,
+          if profile.max_block_secs.is_finite() {
+              format!("{:.1}s", profile.max_block_secs)
+          } else {
+              "none".to_string()
+          });
+    profile
+}
+
 /// Start recording with default devices
 pub async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     start_recording_with_meeting_name(app, None).await
@@ -294,9 +328,14 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         let _ = app_for_error.emit("recording-error", error.user_message());
     });
 
+    // Select the provider-aware flush profile: cloud HTTP providers (ElevenLabs
+    // Scribe / Mistral) get low-latency flushing so text isn't delayed 12-30s;
+    // local engines (Parakeet / Whisper) keep the large-context 12s profile.
+    let flush_profile = resolve_flush_profile(&app).await;
+
     // Start recording with resolved devices (replaces start_recording_with_defaults_and_auto_save call)
     let transcription_receiver = manager
-        .start_recording(microphone_device, system_device, auto_save)
+        .start_recording(microphone_device, system_device, auto_save, flush_profile)
         .await
         .map_err(|e| format!("Failed to start recording: {}", e))?;
 
@@ -470,9 +509,12 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         let _ = app_for_error.emit("recording-error", error.user_message());
     });
 
+    // Provider-aware flush profile (see resolve_flush_profile).
+    let flush_profile = resolve_flush_profile(&app).await;
+
     // Start recording with specified devices and auto_save setting
     let transcription_receiver = manager
-        .start_recording(mic_device, system_device, auto_save)
+        .start_recording(mic_device, system_device, auto_save, flush_profile)
         .await
         .map_err(|e| format!("Failed to start recording: {}", e))?;
 

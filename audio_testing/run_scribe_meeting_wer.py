@@ -91,14 +91,29 @@ def vad_segments_live(samples_16k):
     return segs
 
 
-def assemble_chunks(segments):
+def assemble_chunks(segments, profile=None):
     """Mirror pipeline.rs process_stream_vad + flush_transcription_buffer.
+
+    `profile` selects the flush thresholds (mirrors Rust FlushProfile). Keys:
+      min_samples : flush once the accumulated SPEECH sample count reaches this
+      gap_ms      : silence-gap flush of a partial buffer (audio gap between segs)
+      max_wait_ms : hard AUDIO-time ceiling; flush mid-speech when the span from
+                    buffer start to the newest segment end reaches this. None or 0
+                    disables the ceiling (local profile). Mirrors max_block_secs.
+    Defaults to the LOCAL (12s / 1.2s / no-ceiling) profile.
 
     Returns a list of chunk dicts, each:
       start_sec, end_sec  : audio-time span of the buffered VAD content
       content             : np.float32 buffer content (no overlap)
       sent                : np.float32 actually POSTed (prev 1.0s tail prepended)
     """
+    if profile is None:
+        profile = dict(min_samples=MIN_TRANSCRIPTION_SAMPLES,
+                       gap_ms=SILENCE_GAP_FLUSH_MS, max_wait_ms=0)
+    min_samples = profile["min_samples"]
+    gap_ms = profile["gap_ms"]
+    max_wait_ms = profile.get("max_wait_ms") or 0
+
     chunks = []
     buf = []              # content samples (python list, extended per segment)
     buf_start_ms = None
@@ -129,15 +144,18 @@ def assemble_chunks(segments):
     for (start_ms, end_ms, samples) in segments:
         if len(samples) < MIN_SEGMENT_SAMPLES:
             continue  # pipeline.rs drops < 800-sample segments
-        # Silence-gap flush: a >=1.2s audio gap before this segment would have
+        # Silence-gap flush: a >=gap audio gap before this segment would have
         # triggered the timeout flush of the partial buffer in the live pipeline.
-        if buf and last_end_ms is not None and (start_ms - last_end_ms) >= SILENCE_GAP_FLUSH_MS:
+        if buf and last_end_ms is not None and (start_ms - last_end_ms) >= gap_ms:
             flush()
         if not buf:
             buf_start_ms = start_ms
         buf.extend(samples)
         last_end_ms = end_ms
-        if len(buf) >= MIN_TRANSCRIPTION_SAMPLES:
+        # Min-samples cap (speech content) OR hard audio-time max-wait ceiling.
+        if len(buf) >= min_samples:
+            flush()
+        elif max_wait_ms and (last_end_ms - buf_start_ms) >= max_wait_ms:
             flush()
     if buf:
         flush()
@@ -364,13 +382,13 @@ def deletion_spans(stem, hyp_words, chunks, segments):
 
 # ───────────────────────── per-clip run ─────────────────────────
 
-def run_clip(stem):
+def run_clip(stem, profile=None):
     samples = read_wav_16k_mono(CLIPS_DIR / f"{stem}.wav")
     clip_dur = len(samples) / SR
     ref = normalize((REF_DIR / f"{stem}.txt").read_text(encoding="utf-8"))
 
     segments = vad_segments_live(samples)
-    chunks = assemble_chunks(segments)
+    chunks = assemble_chunks(segments, profile)
 
     # Meeting-path hypothesis: POST each chunk, dedup, concatenate.
     prev_tail = []
@@ -412,6 +430,7 @@ def run_clip(stem):
         dur_max=max(durs) if durs else 0.0,
         block_med=statistics.median(durs) if durs else 0.0,
         block_max=max(durs) if durs else 0.0,
+        durs=durs,
         content_s=content_s,
         clip_dur=clip_dur,
         api_lat_med=statistics.median(api_lat) if api_lat else None,
@@ -559,7 +578,20 @@ def main():
     ap.add_argument("--all", action="store_true", help="include old clips (02..10)")
     ap.add_argument("--no-parakeet", action="store_true", help="skip Parakeet comparison")
     ap.add_argument("--clips", nargs="+", help="explicit clip stems, e.g. clip_11 clip_12")
+    # Flush-profile knobs (mirror Rust FlushProfile). Defaults = LOCAL profile.
+    ap.add_argument("--min-secs", type=float, default=MIN_TRANSCRIPTION_SAMPLES / SR,
+                    help="flush cap in SECONDS of speech content (default 12.0)")
+    ap.add_argument("--gap-secs", type=float, default=SILENCE_GAP_FLUSH_MS / 1000.0,
+                    help="silence-gap flush threshold in seconds (default 1.2)")
+    ap.add_argument("--max-wait-secs", type=float, default=0.0,
+                    help="hard audio-time ceiling in seconds; 0 disables (default 0)")
     args = ap.parse_args()
+
+    profile = dict(
+        min_samples=int(round(args.min_secs * SR)),
+        gap_ms=int(round(args.gap_secs * 1000.0)),
+        max_wait_ms=int(round(args.max_wait_secs * 1000.0)),
+    )
 
     if args.clips:
         stems = args.clips
@@ -571,10 +603,13 @@ def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     print(f"Clips: {stems}")
     print(f"Scribe model: {SCRIBE_MODEL}  (cache: {CACHE_DIR})")
+    print(f"Flush profile: min {profile['min_samples']/SR:.1f}s / gap "
+          f"{profile['gap_ms']/1000.0:.1f}s / max-wait "
+          f"{(profile['max_wait_ms']/1000.0) if profile['max_wait_ms'] else 0:.1f}s")
 
     rows = []
     for stem in stems:
-        r = run_clip(stem)
+        r = run_clip(stem, profile)
         rows.append(r)
         m, f = r["meeting"], r["full"]
         s = r["stats"]

@@ -15,6 +15,79 @@ use super::recording_state::{AudioChunk, AudioError, RecordingState, DeviceType}
 use super::audio_processing::{audio_to_mono, LoudnessNormalizer, NoiseSuppressionProcessor, HighPassFilter};
 use super::vad::{ContinuousVadProcessor};
 
+/// Provider-aware transcription-flush profile.
+///
+/// Controls WHEN an accumulated per-stream VAD buffer is flushed to the engine.
+/// Local engines (Parakeet, Whisper) transcribe better with a large context
+/// window and don't care about latency, so they keep a 12s cap and only flush
+/// early on a real silence gap. Cloud engines (ElevenLabs Scribe, Mistral) hit
+/// an HTTP API per chunk, so late flushes translate directly into text
+/// appearing 12-30s+ after it was spoken. They use a small cap, a tighter
+/// silence gap, and an audio-time ceiling (`max_block_secs`) that bounds how
+/// long a multi-segment buffer may grow. NOTE: the ceiling is evaluated only
+/// when a completed VAD segment arrives — it cannot subdivide a single long
+/// in-progress segment, so one unbroken monologue segment still flushes only
+/// when silero ends it.
+#[derive(Clone, Copy, Debug)]
+pub struct FlushProfile {
+    /// Flush once the accumulated SPEECH sample count reaches this (16kHz).
+    pub min_samples: usize,
+    /// Flush a partial buffer after this much wall-clock silence.
+    pub silence_gap_secs: f64,
+    /// Ceiling on how long (in AUDIO time: newest segment end minus buffer
+    /// start) the front of a buffer may wait before being flushed. Checked
+    /// only when a completed VAD segment arrives (cannot cut an in-progress
+    /// segment). `f64::INFINITY` disables the ceiling (local profile).
+    pub max_block_secs: f64,
+}
+
+impl FlushProfile {
+    /// Local-engine profile (Parakeet / Whisper): unchanged historical behavior.
+    /// 12s @ 16k cap, 1.2s silence-gap flush, no hard audio-time ceiling.
+    pub const LOCAL: FlushProfile = FlushProfile {
+        min_samples: 192_000,
+        silence_gap_secs: 1.2,
+        max_block_secs: f64::INFINITY,
+    };
+
+    /// Cloud-engine profile (ElevenLabs Scribe / Mistral): low latency.
+    /// Grid-tuned on held-out clips 11-16 (audio_testing/tune_scribe_flush_loop.py,
+    /// 2026-07-11). min 4s is the best-compromise point on the Pareto frontier:
+    /// it roughly halves the POOLED median block wait (baseline 12s -> 16.7s;
+    /// min 4s -> 7.7s) for a +0.71pp WER cost (5.6% -> 6.3%). No sub-12s config
+    /// hit BOTH the <=6.0% WER and <=6s median targets, because the per-chunk
+    /// block wait is floored by the VAD SEGMENT length: silero holds a monologue
+    /// as one segment until an 800ms+ pause, and neither `min_samples` nor
+    /// `max_block_secs` can subdivide a single in-progress segment (a true
+    /// mid-speech cut needs VAD-level changes with silero-rs duplication risk,
+    /// deferred). `max_block_secs` is a defensive between-segments ceiling: inert
+    /// on these dense clips but bounds multi-segment buffers in pausier calls.
+    /// The 1.0s left-context overlap (TRANSCRIPTION_OVERLAP_SAMPLES) is prepended
+    /// on every flush; iteration-1 timestamp trimming makes the extra boundary
+    /// cost near zero. Worst per-clip WER cost was +2.1pp (clip_14) — the
+    /// pooled +0.71pp hides some spread; accepted for a live co-pilot where
+    /// display latency dominates.
+    pub const CLOUD: FlushProfile = FlushProfile {
+        min_samples: 64_000,
+        silence_gap_secs: 0.8,
+        max_block_secs: 6.0,
+    };
+
+    /// Select the profile for a configured transcript provider string
+    /// (matches the values stored in `transcript_settings.provider`).
+    pub fn for_provider(provider: &str) -> FlushProfile {
+        // Case-insensitive so casing drift in the stored value can't silently
+        // degrade a cloud provider to the high-latency LOCAL profile.
+        match provider.trim().to_ascii_lowercase().as_str() {
+            // Cloud HTTP providers get the low-latency profile.
+            "elevenlabs" | "mistral" | "deepgram" | "groq" | "openai" => FlushProfile::CLOUD,
+            // Local engines (parakeet, localWhisper) and any unknown/empty value
+            // keep the current large-context behavior.
+            _ => FlushProfile::LOCAL,
+        }
+    }
+}
+
 /// Ring buffer for synchronized audio mixing
 /// Accumulates samples from mic and system streams until we have aligned windows
 struct AudioMixerRingBuffer {
@@ -715,6 +788,8 @@ pub struct AudioPipeline {
     // flush; worker.rs dedupes the overlapping prefix in the resulting text.
     mic_overlap_tail: Vec<f32>,
     system_overlap_tail: Vec<f32>,
+    // Provider-aware flush thresholds (cloud = low latency, local = large context).
+    flush_profile: FlushProfile,
 }
 
 impl AudioPipeline {
@@ -729,7 +804,19 @@ impl AudioPipeline {
         system_device_name: String,
         system_device_kind: super::device_detection::InputDeviceKind,
         raw_track_folder: Option<std::path::PathBuf>,
+        flush_profile: FlushProfile,
     ) -> Result<Self> {
+        info!(
+            "🎛️ Flush profile: min={} samples ({:.1}s) / silence-gap {:.1}s / max-block {}",
+            flush_profile.min_samples,
+            flush_profile.min_samples as f64 / 16000.0,
+            flush_profile.silence_gap_secs,
+            if flush_profile.max_block_secs.is_finite() {
+                format!("{:.1}s", flush_profile.max_block_secs)
+            } else {
+                "none".to_string()
+            }
+        );
         // Log device characteristics for adaptive buffering
         info!("🎛️ AudioPipeline initializing with device characteristics:");
         info!("   Mic: '{}' ({:?}) - Buffer: {:?}",
@@ -818,6 +905,7 @@ impl AudioPipeline {
             system_transcription_buffer_last_activity: std::time::Instant::now(),
             mic_overlap_tail: Vec::new(),
             system_overlap_tail: Vec::new(),
+            flush_profile,
         })
     }
 
@@ -941,7 +1029,7 @@ impl AudioPipeline {
                     // activity on one stream would delay flushing the other.
                     if !self.mic_transcription_buffer.is_empty()
                         && self.mic_transcription_buffer_last_activity.elapsed().as_secs_f64()
-                            >= Self::SILENCE_GAP_FLUSH_SECS
+                            >= self.flush_profile.silence_gap_secs
                     {
                         info!("⏱️ Mic silence gap ({:.1}s) exceeded — flushing partial mic buffer ({} samples, {:.1}s)",
                               self.mic_transcription_buffer_last_activity.elapsed().as_secs_f64(),
@@ -951,7 +1039,7 @@ impl AudioPipeline {
                     }
                     if !self.system_transcription_buffer.is_empty()
                         && self.system_transcription_buffer_last_activity.elapsed().as_secs_f64()
-                            >= Self::SILENCE_GAP_FLUSH_SECS
+                            >= self.flush_profile.silence_gap_secs
                     {
                         info!("⏱️ System silence gap ({:.1}s) exceeded — flushing partial system buffer ({} samples, {:.1}s)",
                               self.system_transcription_buffer_last_activity.elapsed().as_secs_f64(),
@@ -971,33 +1059,25 @@ impl AudioPipeline {
         Ok(())
     }
 
-    /// Target samples before sending to the engine (12 seconds at 16kHz).
-    /// Tuning loop winner (audio_testing/tune_parakeet_loop.py, 2026-06-03):
-    /// min_s=12.0 beat 1.5s/3s/6s/9s/18s/25s on pooled WER (23.95% at 12s vs
-    /// 24.28% at 25s). The previous 25s comment cited earlier sweep data where
-    /// 25s was best; the current sweep — run with the tuned VAD config below —
-    /// puts the optimum at 12s. Responsiveness is preserved because
-    /// SILENCE_GAP_FLUSH_SECS flushes at every natural pause; 12s is only the
-    /// cap for uninterrupted monologue.
-    const MIN_TRANSCRIPTION_SAMPLES: usize = 192000;
-
+    /// The flush cap (`min_samples`) and silence-gap threshold now live on the
+    /// per-recording [`FlushProfile`] (`self.flush_profile`) so cloud providers
+    /// can use a low-latency profile while local engines keep the 12s / 1.2s
+    /// large-context values. See `FlushProfile::LOCAL` / `FlushProfile::CLOUD`.
+    ///
     /// Per-stream left-context overlap, in samples (1.0s at 16kHz).
     /// Tuning loop Phase F: prepending 1.0s of the previous buffer's audio
     /// before the next transcription pass dropped pooled WER 23.95% -> 23.31%
     /// at the winning VAD config. Worker dedups the overlapping prefix words
-    /// against the previous emission's suffix. Set to 0 to disable.
+    /// against the previous emission's suffix. Set to 0 to disable. Applied on
+    /// EVERY flush regardless of profile.
     const TRANSCRIPTION_OVERLAP_SAMPLES: usize = 16000;
-
-    /// Maximum silence gap (seconds) before flushing a partial buffer.
-    /// 1.2s catches natural end-of-sentence pauses without cutting mid-utterance.
-    /// Reduced from 2.0s for faster transcript appearance.
-    const SILENCE_GAP_FLUSH_SECS: f64 = 1.2;
 
     /// Run a window through the per-stream VAD and accumulate speech segments
     /// into the matching transcription buffer. Flushes when the buffer reaches
-    /// MIN_TRANSCRIPTION_SAMPLES. Segment timestamps come from the VAD's
-    /// internal audio-elapsed clock, so the chunk wall-clock timestamp is not
-    /// needed here.
+    /// `flush_profile.min_samples` OR when the buffer's audio-time span reaches
+    /// `flush_profile.max_block_secs` (cloud low-latency ceiling). Segment
+    /// timestamps come from the VAD's internal audio-elapsed clock, so the
+    /// chunk wall-clock timestamp is not needed here.
     fn process_stream_vad(
         &mut self,
         vad_input: &[f32],
@@ -1031,12 +1111,23 @@ impl AudioPipeline {
             buffer.extend_from_slice(&segment.samples);
             *last_activity = std::time::Instant::now();
             let buffer_samples = buffer.len();
+            // Audio-time span from the front of the buffer to the end of the
+            // segment just appended. This is the "block wait" the oldest audio
+            // in the buffer will incur before dispatch. The cloud profile caps
+            // it (max_block_secs) so dense speech with only sub-silence-gap
+            // pauses can't accumulate a 30s+ buffer before flushing.
+            let block_span_secs = (segment.end_timestamp_ms / 1000.0) - *start_ts;
 
-            perf_debug!("🎤 Buffered {:?} VAD segment: {:.1}ms ({} samples), buffer total: {} samples ({:.1}s)",
+            perf_debug!("🎤 Buffered {:?} VAD segment: {:.1}ms ({} samples), buffer total: {} samples ({:.1}s), span {:.1}s",
                   device_type, duration_ms, segment.samples.len(),
-                  buffer_samples, buffer_samples as f64 / 16000.0);
+                  buffer_samples, buffer_samples as f64 / 16000.0, block_span_secs);
 
-            if buffer_samples >= Self::MIN_TRANSCRIPTION_SAMPLES {
+            if buffer_samples >= self.flush_profile.min_samples {
+                self.flush_transcription_buffer(device_type.clone());
+            } else if block_span_secs >= self.flush_profile.max_block_secs {
+                info!("⏩ {:?} max-block ceiling ({:.1}s span >= {:.1}s) — flushing {} samples ({:.1}s speech) early for low latency",
+                      device_type, block_span_secs, self.flush_profile.max_block_secs,
+                      buffer_samples, buffer_samples as f64 / 16000.0);
                 self.flush_transcription_buffer(device_type.clone());
             }
         }
@@ -1072,6 +1163,8 @@ impl AudioPipeline {
     /// prepending) is then saved for the next flush. worker.rs dedupes the
     /// overlapping prefix words in the resulting transcript.
     fn flush_transcription_buffer(&mut self, device_type: DeviceType) {
+        // Read before borrowing self mutably via buffer_for (E0503 otherwise).
+        let reuse_capacity = self.flush_profile.min_samples;
         let (buffer, start_ts, _) = self.buffer_for(&device_type);
         if buffer.is_empty() {
             return;
@@ -1084,7 +1177,7 @@ impl AudioPipeline {
         info!("🎤 Flushing {:?} transcription buffer: {:.1}ms ({} samples) to Whisper",
               device_type, buffer_duration_ms, buffer_samples);
 
-        let mut data = std::mem::replace(buffer, Vec::with_capacity(Self::MIN_TRANSCRIPTION_SAMPLES));
+        let mut data = std::mem::replace(buffer, Vec::with_capacity(reuse_capacity));
         *start_ts = 0.0;
 
         // Capture fresh tail from this buffer for the NEXT flush, then prepend
@@ -1208,6 +1301,7 @@ impl AudioPipelineManager {
         system_device_name: String,
         system_device_kind: super::device_detection::InputDeviceKind,
         raw_track_folder: Option<std::path::PathBuf>,
+        flush_profile: FlushProfile,
     ) -> Result<()> {
         // Log device information for adaptive buffering
         info!("🎙️ Starting pipeline with device info:");
@@ -1232,6 +1326,7 @@ impl AudioPipelineManager {
             system_device_name,
             system_device_kind,
             raw_track_folder,
+            flush_profile,
         )?;
 
         // CRITICAL FIX: Connect recording sender to receive pre-mixed audio

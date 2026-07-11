@@ -65,6 +65,7 @@ impl RecordingManager {
         microphone_device: Option<Arc<AudioDevice>>,
         system_device: Option<Arc<AudioDevice>>,
         auto_save: bool,
+        flush_profile: super::pipeline::FlushProfile,
     ) -> Result<mpsc::UnboundedReceiver<AudioChunk>> {
         info!("Starting recording manager (auto_save: {})", auto_save);
 
@@ -121,6 +122,7 @@ impl RecordingManager {
             sys_name,
             sys_kind,
             raw_track_folder,
+            flush_profile,
         )?;
 
         // Give the pipeline a moment to fully initialize before starting streams
@@ -190,8 +192,11 @@ impl RecordingManager {
                 return Err(anyhow::anyhow!("❌ No microphone device available for recording"));
             }
 
-            // Start recording with selected devices and auto_save setting
-            self.start_recording(microphone_device, system_device, auto_save).await
+            // Start recording with selected devices and auto_save setting.
+            // This defaults path has no transcript-config access, so use the
+            // conservative LOCAL flush profile.
+            self.start_recording(microphone_device, system_device, auto_save,
+                                 super::pipeline::FlushProfile::LOCAL).await
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -226,7 +231,8 @@ impl RecordingManager {
                 return Err(anyhow::anyhow!("No microphone device available"));
             }
 
-            self.start_recording(microphone_device, system_device, auto_save).await
+            self.start_recording(microphone_device, system_device, auto_save,
+                                 super::pipeline::FlushProfile::LOCAL).await
         }
     }
 
