@@ -62,6 +62,25 @@ pub trait TranscriptionProvider: Send + Sync {
         language: Option<String>,
     ) -> std::result::Result<TranscriptResult, TranscriptionError>;
 
+    /// Transcribe a chunk whose first `overlap_seconds` of audio is left-context
+    /// overlap re-sent from the previous flush (see pipeline.rs
+    /// `flush_transcription_buffer`).
+    ///
+    /// Providers that return per-word timestamps (e.g. ElevenLabs Scribe) can
+    /// use this to drop words that fall entirely inside the overlap region,
+    /// which is more reliable than the text-based `dedup_overlap_prefix`
+    /// fallback in worker.rs. The default implementation ignores the overlap and
+    /// simply calls `transcribe`, so providers without timestamps are unchanged
+    /// and worker.rs applies the text-based dedup as before.
+    async fn transcribe_with_overlap(
+        &self,
+        audio: Vec<f32>,
+        language: Option<String>,
+        _overlap_seconds: f64,
+    ) -> std::result::Result<TranscriptResult, TranscriptionError> {
+        self.transcribe(audio, language).await
+    }
+
     /// Check if a model is currently loaded
     async fn is_model_loaded(&self) -> bool;
 

@@ -50,16 +50,18 @@ def transcribe_clip(model, stem, write_hyp=False):
                      speech_s=sum(len(b) for b in buffers) / 16000.0)
 
 
-def evaluate(model=None, write_hyp=False):
+def evaluate(model=None, write_hyp=False, clip_list=None):
     """Score the shipped pipeline on all clips.
 
     Returns dict: {pooled, totals:{S,D,I,N}, clips:{stem:{wer,S,D,I,N,...}}}.
+    `clip_list` overrides the default CLIPS set (e.g. the held-out clip_11..16).
     """
     if model is None:
         model = ParakeetModel(MODEL_DIR)
+    stems = clip_list if clip_list is not None else CLIPS
     clips = {}
     tS = tD = tI = tN = 0
-    for stem in CLIPS:
+    for stem in stems:
         ref = normalize((REF_DIR / f"{stem}.txt").read_text(encoding="utf-8"))
         hyp, stats = transcribe_clip(model, stem, write_hyp=write_hyp)
         S, D, I, N = wer_align(ref, normalize(hyp))

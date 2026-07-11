@@ -613,6 +613,7 @@ impl AudioCapture {
             timestamp,
             chunk_id,
             device_type: self.device_type.clone(),
+            overlap_samples: 0,
         };
 
         // NOTE: Raw audio is NOT sent to recording saver to prevent echo
@@ -923,6 +924,7 @@ impl AudioPipeline {
                                     timestamp: chunk.timestamp,
                                     chunk_id: self.chunk_id_counter,
                                     device_type: DeviceType::Microphone,  // Mixed audio
+                                    overlap_samples: 0,
                                 };
                                 let _ = sender.send(recording_chunk);
                             }
@@ -1098,12 +1100,18 @@ impl AudioPipeline {
             DeviceType::Microphone => &mut self.mic_overlap_tail,
             DeviceType::System => &mut self.system_overlap_tail,
         };
-        if Self::TRANSCRIPTION_OVERLAP_SAMPLES > 0 && !prev_tail_slot.is_empty() {
-            let mut prepended = Vec::with_capacity(prev_tail_slot.len() + data.len());
+        let overlap_samples = if Self::TRANSCRIPTION_OVERLAP_SAMPLES > 0
+            && !prev_tail_slot.is_empty()
+        {
+            let overlap_len = prev_tail_slot.len();
+            let mut prepended = Vec::with_capacity(overlap_len + data.len());
             prepended.extend_from_slice(prev_tail_slot);
             prepended.extend_from_slice(&data);
             data = prepended;
-        }
+            overlap_len
+        } else {
+            0
+        };
         *prev_tail_slot = new_tail;
 
         let chunk = AudioChunk {
@@ -1112,6 +1120,7 @@ impl AudioPipeline {
             timestamp: start_timestamp,
             chunk_id: self.chunk_id_counter,
             device_type,
+            overlap_samples,
         };
 
         self.chunk_id_counter += 1;
@@ -1273,6 +1282,7 @@ impl AudioPipelineManager {
                 timestamp: 0.0,
                 chunk_id: u64::MAX, // Special ID to indicate flush
                 device_type: super::recording_state::DeviceType::Microphone,
+                overlap_samples: 0,
             };
 
             if let Err(e) = sender.send(flush_chunk) {
@@ -1293,6 +1303,7 @@ impl AudioPipelineManager {
                         timestamp: 0.0,
                         chunk_id: u64::MAX - (i as u64),
                         device_type: super::recording_state::DeviceType::Microphone,
+                        overlap_samples: 0,
                     };
                     let _ = sender.send(additional_flush);
                 }

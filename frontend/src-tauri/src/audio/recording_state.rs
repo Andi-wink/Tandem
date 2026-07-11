@@ -22,6 +22,11 @@ pub struct AudioChunk {
     pub timestamp: f64,
     pub chunk_id: u64,
     pub device_type: DeviceType,
+    /// Number of leading samples in `data` that are left-context overlap
+    /// re-sent from the previous flush (see pipeline.rs
+    /// `flush_transcription_buffer`). 0 when no overlap was prepended.
+    /// Providers with word timestamps use this to trim re-transcribed words.
+    pub overlap_samples: usize,
 }
 
 /// Processed audio chunk (post-VAD) for recording

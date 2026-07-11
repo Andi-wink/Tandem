@@ -4,7 +4,11 @@
 elevenlabs/
 parakeet_out/
 results/
+scribe_out/
 *.wav
+
+# new_clips_report.md lists real meeting folder names — keep local.
+new_clips_report.md
 
 # clips_index.json references real meeting folder names — keep local.
 clips_index.json

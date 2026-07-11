@@ -267,6 +267,12 @@ pub fn start_transcription_task<R: Runtime>(
                                         // declaration above). For the matching stream,
                                         // drop any leading words that already appeared
                                         // at the tail of the previous emission.
+                                        // This is the FALLBACK path: providers with
+                                        // word timestamps (ElevenLabs Scribe) already
+                                        // trimmed the overlap in transcribe_with_overlap,
+                                        // so this no-ops for them; it still covers
+                                        // Whisper/Parakeet and any chunk where the
+                                        // provider returned no usable timestamps.
                                         let prev_tail = match chunk_device_type {
                                             crate::audio::recording_state::DeviceType::Microphone => &prev_mic_tail,
                                             crate::audio::recording_state::DeviceType::System => &prev_system_tail,
@@ -497,6 +503,12 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
     chunk: AudioChunk,
     app: &AppHandle<R>,
 ) -> std::result::Result<(String, Option<f32>, bool), TranscriptionError> {
+    // Duration (seconds) of the left-context overlap prepended in pipeline.rs.
+    // Computed against the ORIGINAL sample rate before any resample, so it stays
+    // correct regardless of the incoming rate. Providers with word timestamps
+    // trim words that fall entirely inside this leading overlap.
+    let overlap_seconds = chunk.overlap_samples as f64 / chunk.sample_rate as f64;
+
     // Convert to 16kHz mono for transcription
     let transcription_data = if chunk.sample_rate != 16000 {
         crate::audio::audio_processing::resample_audio(&chunk.data, chunk.sample_rate, 16000)
@@ -616,7 +628,10 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
             // NEW: Trait-based provider (clean, unified interface)
             let language = crate::get_language_preference_internal();
 
-            match provider.transcribe(speech_samples, language).await {
+            match provider
+                .transcribe_with_overlap(speech_samples, language, overlap_seconds)
+                .await
+            {
                 Ok(result) => {
                     let cleaned_text = result.text.trim().to_string();
                     if cleaned_text.is_empty() {

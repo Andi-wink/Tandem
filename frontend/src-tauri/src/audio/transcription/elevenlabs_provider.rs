@@ -36,11 +36,19 @@ impl ElevenLabsProvider {
     /// * `model` - Model id, e.g. `"scribe_v2"` or `"scribe_v1"`.
     /// * `language` - Optional language hint passed to the API on every request.
     pub fn new(api_key: String, model: String, language: Option<String>) -> Self {
+        // Connect + request timeouts so a hung POST fails fast instead of
+        // silently stalling a whole chunk. Falls back to a default client if
+        // the builder somehow fails (should not happen with static timeouts).
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(45))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             api_key,
             model,
             language,
-            client: reqwest::Client::new(),
+            client,
         }
     }
 
@@ -87,12 +95,192 @@ impl ElevenLabsProvider {
 
         buf
     }
+
+    /// POST one chunk to Scribe and parse the response, with retry + timeout.
+    ///
+    /// Retries transient failures (network/timeout errors, 5xx, 429) up to
+    /// `RETRY_BACKOFF_MS.len()` times with the configured backoff. Non-retryable
+    /// 4xx (bad key, bad request) fail immediately. The API key is never logged.
+    async fn send_scribe_request(
+        &self,
+        audio: &[f32],
+        language: Option<String>,
+    ) -> std::result::Result<ScribeResponse, TranscriptionError> {
+        // Encode once; the multipart Part is rebuilt per attempt (not Clone).
+        let wav_bytes = Self::encode_wav_pcm16(audio, TRANSCRIBE_SAMPLE_RATE);
+        debug!(
+            "ElevenLabsProvider: encoded {} samples ({} bytes WAV) for model '{}'",
+            audio.len(),
+            wav_bytes.len(),
+            self.model
+        );
+
+        // Per-call `language` wins over the instance default; normalize to the
+        // code Scribe expects (None -> field omitted -> auto-detect).
+        let lang_code = language
+            .or_else(|| self.language.clone())
+            .as_deref()
+            .and_then(scribe_language_code);
+
+        let max_attempts = RETRY_BACKOFF_MS.len() + 1;
+        let mut last_err: Option<TranscriptionError> = None;
+
+        for attempt in 0..max_attempts {
+            if attempt > 0 {
+                let backoff_ms = RETRY_BACKOFF_MS[attempt - 1];
+                warn!(
+                    "ElevenLabs Scribe retry {}/{} in {}ms",
+                    attempt,
+                    max_attempts - 1,
+                    backoff_ms
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+            }
+
+            let file_part = reqwest::multipart::Part::bytes(wav_bytes.clone())
+                .file_name("audio.wav")
+                .mime_str("audio/wav")
+                .map_err(|e| {
+                    TranscriptionError::EngineFailed(format!("Failed to set WAV mime type: {}", e))
+                })?;
+
+            let mut form = reqwest::multipart::Form::new()
+                .text("model_id", self.model.clone())
+                .part("file", file_part);
+            if let Some(code) = lang_code.clone() {
+                form = form.text("language_code", code);
+            }
+
+            // POST to Scribe. Auth uses the xi-api-key header (NOT Bearer).
+            let send_result = self
+                .client
+                .post(ELEVENLABS_STT_URL)
+                .header("xi-api-key", &self.api_key)
+                .multipart(form)
+                .send()
+                .await;
+
+            let response = match send_result {
+                Ok(r) => r,
+                Err(e) => {
+                    // Network / connect / timeout errors are transient: retry.
+                    warn!(
+                        "ElevenLabs Scribe request error (attempt {}/{}): {}",
+                        attempt + 1,
+                        max_attempts,
+                        e
+                    );
+                    last_err = Some(TranscriptionError::EngineFailed(format!(
+                        "ElevenLabs request failed: {}",
+                        e
+                    )));
+                    continue;
+                }
+            };
+
+            let status = response.status();
+            if status.is_success() {
+                return response.json::<ScribeResponse>().await.map_err(|e| {
+                    TranscriptionError::EngineFailed(format!(
+                        "Failed to parse Scribe response JSON: {}",
+                        e
+                    ))
+                });
+            }
+
+            // Non-2xx: read body for the error message, decide retry vs fail.
+            let retryable = should_retry_status(status);
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<failed to read error body>".to_string());
+            warn!("ElevenLabs Scribe returned non-2xx ({}): {}", status, body);
+            let err = TranscriptionError::EngineFailed(format!(
+                "ElevenLabs Scribe HTTP {}: {}",
+                status, body
+            ));
+            if retryable {
+                last_err = Some(err);
+                continue;
+            }
+            return Err(err);
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            TranscriptionError::EngineFailed("ElevenLabs Scribe: retries exhausted".to_string())
+        }))
+    }
+
+    /// Rebuild the transcript from `words`, dropping tokens that fall entirely
+    /// inside the leading `overlap_seconds` of re-sent left-context audio.
+    ///
+    /// A word is dropped only if its start time is at least `OVERLAP_EPSILON_SECS`
+    /// before the overlap boundary, so a word straddling the boundary is kept.
+    /// Returns `None` when no token carries a usable start time (caller then
+    /// falls back to the full `text` + worker.rs text dedup).
+    fn trim_overlap_words(words: &[ScribeWord], overlap_seconds: f64) -> Option<String> {
+        let threshold = overlap_seconds - OVERLAP_EPSILON_SECS;
+        let mut usable = 0usize;
+        let mut kept: Vec<&str> = Vec::new();
+        for w in words {
+            if w.word_type.as_deref() == Some("spacing") {
+                continue;
+            }
+            let start = match w.start {
+                Some(s) => s,
+                None => continue,
+            };
+            let _ = w.end; // timing end unused; parsed for completeness
+            usable += 1;
+            if start >= threshold {
+                let t = w.text.trim();
+                if !t.is_empty() {
+                    kept.push(t);
+                }
+            }
+        }
+        if usable == 0 {
+            return None;
+        }
+        Some(kept.join(" "))
+    }
 }
 
-/// Minimal Scribe response shape — we only need `text`.
+/// Scribe response shape. `text` is the full transcript; `words` carries
+/// per-token timing (present by default for scribe_v2). Word entries have
+/// `type` == "word"; whitespace comes back as `type` == "spacing".
 #[derive(Debug, Deserialize)]
 struct ScribeResponse {
     text: String,
+    #[serde(default)]
+    words: Option<Vec<ScribeWord>>,
+}
+
+/// A single timed token from the Scribe `words` array.
+#[derive(Debug, Deserialize)]
+struct ScribeWord {
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    start: Option<f64>,
+    #[serde(default)]
+    end: Option<f64>,
+    #[serde(default, rename = "type")]
+    word_type: Option<String>,
+}
+
+/// Backoff schedule between retries (ms). Length = max retries after the first
+/// attempt, so the total attempt count is `RETRY_BACKOFF_MS.len() + 1`.
+const RETRY_BACKOFF_MS: [u64; 2] = [1000, 3000];
+
+/// A word straddling the overlap boundary is kept: only words that start at
+/// least this far before the boundary are treated as fully inside the overlap.
+const OVERLAP_EPSILON_SECS: f64 = 0.15;
+
+/// Whether a non-2xx status warrants a retry. Retry transient server errors
+/// (5xx) and rate limits (429); never retry other 4xx (bad key, bad request).
+fn should_retry_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
 }
 
 /// Map Tandem's language preference to the value ElevenLabs Scribe expects.
@@ -137,79 +325,49 @@ impl TranscriptionProvider for ElevenLabsProvider {
             });
         }
 
-        // 1. Encode to in-memory WAV bytes (16-bit PCM, 16 kHz mono).
-        let wav_bytes = Self::encode_wav_pcm16(&audio, TRANSCRIBE_SAMPLE_RATE);
-        debug!(
-            "ElevenLabsProvider: encoded {} samples ({} bytes WAV) for model '{}'",
-            audio.len(),
-            wav_bytes.len(),
-            self.model
-        );
-
-        // 2. Build multipart form. Per-call `language` argument wins over the
-        //    instance default if both are present.
-        let lang = language.or_else(|| self.language.clone());
-
-        let file_part = reqwest::multipart::Part::bytes(wav_bytes)
-            .file_name("audio.wav")
-            .mime_str("audio/wav")
-            .map_err(|e| {
-                TranscriptionError::EngineFailed(format!(
-                    "Failed to set WAV mime type: {}",
-                    e
-                ))
-            })?;
-
-        let mut form = reqwest::multipart::Form::new()
-            .text("model_id", self.model.clone())
-            .part("file", file_part);
-
-        // Scribe wants the field OMITTED for auto-detect (literal "auto" is a 400)
-        // and ISO-639-3 for explicit languages; normalize accordingly.
-        if let Some(code) = lang.as_deref().and_then(scribe_language_code) {
-            form = form.text("language_code", code);
-        }
-
-        // 3. POST to Scribe. Auth uses the xi-api-key header (NOT Bearer).
-        //    NOTE: never log self.api_key.
-        let response = self
-            .client
-            .post(ELEVENLABS_STT_URL)
-            .header("xi-api-key", &self.api_key)
-            .multipart(form)
-            .send()
-            .await
-            .map_err(|e| {
-                TranscriptionError::EngineFailed(format!("ElevenLabs request failed: {}", e))
-            })?;
-
-        // 4. Surface non-2xx as a structured error (do not panic, do not return empty string).
-        let status = response.status();
-        if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "<failed to read error body>".to_string());
-            warn!(
-                "ElevenLabs Scribe returned non-2xx ({}): {}",
-                status, body
-            );
-            return Err(TranscriptionError::EngineFailed(format!(
-                "ElevenLabs Scribe HTTP {}: {}",
-                status, body
-            )));
-        }
-
-        let parsed: ScribeResponse = response.json().await.map_err(|e| {
-            TranscriptionError::EngineFailed(format!(
-                "Failed to parse Scribe response JSON: {}",
-                e
-            ))
-        })?;
+        let parsed = self.send_scribe_request(&audio, language).await?;
 
         Ok(TranscriptResult {
             text: parsed.text.trim().to_string(),
             confidence: None, // Scribe doesn't return chunk-level confidence
+            is_partial: false,
+        })
+    }
+
+    async fn transcribe_with_overlap(
+        &self,
+        audio: Vec<f32>,
+        language: Option<String>,
+        overlap_seconds: f64,
+    ) -> std::result::Result<TranscriptResult, TranscriptionError> {
+        if audio.is_empty() {
+            return Err(TranscriptionError::AudioTooShort {
+                samples: 0,
+                minimum: 1600,
+            });
+        }
+
+        let parsed = self.send_scribe_request(&audio, language).await?;
+
+        // When a real overlap was prepended, prefer timestamp-based trimming:
+        // drop words that fall entirely inside the re-sent left-context. Fall
+        // back to the full text (worker.rs then applies text dedup) if Scribe
+        // returned no usable word timestamps.
+        if overlap_seconds > OVERLAP_EPSILON_SECS {
+            if let Some(words) = parsed.words.as_ref() {
+                if let Some(trimmed) = Self::trim_overlap_words(words, overlap_seconds) {
+                    return Ok(TranscriptResult {
+                        text: trimmed.trim().to_string(),
+                        confidence: None,
+                        is_partial: false,
+                    });
+                }
+            }
+        }
+
+        Ok(TranscriptResult {
+            text: parsed.text.trim().to_string(),
+            confidence: None,
             is_partial: false,
         })
     }
@@ -231,6 +389,73 @@ impl TranscriptionProvider for ElevenLabsProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn word(text: &str, start: f64) -> ScribeWord {
+        ScribeWord {
+            text: text.to_string(),
+            start: Some(start),
+            end: Some(start + 0.2),
+            word_type: Some("word".to_string()),
+        }
+    }
+
+    #[test]
+    fn should_retry_only_5xx_and_429() {
+        use reqwest::StatusCode;
+        assert!(should_retry_status(StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(should_retry_status(StatusCode::BAD_GATEWAY));
+        assert!(should_retry_status(StatusCode::SERVICE_UNAVAILABLE));
+        assert!(should_retry_status(StatusCode::GATEWAY_TIMEOUT));
+        assert!(should_retry_status(StatusCode::TOO_MANY_REQUESTS));
+        // 4xx (other than 429) must NOT retry.
+        assert!(!should_retry_status(StatusCode::BAD_REQUEST));
+        assert!(!should_retry_status(StatusCode::UNAUTHORIZED));
+        assert!(!should_retry_status(StatusCode::FORBIDDEN));
+        assert!(!should_retry_status(StatusCode::NOT_FOUND));
+        assert!(!should_retry_status(StatusCode::UNPROCESSABLE_ENTITY));
+        // 2xx never retries.
+        assert!(!should_retry_status(StatusCode::OK));
+    }
+
+    #[test]
+    fn retry_backoff_schedule_is_1s_then_3s() {
+        assert_eq!(RETRY_BACKOFF_MS, [1000, 3000]);
+        // Total attempts = first try + retries.
+        assert_eq!(RETRY_BACKOFF_MS.len() + 1, 3);
+    }
+
+    #[test]
+    fn trim_drops_overlap_words_and_keeps_straddler() {
+        // Overlap = 1.0s, epsilon 0.15 -> threshold 0.85s.
+        let words = vec![
+            word("old", 0.10),      // fully inside overlap -> dropped
+            word("also", 0.60),     // inside overlap -> dropped
+            word("boundary", 0.90), // straddles (>= 0.85) -> kept
+            word("new", 1.40),      // after overlap -> kept
+        ];
+        let out = ElevenLabsProvider::trim_overlap_words(&words, 1.0).unwrap();
+        assert_eq!(out, "boundary new");
+    }
+
+    #[test]
+    fn trim_skips_spacing_and_returns_none_without_timestamps() {
+        // A spacing token plus word tokens with no start time -> no usable timing.
+        let words = vec![
+            ScribeWord {
+                text: " ".to_string(),
+                start: Some(0.5),
+                end: Some(0.6),
+                word_type: Some("spacing".to_string()),
+            },
+            ScribeWord {
+                text: "hi".to_string(),
+                start: None,
+                end: None,
+                word_type: Some("word".to_string()),
+            },
+        ];
+        assert!(ElevenLabsProvider::trim_overlap_words(&words, 1.0).is_none());
+    }
 
     #[test]
     fn encode_wav_header_is_well_formed() {
