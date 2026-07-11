@@ -28,9 +28,13 @@ import { useClaude } from '@/contexts/ClaudeContext';
 import { Bot } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ProjectDirModal } from '@/components/ClaudePanel/ProjectDirModal';
+import { ProjectPickerDialog } from '@/components/ProjectPickerDialog';
 import { useSoloMode } from '@/contexts/SoloModeContext';
 import { useSoloModeRouter } from '@/hooks/useSoloModeRouter';
+import { useProjectAutoRoute } from '@/hooks/useProjectAutoRoute';
+import { useProjectRouteActions } from '@/hooks/useProjectRouteActions';
+import { createProject } from '@/services/projectService';
+import { ProjectPickerSelection } from '@/components/ProjectPicker';
 
 export default function Home() {
   // Local page state (not moved to contexts)
@@ -38,11 +42,11 @@ export default function Home() {
   const [barHeights, setBarHeights] = useState(['10px', '14px', '18px', '14px', '10px']);
   const [showRecoveryDialog, setShowRecoveryDialog] = useState(false);
 
-  // Pre-record project directory modal
-  const [showPreRecordModal, setShowPreRecordModal] = useState(false);
-  const [preRecordDir, setPreRecordDir] = useState('');
-  const pendingStartRef = useRef<(() => void) | null>(null);
-  const pendingTitleRef = useRef<string>('');
+  // Global "Move to project" / "Change" picker (opened by the tandem:open-project-picker event).
+  const [movePickerOpen, setMovePickerOpen] = useState(false);
+  // Fed to useProjectAutoRoute's suppression check. Recording now starts straight into the meeting
+  // folder (no pre-record modal), so this stays '' — the guard is dormant until a pre-pick surface
+  // returns, at which point setting it will suppress auto-routing over an explicit choice.
   const preRecordDirRef = useRef<string>('');
 
   // Use contexts for state management
@@ -86,6 +90,40 @@ export default function Home() {
   // Solo Mode: routing engine + session management
   const soloMode = useSoloMode();
   useSoloModeRouter();
+
+  // AI auto-routing: file a meeting-mode recording under the project it belongs to (once early
+  // transcript arrives). Suppressed in solo mode (that has its own router) via the enabled flag.
+  useProjectAutoRoute({
+    enabled: recordingState.isRecording && recordingState.recordingMode !== 'solo',
+    preRecordDirRef,
+  });
+  const { fileUnder } = useProjectRouteActions();
+
+  // Open the global Move/Change picker on the shared window event (fired by the "Filed under X"
+  // toast's Change button and by a spoken-name miss).
+  useEffect(() => {
+    const onOpen = () => setMovePickerOpen(true);
+    window.addEventListener('tandem:open-project-picker', onOpen);
+    return () => window.removeEventListener('tandem:open-project-picker', onOpen);
+  }, []);
+
+  // Post-hoc "Move to project" for the current/last meeting. A registered project files directly;
+  // a recent/browsed folder with no project is registered on the fly (like ClaudePanel's switcher),
+  // and either way fileUnder records the correction into frecency so the router learns.
+  const handleMovePickerSelect = async (sel: ProjectPickerSelection) => {
+    setMovePickerOpen(false);
+    let project = sel.project;
+    if (!project) {
+      if (!sel.dir) { toast.error('No folder to file under'); return; }
+      try {
+        project = await createProject(sel.name, sel.dir, []);
+      } catch (err) {
+        toast.error('Failed to set project', { description: String(err) });
+        return;
+      }
+    }
+    await fileUnder(project, 'chosen manually');
+  };
 
   // Auto-rename meeting after 2 min of active recording (e.g. "Meeting with Steph 27.04.2026")
   useAutoMeetingTitle({
@@ -267,17 +305,13 @@ export default function Home() {
       return;
     }
 
-    // Meeting mode: show project directory modal as before
-    pendingStartRef.current = startFn;
-    pendingTitleRef.current = `Meeting ${new Date().toLocaleDateString('en-GB').replace(/\//g, '_')}`;
-    setShowPreRecordModal(true);
-  };
-
-  const handlePreRecordDirConfirm = (dir: string) => {
-    setPreRecordDir(dir);
-    preRecordDirRef.current = dir;
-    setShowPreRecordModal(false);
-    pendingStartRef.current?.();
+    // Meeting mode: start recording immediately — never block with a folder modal. The user's core
+    // pain was a "which folder?" modal on every meeting; instead we start straight into the meeting
+    // folder and let useProjectAutoRoute file the call under the right project once early transcript
+    // arrives (with a "Filed under X — Undo / Change" toast). The AI panel still shows its own
+    // lightweight setup modal lazily on first AI use if an API key or dir is missing.
+    preRecordDirRef.current = '';
+    startFn();
   };
 
   // F054: On recording start, establish the AI meeting context so projectDir is set for the live
@@ -300,15 +334,13 @@ export default function Home() {
     <div
       className="flex flex-col h-screen bg-background"
     >
-      {/* Pre-record project directory modal */}
-      {showPreRecordModal && (
-        <ProjectDirModal
-          defaultDir={preRecordDir}
-          meetingTitle={pendingTitleRef.current}
-          onConfirm={handlePreRecordDirConfirm}
-          onCancel={() => setShowPreRecordModal(false)}
-        />
-      )}
+      {/* Move-to-project / Change picker (user-initiated only) */}
+      <ProjectPickerDialog
+        open={movePickerOpen}
+        meetingTitle={meetingTitle}
+        onClose={() => setMovePickerOpen(false)}
+        onSelect={handleMovePickerSelect}
+      />
 
       {/* All Modals supported*/}
       <SettingsModals

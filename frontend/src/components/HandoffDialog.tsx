@@ -82,6 +82,9 @@ export function HandoffDialog({
               )}
             </div>
           </label>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Your choice is remembered, so future handoffs run instantly. Change it anytime in Settings &gt; General.
+          </p>
         </div>
 
         <DialogFooter>

@@ -278,6 +278,19 @@ async fn read_file_if_exists(path: String) -> Result<Option<String>, String> {
     }
 }
 
+/// Delete a file at an arbitrary path (e.g. undoing a just-written HANDOFF.md).
+/// Uses raw std::fs so it works outside the ACL-scoped fs plugin (which only permits $APPDATA).
+/// A missing file is treated as success so Undo is idempotent.
+#[tauri::command]
+async fn delete_file(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Ok(());
+    }
+    std::fs::remove_file(p).map_err(|e| format!("Failed to delete file: {}", e))?;
+    Ok(())
+}
+
 /// Write a base64-encoded payload to a binary file (e.g. a PNG export of the whiteboard),
 /// creating parent directories as needed. Accepts a bare base64 string or a data URL.
 #[tauri::command]
@@ -846,6 +859,7 @@ pub fn run() {
             save_transcript,
             copy_file,
             read_file_if_exists,
+            delete_file,
             save_base64_file,
             relay_event,
             list_whiteboards,

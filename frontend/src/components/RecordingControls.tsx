@@ -253,6 +253,23 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     };
   }, []);
 
+  // Command-palette bridge: reuse the exact button code paths (including onBeforeRecord, which is
+  // what starts a Solo session) so a palette command behaves identically to clicking the control.
+  useEffect(() => {
+    const onStart = () => {
+      if (isRecording || isStarting || isRecordingDisabled) return;
+      if (onBeforeRecord) onBeforeRecord(handleStartRecording);
+      else handleStartRecording();
+    };
+    const onStop = () => { handleStopRecording(); };
+    window.addEventListener('tandem:request-start-recording', onStart);
+    window.addEventListener('tandem:request-stop-recording', onStop);
+    return () => {
+      window.removeEventListener('tandem:request-start-recording', onStart);
+      window.removeEventListener('tandem:request-stop-recording', onStop);
+    };
+  }, [isRecording, isStarting, isRecordingDisabled, onBeforeRecord, handleStartRecording, handleStopRecording]);
+
   useEffect(() => {
     logger.log('Setting up recording event listeners');
     let unsubscribes: (() => void)[] = [];

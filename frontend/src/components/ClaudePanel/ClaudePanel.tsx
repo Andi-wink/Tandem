@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X, Send, AlertCircle, Square, Check, Shield, Paperclip, Mic, FolderOpen, Code, SlidersHorizontal, ChevronDown, Plus, PenTool, Maximize2, Minimize2, History, PanelRightClose, PanelRightOpen, FileText } from 'lucide-react';
+import { X, Send, AlertCircle, Square, Check, Shield, Paperclip, Mic, FolderOpen, Code, SlidersHorizontal, ChevronDown, Plus, PenTool, Maximize2, Minimize2, History, PanelRightClose, PanelRightOpen, FileText, FolderKanban } from 'lucide-react';
 import { toast } from 'sonner';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { useClaude, MODEL_OPTIONS } from '@/contexts/ClaudeContext';
@@ -15,6 +15,8 @@ import { useSlashCommand } from '@/hooks/useSlashCommand';
 import { useVoiceCommand, VoiceCommandResult } from '@/hooks/useVoiceCommand';
 import { useCanvas } from '@/contexts/CanvasContext';
 import { routeMessage } from '@/services/canvasRouter';
+import { parseFileUnderCommand } from '@/services/projectRouter';
+import { useProjectRouteActions } from '@/hooks/useProjectRouteActions';
 import { composeCanvasPrompt, CANVAS_CONTEXT_WINDOW_SECS } from '@/services/canvasPrompt';
 import { CanvasIframe } from '@/components/CanvasPanel/CanvasIframe';
 import { TEXTAREA_MAX_HEIGHT_PX } from '@/lib/constants';
@@ -24,6 +26,9 @@ import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { parseDocument, isSupportedDocument } from '@/services/claudeService';
 import { writeTaskHandoff, getRecentTranscripts, HANDOFF_TRANSCRIPT_WINDOW_SECS, TaskHandoffData, ensureTandemClaudeMd } from '@/services/handoffService';
 import { useSoloMode } from '@/contexts/SoloModeContext';
+import { ProjectPicker, ProjectPickerSelection } from '@/components/ProjectPicker';
+import { createProject } from '@/services/projectService';
+import { recordProjectDirUse } from '@/lib/projectDirHistory';
 import type { ContextBasketItem } from '@/contexts/ContextBasketContext';
 
 /** A saved whiteboard in a client's library (mirrors the Rust WhiteboardMeta). */
@@ -71,6 +76,9 @@ export function ClaudePanel() {
   const [inputText, setInputText] = useState('');
   const [isResizing, setIsResizing] = useState(false);
   const [showProjectModal, setShowProjectModal] = useState(false);
+  const [showDirBanner, setShowDirBanner] = useState(false);
+  const [projectSwitcherOpen, setProjectSwitcherOpen] = useState(false);
+  const autoDefaultedRef = useRef(false);
   const [pendingFirstMessage, setPendingFirstMessage] = useState<string | null>(null);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editingTitleValue, setEditingTitleValue] = useState('');
@@ -78,6 +86,10 @@ export function ClaudePanel() {
   // board can use the whole window. Resets whenever expanded mode is left, so re-expanding always
   // shows chat by default.
   const [chatCollapsed, setChatCollapsed] = useState(false);
+  // Explicit "Draw on canvas" affordance (palette command): when true, the NEXT plain composer
+  // message is sent straight to the canvas, bypassing the heuristic router. Cleared after one use
+  // (or when the panel closes) so it can never fire stale on a later session.
+  const [drawNextOnCanvas, setDrawNextOnCanvas] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const sendMessageRef = useRef(sendMessage);
@@ -155,13 +167,42 @@ export function ClaudePanel() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isParsingFile, setIsParsingFile] = useState(false);
 
-  // F054: Auto-show project dir modal when panel opens during recording without projectDir
-  // Wait for apiKey to load (non-null) to avoid making the user re-enter it
+  // Reset the once-per-recording auto-default guard when a recording ends, and clear the banner.
   useEffect(() => {
-    if (isPanelOpen && recordingState.isRecording && !projectDir && meetingTitle && !showProjectModal && apiKey) {
-      setShowProjectModal(true);
+    if (!recordingState.isRecording) {
+      autoDefaultedRef.current = false;
+      setShowDirBanner(false);
     }
-  }, [isPanelOpen, recordingState.isRecording, projectDir, meetingTitle, showProjectModal, apiKey]);
+  }, [recordingState.isRecording]);
+
+  // Mid-call: DON'T block the user with a modal. When the AI panel is opened during a recording
+  // without a project dir, silently default to the meeting folder and show a dismissible banner
+  // ("Using meeting folder — Change"). Only fall back to the modal if no folder can be resolved
+  // at all (we cannot send without a dir). Runs at most once per recording (autoDefaultedRef).
+  useEffect(() => {
+    if (!(isPanelOpen && recordingState.isRecording && !projectDir && meetingTitle && !showProjectModal && apiKey)) return;
+    if (autoDefaultedRef.current) return;
+    autoDefaultedRef.current = true;
+    (async () => {
+      let folder = '';
+      try { folder = (await invoke<string | null>('get_meeting_folder_path')) || ''; } catch { /* ok */ }
+      if (!folder) {
+        try { folder = (await invoke<string | null>('get_recordings_base_dir')) || ''; } catch { /* ok */ }
+      }
+      if (folder) {
+        await openPanel(meetingId || 'live-recording', meetingTitle, folder);
+        const name = folder.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() || 'Project';
+        recordProjectDirUse(folder, name, meetingTitle);
+        // Parity with the modal's confirm path: write .tandem/CLAUDE.md so the F054 @code
+        // handoff behaves identically whether the dir was set via modal or silently defaulted.
+        ensureTandemClaudeMd(folder, sessionFolder).catch(() => {});
+        setShowDirBanner(true);
+      } else {
+        // No folder at all — last resort, ask explicitly (cannot send without a dir).
+        setShowProjectModal(true);
+      }
+    })();
+  }, [isPanelOpen, recordingState.isRecording, projectDir, meetingTitle, showProjectModal, apiKey, meetingId, openPanel]);
 
   // F044: Handle file selection (from button or OS drop)
   const handleFileUpload = async (file: File) => {
@@ -236,6 +277,8 @@ export function ClaudePanel() {
   const { transcripts } = useTranscripts();
   const transcriptsRef = useRef(transcripts);
   transcriptsRef.current = transcripts;
+  // Shared "file this under X" action (typed + voice override, same behaviour as auto-routing).
+  const { resolveAndFileUnder } = useProjectRouteActions();
   const handleVoiceCommand = React.useCallback(async (result: VoiceCommandResult) => {
     const message = result.args || result.transcript;
     if (!message?.trim()) {
@@ -252,6 +295,12 @@ export function ClaudePanel() {
     // Canvas auto-routing for spoken commands too: saying "canvas" / "map out the processes" draws on
     // the board instead of going to the assistant. (@code is always an explicit AI handoff.)
     if (!/@code\b/i.test(message)) {
+      // Spoken "file this under X" override — re-point the meeting's project, never send to AI/canvas.
+      const fileTarget = parseFileUnderCommand(message);
+      if (fileTarget) {
+        await resolveAndFileUnder(fileTarget);
+        return;
+      }
       const route = await routeMessage(message, { anthropicKey: apiKey, canvasOpen: canvas.canvasVisible });
       if (route === 'canvas') {
         // Ensure the panel is open with meeting context BEFORE injecting, so the conversation reset
@@ -293,7 +342,7 @@ export function ClaudePanel() {
       console.error('Voice command failed:', err);
       toast.error('Voice command failed: ' + (err instanceof Error ? err.message : String(err)));
     }
-  }, [isStreaming, sendMessage, openPanel, isPanelOpen, meetingId, meetingTitle, projectDir, apiKey, canvas, injectConversationMessage]);
+  }, [isStreaming, sendMessage, openPanel, isPanelOpen, meetingId, meetingTitle, projectDir, apiKey, canvas, injectConversationMessage, resolveAndFileUnder]);
 
   const { isListening, isHotkeyListening, cancelListening, feedTranscript, capturedText: voiceCapturedText } = useVoiceCommand({
     enabled: recordingState.isRecording,
@@ -301,7 +350,7 @@ export function ClaudePanel() {
   });
 
   // F047: `transcripts` (destructured above) feeds voice-command capture while listening.
-  const { sessionFolder, activeProject } = useSoloMode();
+  const { sessionFolder, activeProject, switchProject } = useSoloMode();
 
   // Previous-boards picker: lists this client's (Solo project's) saved whiteboards.
   const [previousBoards, setPreviousBoards] = useState<WhiteboardMeta[]>([]);
@@ -389,6 +438,19 @@ export function ClaudePanel() {
     return () => window.removeEventListener('tandem:canvas-show', onShow as EventListener);
   }, [isPanelOpen, projectDir, meetingId, meetingTitle, openPanel, canvas]);
 
+  // Palette "Draw on canvas": arm the next-message-to-canvas flag. (The palette also fires
+  // 'tandem:canvas-show', handled above, so the board is already visible when the user types.)
+  useEffect(() => {
+    const onArm = () => setDrawNextOnCanvas(true);
+    window.addEventListener('tandem:canvas-draw-next', onArm);
+    return () => window.removeEventListener('tandem:canvas-draw-next', onArm);
+  }, []);
+
+  // Never let the armed flag survive the panel closing (would fire stale on a later session).
+  useEffect(() => {
+    if (!isPanelOpen) setDrawNextOnCanvas(false);
+  }, [isPanelOpen]);
+
   // Auto-resize textarea
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
@@ -411,10 +473,34 @@ export function ClaudePanel() {
       await new Promise(r => setTimeout(r, 150));
     }
 
+    // Explicit "Draw on canvas" (palette): the user already chose the canvas, so skip the router
+    // entirely and draw deterministically. Slash/@code still win (checked first).
+    if (drawNextOnCanvas && !activeCommand && !/@code\b/i.test(text)) {
+      setDrawNextOnCanvas(false);
+      setInputText('');
+      if (inputRef.current) inputRef.current.style.height = 'auto';
+      injectConversationMessage('user', text);
+      await canvas.sendPrompt(
+        composeCanvasPrompt(text, transcriptsRef.current, {
+          enabled: canvas.transcriptOptIn,
+          defaultWindowSecs: CANVAS_CONTEXT_WINDOW_SECS,
+        }),
+      );
+      return;
+    }
+
     // Canvas auto-routing: a plain message may be a "draw/edit this on the canvas" request. The
     // router is heuristic-first (instant) with a small Claude classification for ambiguous cases.
     // Slash/action/@code messages are explicit AI commands and are never routed.
     if (!activeCommand && !/@code\b/i.test(text)) {
+      // Typed "file this under X" override — re-point the meeting's project, never send to AI/canvas.
+      const fileTarget = parseFileUnderCommand(text);
+      if (fileTarget) {
+        setInputText('');
+        if (inputRef.current) inputRef.current.style.height = 'auto';
+        await resolveAndFileUnder(fileTarget);
+        return;
+      }
       const route = await routeMessage(text, { anthropicKey: apiKey, canvasOpen: canvas.canvasVisible });
       if (route === 'canvas') {
         setInputText('');
@@ -543,12 +629,37 @@ export function ClaudePanel() {
 
   const handleProjectDirConfirm = (dir: string) => {
     setShowProjectModal(false);
+    setShowDirBanner(false);
     if (meetingId && meetingTitle) {
       openPanel(meetingId, meetingTitle, dir);
     }
     // F054: Write CLAUDE.md so Claude Code knows about the integration.
     // Routes into the active Solo session folder if one exists, else .tandem root.
     ensureTandemClaudeMd(dir, sessionFolder).catch(() => {});
+  };
+
+  // Manual project switcher (header): sets the active project in ANY mode, which drives screenshot/
+  // whiteboard/feed routing and unblocks the whiteboard History button outside Solo. The picker also
+  // surfaces recent (unregistered) dirs; switchProject needs a full Project, so adopt/register such a
+  // dir on the fly rather than silently doing nothing.
+  const handleProjectSwitch = async (sel: ProjectPickerSelection) => {
+    setProjectSwitcherOpen(false);
+    let project = sel.project;
+    if (!project) {
+      if (!sel.dir) {
+        toast.error('No folder to set as active project');
+        return;
+      }
+      try {
+        project = await createProject(sel.name, sel.dir, []);
+      } catch (err) {
+        toast.error('Failed to set active project', { description: String(err) });
+        return;
+      }
+    }
+    switchProject(project, transcriptsRef.current.length);
+    recordProjectDirUse(project.path, project.name, meetingTitle);
+    toast.success(`Active project: ${project.name}`);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -750,6 +861,32 @@ export function ClaudePanel() {
             )}
           </div>
           <div className="flex items-center gap-0.5 flex-shrink-0">
+            {/* Manual project switcher — sets the active project (routes screenshots, whiteboards, feed). */}
+            <Popover open={projectSwitcherOpen} onOpenChange={setProjectSwitcherOpen}>
+              <PopoverTrigger asChild>
+                <button
+                  className={`flex items-center gap-1 p-1.5 rounded-md transition-colors ${activeProject ? 'text-brand bg-muted' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
+                  title="Active project — routes screenshots, whiteboards, feed"
+                >
+                  <FolderKanban className="w-4 h-4 flex-shrink-0" />
+                  {activeProject && (
+                    <span className="text-xs font-medium truncate max-w-[120px]">{activeProject.name}</span>
+                  )}
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="end" side="bottom" className="w-72 p-2">
+                <div className="px-1 pb-2 text-xs font-medium text-muted-foreground">
+                  Set active project
+                </div>
+                <ProjectPicker
+                  allowBrowse={false}
+                  autoFocus
+                  meetingTitle={meetingTitle}
+                  onSelect={handleProjectSwitch}
+                  onEscape={() => setProjectSwitcherOpen(false)}
+                />
+              </PopoverContent>
+            </Popover>
             <button
               onClick={() => canvas.toggleCanvas()}
               className={`p-1.5 rounded-md transition-colors ${canvas.canvasVisible ? 'text-brand bg-muted' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
@@ -849,6 +986,8 @@ export function ClaudePanel() {
             )}
             <button
               onClick={closePanel}
+              aria-label="Close AI Assistant"
+              title="Close AI Assistant"
               className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
             >
               <X className="w-4 h-4" />
@@ -865,6 +1004,29 @@ export function ClaudePanel() {
         {/* Chat region: conversation history (hidden in narrow-canvas mode) + the shared input. */}
         <div className={chatRegionClass}>
         <div className={conversationHidden ? 'hidden' : 'flex flex-col flex-1 min-h-0'}>
+
+        {/* Mid-call project-dir default banner — non-blocking; user can change or dismiss. */}
+        {showDirBanner && projectDir && (
+          <div className="px-3 py-2 bg-muted/50 border-b border-border flex items-center gap-2 text-xs text-muted-foreground flex-shrink-0 transition-opacity duration-150">
+            <FolderOpen className="w-3.5 h-3.5 flex-shrink-0" />
+            <span className="min-w-0 flex-1 truncate" title={projectDir}>
+              Using meeting folder for this session · {projectDir}
+            </span>
+            <button
+              onClick={() => setShowProjectModal(true)}
+              className="text-brand hover:underline flex-shrink-0"
+            >
+              Change
+            </button>
+            <button
+              onClick={() => setShowDirBanner(false)}
+              className="text-muted-foreground hover:text-foreground flex-shrink-0"
+              title="Dismiss"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
 
         {/* API key not set warning */}
         {!hasApiKey && (
@@ -980,6 +1142,25 @@ export function ClaudePanel() {
               <span className="font-medium text-success-foreground">
                 @code — task will be queued for Claude Code
               </span>
+            </div>
+          )}
+
+          {/* Draw-on-canvas armed indicator (palette "Draw on canvas") */}
+          {drawNextOnCanvas && (
+            <div className="flex items-center justify-between mb-2 px-2 py-1.5 rounded-md bg-brand-muted border border-brand/20 text-xs">
+              <div className="flex items-center gap-2">
+                <PenTool className="w-3.5 h-3.5 text-brand flex-shrink-0" />
+                <span className="font-medium text-brand-muted-foreground">
+                  Next message draws on the canvas
+                </span>
+              </div>
+              <button
+                onClick={() => setDrawNextOnCanvas(false)}
+                className="text-muted-foreground hover:text-destructive ml-2"
+                title="Cancel"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
             </div>
           )}
 

@@ -133,6 +133,18 @@ describe('detectProjectSwitchFastPath', () => {
     expect(detectProjectSwitchFastPath("I'm working on the Photoshop project", projects)).toBeNull();
   });
 
+  it('matches the spoken filing cue "file this under Tandem"', () => {
+    expect(detectProjectSwitchFastPath('file this under Tandem', projects)?.id).toBe('1');
+  });
+
+  it('matches "put this under the Jos project"', () => {
+    expect(detectProjectSwitchFastPath('put this under the Jos project', projects)?.id).toBe('2');
+  });
+
+  it('does NOT match "I filed the report under my desk" (no such project)', () => {
+    expect(detectProjectSwitchFastPath('I filed the report under my desk', projects)).toBeNull();
+  });
+
   it('returns null when there is no switch cue (passing mention)', () => {
     expect(detectProjectSwitchFastPath('Tandem is built on Tauri', projects)).toBeNull();
   });

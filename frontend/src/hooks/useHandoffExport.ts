@@ -28,6 +28,12 @@ declare global {
   }
 }
 
+/** '1' = anonymize PII on handoff, '0' = raw text. Shared with PreferenceSettings. */
+export const HANDOFF_ANONYMIZE_STORAGE_KEY = 'tandem-handoff-anonymize';
+/** '1' once the user has made a handoff-anonymize choice (dialog confirm or Settings toggle).
+ *  When set, /handoff runs immediately with the remembered choice instead of showing the dialog. */
+export const HANDOFF_PREF_SET_STORAGE_KEY = 'tandem-handoff-pref-set';
+
 export interface UseHandoffExportReturn {
   triggerHandoff: (folderPath: string, meetingName: string) => Promise<void>;
   isGenerating: boolean;
@@ -69,69 +75,12 @@ export function useHandoffExport(): UseHandoffExportReturn {
     entityMap: typeof entityMap;
   } | null>(null);
 
-  // ─── Trigger ─────────────────────────────────────────────────────────────
-
-  const triggerHandoff = useCallback((folderPath: string, meetingName: string): Promise<void> => {
-    folderPathRef.current = folderPath;
-    meetingNameRef.current = meetingName;
-
-    // Snapshot all data NOW — before clearTranscripts() wipes it after 2s
-    snapshotRef.current = {
-      transcripts: [...transcriptsRef.current],
-      screenshots: [...screenshots],
-      clipboardItems: [...clipboardItems],
-      conversation: [...conversation],
-      recordingDuration,
-      meetingId,
-      entityMap: entityMap ? { ...entityMap } : entityMap,
-    };
-
-    // Check PII health
-    setPiiAvailable(null);
-    setShowHandoffDialog(true);
-
-    // Kick off async PII check (non-blocking)
-    (async () => {
-      try {
-        const health = await checkAnonymizationHealth();
-        setPiiAvailable(health.available);
-        setAnonymizeChecked(health.available && anonymizationEnabled);
-      } catch {
-        setPiiAvailable(false);
-        setAnonymizeChecked(false);
-      }
-    })();
-
-    // Return a Promise that resolves when the dialog is closed (confirm or cancel).
-    // This lets useRecordingStop await it before navigating away.
-    return new Promise<void>((resolve) => {
-      dialogResolveRef.current = resolve;
-    });
-  }, [anonymizationEnabled, transcriptsRef, screenshots, clipboardItems, conversation, recordingDuration, meetingId, entityMap]);
-
-  // ─── Register window function ────────────────────────────────────────────
-
-  useEffect(() => {
-    window.triggerHandoff = triggerHandoff;
-    return () => {
-      delete window.triggerHandoff;
-    };
-  }, [triggerHandoff]);
-
-  // ─── Confirm / Cancel ────────────────────────────────────────────────────
-
-  const cancelHandoff = useCallback(() => {
-    setShowHandoffDialog(false);
-    setPiiAvailable(null);
-    dialogResolveRef.current?.();
-    dialogResolveRef.current = null;
-  }, []);
-
-  const confirmHandoff = useCallback(async () => {
+  // ─── Core run (builds timeline, optionally anonymizes, writes HANDOFF.md) ───
+  // Reads the snapshot captured at trigger time (survives the clearTranscripts race). Resolves only
+  // after the file write completes, so useRecordingStop can await it before navigating away.
+  const runHandoff = useCallback(async (anonymize: boolean): Promise<void> => {
     setIsGenerating(true);
-
     try {
-      // Use snapshot data captured at trigger time (survives clearTranscripts race)
       const snap = snapshotRef.current;
       if (!snap) {
         throw new Error('No handoff snapshot available — was triggerHandoff called?');
@@ -146,9 +95,8 @@ export function useHandoffExport(): UseHandoffExportReturn {
 
       // Optionally anonymize text items (transcripts + AI messages)
       let anonymized = false;
-      if (anonymizeChecked && piiAvailable) {
+      if (anonymize) {
         try {
-          // Collect all text-bearing items with their indices
           const textEntries: { index: number; text: string }[] = [];
           for (let i = 0; i < timeline.length; i++) {
             const item = timeline[i];
@@ -164,7 +112,6 @@ export function useHandoffExport(): UseHandoffExportReturn {
               snappedEntityMap,
             );
 
-            // Replace texts with sanitized versions
             const updatedTimeline = [...timeline];
             for (let i = 0; i < textEntries.length; i++) {
               updatedTimeline[textEntries[i].index] = {
@@ -191,14 +138,45 @@ export function useHandoffExport(): UseHandoffExportReturn {
       };
 
       const markdown = generateHandoffMarkdown(data);
-
-      // Write file
       const filePath = `${folderPathRef.current}/HANDOFF.md`;
+
+      // Capture the previous file content (if any) BEFORE overwriting, so Undo can restore it.
+      // read_file_if_exists returns null for a missing/empty file — in that case Undo deletes.
+      let prevContent: string | null = null;
+      try {
+        prevContent = await invoke<string | null>('read_file_if_exists', { path: filePath });
+      } catch {
+        prevContent = null;
+      }
+
       await invoke('save_transcript', { filePath, content: markdown });
 
+      const undoHandoff = async () => {
+        try {
+          if (prevContent !== null) {
+            await invoke('save_transcript', { filePath, content: prevContent });
+          } else {
+            // File didn't exist before — remove the one we just wrote.
+            // Use the unscoped Rust command, not plugin-fs remove() (fs:scope is $APPDATA-only,
+            // but HANDOFF.md lives in the recordings/project folder outside $APPDATA).
+            await invoke('delete_file', { path: filePath });
+          }
+          toast.success('Handoff undone');
+        } catch (err) {
+          console.error('Failed to undo handoff:', err);
+          toast.error('Could not undo the handoff', {
+            description: `The write already succeeded but ${prevContent !== null ? 'restoring' : 'deleting'} ${filePath} failed. Open the folder and adjust it by hand.`,
+          });
+        }
+      };
+
       toast.success('Handoff file saved', {
-        description: filePath,
+        description: `${filePath} · ${anonymized ? 'Anonymized PII' : 'Raw text'} · Change in Settings > General`,
         action: {
+          label: 'Undo',
+          onClick: () => { void undoHandoff(); },
+        },
+        cancel: {
           label: 'Show File',
           onClick: () => { invoke('show_in_folder', { path: filePath }); },
         },
@@ -211,12 +189,103 @@ export function useHandoffExport(): UseHandoffExportReturn {
       });
     } finally {
       setIsGenerating(false);
-      setShowHandoffDialog(false);
       snapshotRef.current = null;
+    }
+  }, []);
+
+  // ─── Trigger ─────────────────────────────────────────────────────────────
+
+  const triggerHandoff = useCallback((folderPath: string, meetingName: string): Promise<void> => {
+    folderPathRef.current = folderPath;
+    meetingNameRef.current = meetingName;
+
+    // Snapshot all data NOW — before clearTranscripts() wipes it after 2s
+    snapshotRef.current = {
+      transcripts: [...transcriptsRef.current],
+      screenshots: [...screenshots],
+      clipboardItems: [...clipboardItems],
+      conversation: [...conversation],
+      recordingDuration,
+      meetingId,
+      entityMap: entityMap ? { ...entityMap } : entityMap,
+    };
+
+    // Has the user already made an anonymize choice? If so, run fire-and-forget with no dialog.
+    let prefSet = false;
+    try { prefSet = localStorage.getItem(HANDOFF_PREF_SET_STORAGE_KEY) === '1'; } catch { /* ignore */ }
+
+    if (prefSet) {
+      let savedPref = false;
+      try { savedPref = localStorage.getItem(HANDOFF_ANONYMIZE_STORAGE_KEY) === '1'; } catch { /* ignore */ }
+      // Return runHandoff's promise so callers still await the actual write.
+      return (async () => {
+        let available = false;
+        try {
+          const health = await checkAnonymizationHealth();
+          available = health.available;
+        } catch {
+          available = false;
+        }
+        await runHandoff(savedPref && available);
+      })();
+    }
+
+    // First-ever use: show the dialog and let the user choose (and remember) the setting.
+    setPiiAvailable(null);
+    setShowHandoffDialog(true);
+
+    // Kick off async PII check (non-blocking)
+    (async () => {
+      try {
+        const health = await checkAnonymizationHealth();
+        setPiiAvailable(health.available);
+        setAnonymizeChecked(health.available && anonymizationEnabled);
+      } catch {
+        setPiiAvailable(false);
+        setAnonymizeChecked(false);
+      }
+    })();
+
+    // Return a Promise that resolves when the dialog is closed (confirm or cancel).
+    // This lets useRecordingStop await it before navigating away.
+    return new Promise<void>((resolve) => {
+      dialogResolveRef.current = resolve;
+    });
+  }, [anonymizationEnabled, runHandoff, transcriptsRef, screenshots, clipboardItems, conversation, recordingDuration, meetingId, entityMap]);
+
+  // ─── Register window function ────────────────────────────────────────────
+
+  useEffect(() => {
+    window.triggerHandoff = triggerHandoff;
+    return () => {
+      delete window.triggerHandoff;
+    };
+  }, [triggerHandoff]);
+
+  // ─── Confirm / Cancel ────────────────────────────────────────────────────
+
+  const cancelHandoff = useCallback(() => {
+    setShowHandoffDialog(false);
+    setPiiAvailable(null);
+    dialogResolveRef.current?.();
+    dialogResolveRef.current = null;
+  }, []);
+
+  const confirmHandoff = useCallback(async () => {
+    // Persist the choice: touching the dialog counts as making it, so future handoffs run instantly.
+    try {
+      localStorage.setItem(HANDOFF_ANONYMIZE_STORAGE_KEY, anonymizeChecked ? '1' : '0');
+      localStorage.setItem(HANDOFF_PREF_SET_STORAGE_KEY, '1');
+    } catch { /* ignore */ }
+
+    try {
+      await runHandoff(anonymizeChecked && !!piiAvailable);
+    } finally {
+      setShowHandoffDialog(false);
       dialogResolveRef.current?.();
       dialogResolveRef.current = null;
     }
-  }, [anonymizeChecked, piiAvailable]);
+  }, [anonymizeChecked, piiAvailable, runHandoff]);
 
   return {
     triggerHandoff,

@@ -8,6 +8,7 @@ import Analytics from "@/lib/analytics"
 import AnalyticsConsentSwitch from "./AnalyticsConsentSwitch"
 import { useConfig, NotificationSettings } from "@/contexts/ConfigContext"
 import { useClaude, PANEL_NOTIFICATIONS_STORAGE_KEY } from "@/contexts/ClaudeContext"
+import { HANDOFF_ANONYMIZE_STORAGE_KEY, HANDOFF_PREF_SET_STORAGE_KEY } from "@/hooks/useHandoffExport"
 
 export function PreferenceSettings() {
   const {
@@ -33,6 +34,15 @@ export function PreferenceSettings() {
   useEffect(() => {
     try {
       setPanelNotifications(localStorage.getItem(PANEL_NOTIFICATIONS_STORAGE_KEY) !== '0');
+    } catch { /* ignore */ }
+  }, []);
+
+  // "Anonymize PII on handoff" toggle: whether HANDOFF.md exports replace PII with surrogates.
+  // Hydrated from localStorage in an effect (avoids an SSR hydration mismatch). Default OFF.
+  const [handoffAnonymize, setHandoffAnonymize] = useState(false);
+  useEffect(() => {
+    try {
+      setHandoffAnonymize(localStorage.getItem(HANDOFF_ANONYMIZE_STORAGE_KEY) === '1');
     } catch { /* ignore */ }
   }, []);
 
@@ -192,6 +202,29 @@ export function PreferenceSettings() {
             onCheckedChange={(v) => {
               setPanelNotifications(v);
               try { localStorage.setItem(PANEL_NOTIFICATIONS_STORAGE_KEY, v ? '1' : '0'); } catch { /* ignore */ }
+            }}
+          />
+        </div>
+      </div>
+
+      {/* Anonymize PII on Handoff Section */}
+      <div className="bg-background rounded-lg border border-border p-6 shadow-sm">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h3 className="text-lg font-semibold text-foreground mb-2">Anonymize PII on handoff</h3>
+            <p className="text-sm text-muted-foreground">
+              Replace names, emails and phone numbers with surrogates in HANDOFF.md exports. Runs automatically on every handoff.
+            </p>
+          </div>
+          <Switch
+            checked={handoffAnonymize}
+            onCheckedChange={(v) => {
+              setHandoffAnonymize(v);
+              try {
+                localStorage.setItem(HANDOFF_ANONYMIZE_STORAGE_KEY, v ? '1' : '0');
+                // Touching this setting counts as making the choice, so the first-run dialog is skipped.
+                localStorage.setItem(HANDOFF_PREF_SET_STORAGE_KEY, '1');
+              } catch { /* ignore */ }
             }}
           />
         </div>

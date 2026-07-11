@@ -184,7 +184,7 @@ function normalizeForFuzzy(s: string): string {
 // Explicit switch CUES — the user declaring what they're working on. Captures
 // the spoken name (group 1), optionally trailing "project"/"app"/"repo"/etc.
 const SWITCH_CUE_RE =
-  /\b(?:working on|work on|i'?m on|i am on|switch(?:ing)?(?:\s+(?:to|over to))?|mov(?:e|ing)(?:\s+over)?\s+to|back\s+(?:to|on)|jump(?:ing)?\s+(?:to|on)|let'?s\s+(?:do|work on|switch to)|today\s+(?:i'?m|i am)\s+(?:on|doing|working on))\s+(?:the\s+)?([a-z0-9][\w'’\- ]{0,40}?)(?:\s+(?:project|projects|app|repo|repository|codebase|code\s*base))?\s*[.,!?]?(?:\s|$)/i;
+  /\b(?:fil(?:e|ing)\s+(?:this|that|it|everything|the\s+(?:meeting|call|notes?))?\s*under|put\s+(?:this|that|it|everything)\s+(?:under|in|into)|working on|work on|i'?m on|i am on|switch(?:ing)?(?:\s+(?:to|over to))?|mov(?:e|ing)(?:\s+over)?\s+to|back\s+(?:to|on)|jump(?:ing)?\s+(?:to|on)|let'?s\s+(?:do|work on|switch to)|today\s+(?:i'?m|i am)\s+(?:on|doing|working on))\s+(?:the\s+)?([a-z0-9][\w'’\- ]{0,40}?)(?:\s+(?:project|projects|app|repo|repository|codebase|code\s*base))?\s*[.,!?]?(?:\s|$)/i;
 
 // Negation / past-tense markers that flip a cue from "I'm on X" to "I'm NOT on X".
 const SWITCH_NEGATION_RE = /\b(?:not|never|don'?t|stop|stopped|done|finished|no longer|quit|quitting|leaving)\b/i;

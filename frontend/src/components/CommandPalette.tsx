@@ -1,0 +1,411 @@
+'use client';
+
+/**
+ * CommandPalette (Ctrl+K) — one keyboard surface to route notes and drive Tandem, so the common
+ * actions (file this meeting under a project, start/stop, toggle the AI panel / canvas, hand off)
+ * are one action instead of several clicks.
+ *
+ * Custom overlay (not cmdk's CommandDialog) so Escape is fully ours: it pops ONE drill-down level
+ * per press (boards/project page -> root -> close). ProjectPicker is reused as the in-palette
+ * project page; its own Escape calls onEscape -> setPage('root'), so it never closes the palette.
+ */
+
+import React, { useCallback, useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { toast } from 'sonner';
+import {
+  FolderGit2, FolderKanban, Layers, Mic, Square, User, Users,
+  PanelRightOpen, PenTool, Plus, History, FileText,
+} from 'lucide-react';
+import {
+  Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem, CommandShortcut,
+} from '@/components/ui/command';
+import { ProjectPicker, ProjectPickerSelection } from '@/components/ProjectPicker';
+import { useClaude } from '@/contexts/ClaudeContext';
+import { useCanvas } from '@/contexts/CanvasContext';
+import { useSoloMode } from '@/contexts/SoloModeContext';
+import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { useSidebar } from '@/components/Sidebar/SidebarProvider';
+import { useProjectRouteActions } from '@/hooks/useProjectRouteActions';
+import { listProjects, createProject, Project } from '@/services/projectService';
+import {
+  getProjectDirHistory, bestHistoryMatch, frecencyScore, normalizeDir,
+} from '@/lib/projectDirHistory';
+
+/** A saved whiteboard in a client's library (mirrors the Rust WhiteboardMeta). */
+interface WhiteboardMeta {
+  id: string;
+  title: string;
+  saved_at_ms: number;
+  json_path: string;
+  png_path: string | null;
+}
+
+interface ProjectRow {
+  key: string;
+  name: string;
+  path: string;
+  project?: Project;
+}
+
+type Page = 'root' | 'project' | 'boards';
+
+export function CommandPalette() {
+  const {
+    isPanelOpen, openPanel, closePanel, meetingId, meetingTitle,
+  } = useClaude();
+  const { canvasVisible, hideCanvas, clearCanvas } = useCanvas();
+  const { activeProject } = useSoloMode();
+  const { isRecording, recordingMode, setRecordingMode } = useRecordingState();
+  const { currentMeeting } = useSidebar();
+  const { fileUnder } = useProjectRouteActions();
+
+  const [open, setOpen] = useState(false);
+  const [page, setPage] = useState<Page>('root');
+  const [projectRows, setProjectRows] = useState<ProjectRow[]>([]);
+  const [boards, setBoards] = useState<WhiteboardMeta[]>([]);
+
+  // The most identifying title we have for pinning the likely project (panel context first, then
+  // the sidebar's current meeting).
+  const titleForMatch = meetingTitle || currentMeeting?.title || null;
+
+  // ── Shared actions (also bound to direct hotkeys) ─────────────────────────
+  const toggleAiPanel = useCallback(async () => {
+    if (isPanelOpen) { closePanel(); return; }
+    let folder = '';
+    try { folder = (await invoke<string | null>('get_meeting_folder_path')) || ''; } catch { /* ok */ }
+    await openPanel(meetingId || 'live-recording', meetingTitle || 'Live Recording', folder);
+  }, [isPanelOpen, closePanel, openPanel, meetingId, meetingTitle]);
+
+  const toggleCanvasView = useCallback(() => {
+    if (canvasVisible) hideCanvas();
+    else window.dispatchEvent(new CustomEvent('tandem:canvas-show'));
+  }, [canvasVisible, hideCanvas]);
+
+  const runHandoff = useCallback(async () => {
+    const folder = await invoke<string | null>('get_meeting_folder_path').catch(() => null);
+    if (folder && window.triggerHandoff) {
+      window.triggerHandoff(folder, meetingTitle || currentMeeting?.title || 'Meeting');
+    } else {
+      toast.error('No active recording folder. Start a recording first.');
+    }
+  }, [meetingTitle, currentMeeting]);
+
+  // ── Direct shortcuts: Ctrl+K (palette), Ctrl+. (AI panel), Ctrl+, (canvas) ──
+  // No Alt+Shift combos (S/R/V/Q/A are OS-global). preventDefault so no character is inserted.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      if (e.key === 'k' || e.key === 'K') {
+        e.preventDefault();
+        setOpen(o => !o);
+      } else if (e.key === '.') {
+        e.preventDefault();
+        void toggleAiPanel();
+      } else if (e.key === ',') {
+        e.preventDefault();
+        toggleCanvasView();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [toggleAiPanel, toggleCanvasView]);
+
+  // Reset to the root page and (re)compute the likely-project rows every time the palette opens.
+  useEffect(() => {
+    if (!open) return;
+    setPage('root');
+    let cancelled = false;
+    (async () => {
+      let projects: Project[] = [];
+      try { projects = await listProjects(); } catch { projects = []; }
+      const history = getProjectDirHistory();
+      const now = Date.now();
+      const seen = new Set<string>();
+      const ranked: Array<ProjectRow & { score: number }> = [];
+
+      for (const p of projects) {
+        const key = normalizeDir(p.path);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const hist = history.find(h => normalizeDir(h.dir) === key);
+        ranked.push({ key: `project:${p.id}`, name: p.name, path: p.path, project: p, score: hist ? frecencyScore(hist, now) : 0 });
+      }
+      for (const h of history) {
+        const key = normalizeDir(h.dir);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        ranked.push({ key: `recent:${key}`, name: h.name, path: h.dir, score: frecencyScore(h, now) });
+      }
+      ranked.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+
+      // Pin the best title match to the top so a repeat client is the first row.
+      const best = bestHistoryMatch(titleForMatch);
+      if (best) {
+        const bestKey = normalizeDir(best.dir);
+        const idx = ranked.findIndex(r => normalizeDir(r.path) === bestKey);
+        if (idx > 0) { const [row] = ranked.splice(idx, 1); ranked.unshift(row); }
+      }
+
+      if (!cancelled) {
+        setProjectRows(ranked.slice(0, 3).map(({ score: _score, ...r }) => r));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open, titleForMatch]);
+
+  // Load this client's boards when the boards page is entered.
+  useEffect(() => {
+    if (page !== 'boards' || !activeProject?.path) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await invoke<WhiteboardMeta[]>('list_whiteboards', { projectPath: activeProject.path });
+        if (!cancelled) setBoards(list);
+      } catch {
+        if (!cancelled) setBoards([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [page, activeProject?.path]);
+
+  // Register an unregistered dir on the fly, then file the meeting under it (copies page.tsx's
+  // handleMovePickerSelect so the router learns the correction identically).
+  const chooseProject = useCallback(async (row: ProjectRow) => {
+    let project = row.project;
+    if (!project) {
+      try { project = await createProject(row.name, row.path, []); }
+      catch (e) { toast.error('Failed to set project', { description: String(e) }); return; }
+    }
+    await fileUnder(project, 'chosen from palette');
+    setOpen(false);
+  }, [fileUnder]);
+
+  const onPickerSelect = useCallback(async (sel: ProjectPickerSelection) => {
+    let project = sel.project;
+    if (!project) {
+      if (!sel.dir) { toast.error('No folder to file under'); return; }
+      try { project = await createProject(sel.name, sel.dir, []); }
+      catch (e) { toast.error('Failed to set project', { description: String(e) }); return; }
+    }
+    await fileUnder(project, 'chosen from palette');
+    setOpen(false);
+  }, [fileUnder]);
+
+  const openBoard = useCallback(async (board: WhiteboardMeta) => {
+    window.dispatchEvent(new CustomEvent('tandem:canvas-show'));
+    try {
+      const raw = await invoke<string | null>('read_file_if_exists', { path: board.json_path });
+      if (!raw) { toast.error('Could not read that whiteboard.'); return; }
+      window.dispatchEvent(
+        new CustomEvent('tandem:canvas-view-board', { detail: { snapshot: JSON.parse(raw), title: board.title } }),
+      );
+      toast.success(`Viewing "${board.title}" (read-only)`);
+    } catch (e) {
+      console.error('[Palette] open board failed', e);
+      toast.error('Failed to load that whiteboard.');
+    }
+    setOpen(false);
+  }, []);
+
+  // Escape pops exactly one level. ProjectPicker's input handles its own Escape (preventDefault +
+  // onEscape); if it already did, bail so we don't also pop.
+  const handlePanelKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== 'Escape') return;
+    if (e.defaultPrevented) return;
+    e.preventDefault();
+    if (page !== 'root') setPage('root');
+    else setOpen(false);
+  };
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex justify-center bg-black/50 transition-opacity duration-150"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) setOpen(false); }}
+    >
+      <div
+        className="mt-[15vh] self-start w-[560px] max-w-[90vw] overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-xl"
+        onKeyDown={handlePanelKeyDown}
+      >
+        {page === 'project' ? (
+          <div className="p-2">
+            <div className="flex items-center justify-between px-2 pb-2 text-xs text-muted-foreground">
+              <span>Route this meeting to a project</span>
+              <span className="flex-shrink-0">Esc to go back</span>
+            </div>
+            <ProjectPicker
+              allowBrowse
+              autoFocus
+              meetingTitle={titleForMatch}
+              onSelect={onPickerSelect}
+              onEscape={() => setPage('root')}
+            />
+          </div>
+        ) : page === 'boards' ? (
+          <div className="p-2">
+            <div className="flex items-center justify-between px-2 pb-2 text-xs text-muted-foreground">
+              <span className="min-w-0 truncate">Board history · {activeProject?.name}</span>
+              <span className="ml-2 flex-shrink-0">Esc to go back</span>
+            </div>
+            <div className="flex max-h-[320px] flex-col gap-0.5 overflow-y-auto">
+              {boards.length === 0 ? (
+                <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+                  No saved boards for this client yet.
+                </div>
+              ) : (
+                boards.map((b) => (
+                  <button
+                    key={b.id}
+                    onClick={() => openBoard(b)}
+                    className="flex flex-col items-start rounded-md px-3 py-2 text-left transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                  >
+                    <span className="w-full truncate text-sm font-medium text-foreground">{b.title}</span>
+                    <span className="text-[10px] tabular-nums text-muted-foreground">
+                      {new Date(b.saved_at_ms).toLocaleString()}
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        ) : (
+          <Command>
+            <CommandInput autoFocus placeholder="Search projects and commands…" />
+            <CommandList>
+              <CommandEmpty>No results.</CommandEmpty>
+
+              <CommandGroup heading="Projects">
+                {projectRows.length === 0 ? (
+                  <CommandItem value="route project" onSelect={() => setPage('project')}>
+                    <FolderKanban />
+                    <span>Route this meeting to a project…</span>
+                  </CommandItem>
+                ) : (
+                  <>
+                    {projectRows.map((row) => (
+                      <CommandItem
+                        key={row.key}
+                        value={`project ${row.name} ${row.path}`}
+                        onSelect={() => { void chooseProject(row); }}
+                      >
+                        <FolderGit2 />
+                        <div className="flex min-w-0 flex-col">
+                          <span className="truncate">File under {row.name}</span>
+                          <span className="truncate text-xs text-muted-foreground">{row.path}</span>
+                        </div>
+                      </CommandItem>
+                    ))}
+                    <CommandItem value="all projects route" onSelect={() => setPage('project')}>
+                      <Layers />
+                      <span>All projects…</span>
+                    </CommandItem>
+                  </>
+                )}
+              </CommandGroup>
+
+              <CommandGroup heading="Commands">
+                <CommandItem value="switch route project" onSelect={() => setPage('project')}>
+                  <FolderKanban />
+                  <span>Switch / route project…</span>
+                </CommandItem>
+
+                {!isRecording && (
+                  <CommandItem
+                    value="start recording"
+                    onSelect={() => { window.dispatchEvent(new CustomEvent('tandem:request-start-recording')); setOpen(false); }}
+                  >
+                    <Mic />
+                    <span>Start recording</span>
+                  </CommandItem>
+                )}
+                {isRecording && (
+                  <CommandItem
+                    value="stop recording"
+                    onSelect={() => { window.dispatchEvent(new CustomEvent('tandem:request-stop-recording')); setOpen(false); }}
+                  >
+                    <Square />
+                    <span>Stop recording</span>
+                  </CommandItem>
+                )}
+                {!isRecording && (
+                  <CommandItem
+                    value="start solo session"
+                    onSelect={() => {
+                      // Commit the mode first; RecordingControls' handler (via page.tsx handleBeforeRecord)
+                      // reads recordingMode when the start event fires, so defer the start a tick.
+                      setRecordingMode('solo');
+                      setOpen(false);
+                      setTimeout(() => window.dispatchEvent(new CustomEvent('tandem:request-start-recording')), 80);
+                    }}
+                  >
+                    <User />
+                    <span>Start Solo session</span>
+                  </CommandItem>
+                )}
+                {!isRecording && (
+                  <CommandItem
+                    value="switch mode meeting solo"
+                    onSelect={() => { setRecordingMode(recordingMode === 'solo' ? 'meeting' : 'solo'); setOpen(false); }}
+                  >
+                    {recordingMode === 'solo' ? <Users /> : <User />}
+                    <span>Switch mode to {recordingMode === 'solo' ? 'Meeting' : 'Solo'}</span>
+                  </CommandItem>
+                )}
+
+                <CommandItem value="ai panel toggle assistant" onSelect={() => { void toggleAiPanel(); setOpen(false); }}>
+                  <PanelRightOpen />
+                  <span>{isPanelOpen ? 'Close AI panel' : 'Open AI panel'}</span>
+                  <CommandShortcut>Ctrl+.</CommandShortcut>
+                </CommandItem>
+
+                <CommandItem value="canvas toggle whiteboard chat" onSelect={() => { toggleCanvasView(); setOpen(false); }}>
+                  <PenTool />
+                  <span>{canvasVisible ? 'Show chat' : 'Show canvas'}</span>
+                  <CommandShortcut>Ctrl+,</CommandShortcut>
+                </CommandItem>
+
+                <CommandItem
+                  value="draw on canvas"
+                  onSelect={() => {
+                    window.dispatchEvent(new CustomEvent('tandem:canvas-show'));
+                    window.dispatchEvent(new CustomEvent('tandem:canvas-draw-next'));
+                    setOpen(false);
+                  }}
+                >
+                  <PenTool />
+                  <span>Draw on canvas</span>
+                </CommandItem>
+
+                <CommandItem
+                  value="new whiteboard board"
+                  onSelect={() => { window.dispatchEvent(new CustomEvent('tandem:canvas-show')); void clearCanvas(); setOpen(false); }}
+                >
+                  <Plus />
+                  <span>New whiteboard</span>
+                </CommandItem>
+
+                {activeProject && (
+                  <CommandItem value="board history whiteboards" onSelect={() => setPage('boards')}>
+                    <History />
+                    <div className="flex min-w-0 flex-col">
+                      <span>Board history…</span>
+                      <span className="truncate text-xs text-muted-foreground">{activeProject.name}</span>
+                    </div>
+                  </CommandItem>
+                )}
+
+                <CommandItem value="generate handoff claude code" onSelect={() => { void runHandoff(); setOpen(false); }}>
+                  <FileText />
+                  <span>Generate handoff</span>
+                  <CommandShortcut>/handoff</CommandShortcut>
+                </CommandItem>
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        )}
+      </div>
+    </div>
+  );
+}

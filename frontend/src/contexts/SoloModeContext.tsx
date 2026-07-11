@@ -63,6 +63,9 @@ interface SoloModeContextType extends SoloModeState {
   startSoloSession: () => void;
   stopSoloSession: () => void;
   switchProject: (project: Project, transcriptIndex: number) => void;
+  /** Clear the active project without ending the session (the Undo primitive when auto-routing
+   *  filed a meeting but there was no previous active project to revert to). */
+  clearActiveProject: () => void;
   addTask: (task: SoloTask) => void;
   setRoutingModel: (model: string) => void;
   setSessionFolder: (folder: string) => void;
@@ -234,6 +237,22 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     emitHudActiveProject(project.id, project.name);
   }, []);
 
+  const clearActiveProject = useCallback(() => {
+    console.log('[SoloMode] Clearing active project (undo)');
+    // Close the open history entry so its span ends here (mirrors stopSoloSession's -1 sentinel).
+    const history = [...historyRef.current];
+    if (history.length > 0) {
+      const last = history[history.length - 1];
+      if (last.endIndex === null) last.endIndex = -1;
+    }
+    historyRef.current = history;
+    setState(prev => ({ ...prev, activeProject: null, projectHistory: history }));
+    setActiveSoloProject(null).catch(err =>
+      console.warn('[SoloMode] Failed to clear screenshot routing:', err),
+    );
+    emitHudActiveProject(null, null);
+  }, []);
+
   const addTask = useCallback((task: SoloTask) => {
     setState(prev => ({
       ...prev,
@@ -262,11 +281,12 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     startSoloSession,
     stopSoloSession,
     switchProject,
+    clearActiveProject,
     addTask,
     setRoutingModel,
     setSessionFolder,
     getActiveProjectHistory,
-  }), [state, startSoloSession, stopSoloSession, switchProject, addTask, setRoutingModel, setSessionFolder, getActiveProjectHistory]);
+  }), [state, startSoloSession, stopSoloSession, switchProject, clearActiveProject, addTask, setRoutingModel, setSessionFolder, getActiveProjectHistory]);
 
   return (
     <SoloModeContext.Provider value={contextValue}>

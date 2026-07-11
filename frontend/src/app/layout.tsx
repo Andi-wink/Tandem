@@ -28,6 +28,7 @@ import { ClaudeProvider } from '@/contexts/ClaudeContext'
 import { ContextBasketProvider } from '@/contexts/ContextBasketContext'
 import { SelectionProvider } from '@/contexts/SelectionContext'
 import { ClaudePanel } from '@/components/ClaudePanel'
+import { CommandPalette } from '@/components/CommandPalette'
 import { NotificationProvider } from '@/contexts/NotificationContext'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ThemeProvider } from 'next-themes'
@@ -179,6 +180,9 @@ export default function RootLayout({
               </ErrorBoundary>
               <ErrorBoundary fallbackLabel="AI Panel">
                 <ClaudePanel />
+              </ErrorBoundary>
+              <ErrorBoundary fallbackLabel="Command palette">
+                <CommandPalette />
               </ErrorBoundary>
               <ErrorBoundary fallbackLabel="Canvas">
                 <CanvasVoiceListener />
