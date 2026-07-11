@@ -63,7 +63,7 @@ test.describe('Sidebar Navigation', () => {
     const expandBtn = tauriPage.locator('button[style*="translateX(50%)"]').first();
     await expandBtn.click();
 
-    await expect(tauriPage.getByPlaceholder('Search meeting content...')).toBeVisible({ timeout: 5_000 });
+    await expect(tauriPage.getByPlaceholder('Search calls and notes...')).toBeVisible({ timeout: 5_000 });
   });
 
   test('can collapse sidebar back', async ({ tauriPage }) => {

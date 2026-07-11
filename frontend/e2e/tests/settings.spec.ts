@@ -8,7 +8,7 @@ test.describe('Settings Page', () => {
 
   test('renders settings page with heading and back button', async ({ tauriPage }) => {
     await expect(tauriPage.getByRole('heading', { name: 'Settings' })).toBeVisible({ timeout: 10_000 });
-    await expect(tauriPage.getByText('Back')).toBeVisible();
+    await expect(tauriPage.getByRole('button', { name: 'Back' })).toBeVisible();
   });
 
   test('shows all four tabs', async ({ tauriPage }) => {
@@ -48,7 +48,7 @@ test.describe('Settings Page', () => {
     await expect(tauriPage.getByRole('heading', { name: 'Settings' })).toBeVisible({ timeout: 10_000 });
 
     // Click back
-    await tauriPage.getByText('Back').click();
+    await tauriPage.getByRole('button', { name: 'Back' }).click();
 
     // Should go back to home
     await expect(tauriPage).toHaveURL(/localhost:3118\/?$/);

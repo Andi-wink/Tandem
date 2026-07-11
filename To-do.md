@@ -2,6 +2,22 @@
 
 ## Open
 
+### UX friction 5-iteration loop (2026-07-10) — DONE (needs one manual runtime pass, see I5 deferred)
+North star: talk to Tandem like an OS; notes auto-route to the correct client project. Reported pain: the project/save-location modal costs several clicks per meeting.
+All four build iterations initially FAILED adversarial review; each got a fix pass that closed the blockers with verified gates (tsc clean, cargo clean, vitest 127/127, Playwright e2e 23/23).
+- [x] I1 research (Granola/Fathom/Wispr/Raycast-class patterns) + click-path audit + 13-item ranked friction synthesis
+- [x] I2 project routing memory: ProjectPicker (searchable, frecency recents-first, Enter-to-confirm), per-client dir memory, mid-call modal downgraded to silent default + banner
+- [x] I3 AI auto-routing: projectRouter (heuristic + Haiku fallback), auto-file with "Filed under X" undo/change toast, "file this under X" typed+spoken grammar, post-hoc move
+- [x] I4 click-reduction: Ctrl+K command palette, handoff fire-and-forget with real undo (new Rust delete_file cmd; anonymize remembered as pref), explicit draw-on-canvas affordance
+- [x] I5 verify + polish: Playwright e2e suite added (23/23), 7 stale-locator fixes, before/after click walk
+
+#### I5 deferred (found during verify+polish, 2026-07-11)
+- [ ] Frecency is not unlearned on a "Filed under X" Undo: undo restores the project but the wrong dir keeps its +1 frecency count in [projectDirHistory](frontend/src/lib/projectDirHistory.ts), so one bad auto-route slightly boosts the wrong folder's ranking. Accepted for now.
+- [ ] Weak-preposition filing grammar deliberately rejects a leading article: "move this to the X" returns null by design (a leading article after to/into/in reads as a document-location phrase). "file this under the X" and "move this to X" work. See [parseFileUnderCommand](frontend/src/services/projectRouter.ts#L58). Revisit only if the user actually hits it.
+- [x] Deterministic UI drive now run (2026-07-11 fixer pass): Playwright e2e suite (23 tests, Tauri-mocked, real React UI at :3118) drives home/recording controls/AI-panel open+close+model-selector+type/sidebar+search/settings+tabs+back/meeting-details — **23/23 pass**. Fixed 7 pre-existing stale-locator failures (renamed placeholders, model picker moved behind Settings popover, `getByText('Back')` also matched "backend" in the PII warning) and gave the panel close button an `aria-label`. Gates: vitest 127/127, `tsc --noEmit` clean, `cargo check --features cuda` clean.
+- [ ] STILL NOT machine-verified (needs a physical run, cannot be driven headless): native-Rust flows the Tauri mock cannot exercise — actual audio capture/recording start-stop with a mic, live Whisper/Scribe transcript flow, the canvas Tauri window + board history (Solo vs meeting manual switcher), @code HANDOFF.md write+undo against the real filesystem, first-run API-key + recovered-transcript startup after an unclean exit. The Playwright drive proves the frontend renders/wires/opens/closes correctly; it does not prove the Rust audio pipeline records real audio. Schedule a manual runtime pass on the target machine.
+- [ ] `preRecordDirRef` suppression guard in [useProjectAutoRoute](frontend/src/hooks/useProjectAutoRoute.ts#L74) is dormant (always '') now that recording starts straight into the meeting folder. Harmless; re-wire if a pre-record pick surface returns.
+
 ### Whiteboard 4-iteration improvement loop (2026-07-10) — Fable plan / Opus build / Sonnet review — DONE
 Ran as an orchestrated workflow (14 subagents). Changes uncommitted in the working tree, across Tandem + the shared `agent-whiteboard` repo. Bundle rebuilt (`pnpm build:all`) + canvas server restarted so all of this is live.
 - [x] **I1 — Crash fix.** Real root cause (my earlier v4/v5-MCP + dual-tldraw guesses were BOTH wrong): tldraw 5's `getIndicatorPath` is abstract and the `HtmlShapeUtil` didn't implement it, so any HTML shape (which my mockup-steering prompt started producing) crashed on select/hover and persisted → endless reload. Fixed by implementing the method (+ a forward-compat copy in shared canvas-core; standalone tldraw-4 build verified intact).
@@ -56,6 +72,33 @@ Built + compile-verified (`cargo check` + `tsc --noEmit` both clean), NOT yet ru
 - [ ] Voice + auto-routing need a proper runtime pass (only lightly exercised).
 - [ ] (Backlog) Production CSP: `connect-src` has no `ws:`/`127.0.0.1` entries and the agent app ships no CSP, so a hardened/packaged build would block the MCP WebSocket (`ws://127.0.0.1:3000`). Works in dev (same-origin from the iframe, Vite-proxied). Fix alongside the prod sidecar: add `ws://localhost:* ws://127.0.0.1:* http://127.0.0.1:*` to connect-src + a CSP on the agent app.
 - [ ] Worktree setup drift (hit during this build): Cargo.lock is gitignored, so a fresh worktree resolved tauri 2.11.3 vs main's 2.10.2 and failed to compile. Copied main's Cargo.lock to pin. Also copied `binaries/llama-helper-*.exe` and several untracked frontend source files (NotificationContext, MermaidBlock, etc.) that committed code imports but which are uncommitted on main — commit those on main so worktrees build cleanly.
+
+### Scribe-path accuracy + latency loop (2026-07-11) — done, follow-ups queued
+Two iterations run (Fable plan / Opus build / adversarial Opus QA), both committed
+(72e64f5, 1565ce5). Live provider is ElevenLabs Scribe v2 (cloud), not Parakeet.
+Fresh held-out benchmark: clips 11-16 from July meetings + Scribe ground truth
+([make_ground_truth.py](audio_testing/make_ground_truth.py)); live-path replica
+[run_scribe_meeting_wer.py](audio_testing/run_scribe_meeting_wer.py). Results:
+pipeline WER penalty +2.3pp -> +0.3pp (timestamp overlap trim), pooled 7.6% -> 5.6%;
+then latency profile: median block wait 16.7s -> 7.7s for +0.71pp (5.6% -> 6.3%).
+Retry + timeouts added to the ElevenLabs provider (a failed POST used to silently
+drop a 12-35s chunk — likely the user-perceived word drops). Research report:
+[stt-improvement-ideas.md](research/stt-improvement-ideas.md).
+- [ ] **ElevenLabs Scribe v2 Realtime WebSocket** (top lever, M effort): partial +
+  committed transcripts at ~100-150ms; kills both remaining latency (VAD-segment
+  floor: a 35s monologue still arrives as one block) and boundary artifacts.
+  Needs a frontend partial/volatile rendering layer (TranscriptContext is
+  append-only by sequence_id) + live-mic runtime testing.
+- [ ] VAD-level mid-segment partial emit: silero holds a monologue as one 13-35s
+  segment; no buffer knob can subdivide it. Needed if we stay on batch HTTP.
+- [ ] Consider min 5s instead of 4s for the CLOUD profile (QA: 6.21% @ 9.1s median
+  vs 6.31% @ 7.7s) if the +2.1pp worst-clip cost bites in practice.
+- [ ] Retry-loop behavior (backoff capping, budget break) is pinned by trace, not
+  by tests; add coverage if the provider code is touched again.
+- [ ] German + local streaming: spike sherpa-onnx + Kroko streaming Zipformer
+  (ships a German model) per the research report.
+- [ ] Worker `transcription-error` + outer `transcription-warning` double-emit on
+  provider failure (pre-existing, flagged by QA).
 
 ### Transcription WER regression gate (#10) — follow-ups to make it CI-grade
 The local gate is done ([wer_gate.py](audio_testing/wer_gate.py), [README](audio_testing/README_wer_gate.md), baseline [wer_baseline.json](audio_testing/wer_baseline.json)). Before wiring into PR CI:

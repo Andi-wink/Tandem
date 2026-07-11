@@ -17,16 +17,17 @@ test.describe('Claude AI Panel', () => {
 
     // The panel should show with the message input
     await expect(
-      tauriPage.getByPlaceholder('Ask about this meeting...'),
+      tauriPage.getByPlaceholder('What can we help you with?'),
     ).toBeVisible({ timeout: 5_000 });
   });
 
   test('panel shows model selector', async ({ tauriPage }) => {
     await tauriPage.locator('[title="Open AI Assistant"]').click();
-    await tauriPage.waitForTimeout(500);
+    await expect(tauriPage.getByPlaceholder('What can we help you with?')).toBeVisible({ timeout: 5_000 });
 
-    // Model selector button should show one of the model names
-    await expect(tauriPage.getByRole('button', { name: /Opus|Sonnet|Haiku/ })).toBeVisible({ timeout: 5_000 });
+    // The model picker now lives behind the Settings popover in the composer footer.
+    await tauriPage.locator('button[title="Settings"]').click();
+    await expect(tauriPage.getByRole('button', { name: /Opus|Sonnet|Haiku/ }).first()).toBeVisible({ timeout: 5_000 });
   });
 
   test('can close the Claude panel', async ({ tauriPage }) => {
@@ -35,13 +36,12 @@ test.describe('Claude AI Panel', () => {
 
     // Open panel
     await tauriPage.locator('[title="Open AI Assistant"]').click();
-    await expect(tauriPage.getByPlaceholder('Ask about this meeting...')).toBeVisible({ timeout: 5_000 });
+    await expect(tauriPage.getByPlaceholder('What can we help you with?')).toBeVisible({ timeout: 5_000 });
     // Panel should have translate-x-0 (open)
     await expect(panel).toHaveClass(/translate-x-0/, { timeout: 3_000 });
 
-    // Close via the X button — it's the last button in the panel header button group
-    const closeBtn = panel.locator('div.flex.items-center.gap-1').locator('button').last();
-    await closeBtn.click();
+    // Close via the labelled X button in the panel header
+    await panel.getByRole('button', { name: 'Close AI Assistant' }).click();
 
     // Panel should slide off-screen with translate-x-full
     await expect(panel).toHaveClass(/translate-x-full/, { timeout: 5_000 });
@@ -50,7 +50,7 @@ test.describe('Claude AI Panel', () => {
   test('can type in the message input', async ({ tauriPage }) => {
     await tauriPage.locator('[title="Open AI Assistant"]').click();
 
-    const input = tauriPage.getByPlaceholder('Ask about this meeting...');
+    const input = tauriPage.getByPlaceholder('What can we help you with?');
     await expect(input).toBeVisible({ timeout: 5_000 });
 
     await input.fill('Summarize the key discussion points');
