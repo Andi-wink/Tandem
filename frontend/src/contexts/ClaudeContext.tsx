@@ -95,11 +95,17 @@ interface ClaudeContextValue extends ClaudeState {
   setPanelWidth: (width: number) => void;
   // Bug 8: inject a Claude Code response as an assistant message (no SSE call)
   injectExternalMessage: (text: string) => void;
+  // Inject a raw conversation message (user or assistant) with no SSE call — used to surface the
+  // canvas agent's back-and-forth in the panel.
+  injectConversationMessage: (role: ClaudeMessageRole, text: string) => void;
 }
 
 const ClaudeContext = createContext<ClaudeContextValue | null>(null);
 
 const MODEL_STORAGE_KEY = 'tandem_claude_model';
+// When '0', the AI panel suppresses Tandem/Claude Code status notices (the actual AI<->user
+// conversation, including canvas replies, is never suppressed). Default (unset) = notices shown.
+export const PANEL_NOTIFICATIONS_STORAGE_KEY = 'tandem-panel-notifications';
 const PANEL_WIDTH_STORAGE_KEY = 'tandem_claude_panel_width';
 const DEFAULT_MODEL = 'claude-opus-4-6';
 const DEFAULT_PANEL_WIDTH = 420;
@@ -672,14 +678,18 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     }));
   }, [clearBasket]);
 
-  const injectExternalMessage = useCallback((text: string) => {
+  const injectConversationMessage = useCallback((role: ClaudeMessageRole, text: string) => {
     const msg: ClaudeMessage = {
       id: `external-${crypto.randomUUID()}`,
-      role: 'assistant',
-      text: `📋 **Claude Code:**\n\n${text}`,
+      role,
+      text,
     };
     setState(prev => ({ ...prev, conversation: [...prev.conversation, msg] }));
   }, []);
+
+  const injectExternalMessage = useCallback((text: string) => {
+    injectConversationMessage('assistant', `📋 **Claude Code:**\n\n${text}`);
+  }, [injectConversationMessage]);
 
   // Persist the conversation to the meeting folder when the recording stops, so it can be reviewed
   // later (mirrors how screenshots/clipboard/whiteboard are saved). The event carries folder_path.
@@ -702,9 +712,29 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // Surface the canvas agent's textual replies as assistant messages so the panel shows the
+  // AI<->user conversation. NOT gated by the notifications toggle — this is real conversation.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const text = (e as CustomEvent).detail?.text;
+      if (typeof text === 'string' && text.trim()) {
+        injectConversationMessage('assistant', `🎨 **Canvas:**\n\n${text.trim()}`);
+      }
+    };
+    window.addEventListener('tandem:canvas-reply', handler);
+    return () => window.removeEventListener('tandem:canvas-reply', handler);
+  }, [injectConversationMessage]);
+
   // Listen for backend notifications with show_in_panel=true (dispatched by NotificationContext)
   useEffect(() => {
     const handler = (e: Event) => {
+      // Respect the "AI panel notifications" toggle (read at event time so a Settings change takes
+      // effect immediately). Only gates these status notices, never the actual conversation.
+      try {
+        if (localStorage.getItem(PANEL_NOTIFICATIONS_STORAGE_KEY) === '0') return;
+      } catch {
+        /* ignore */
+      }
       const detail = (e as CustomEvent).detail;
       if (!detail) return;
       const title = detail.title ? `**${detail.title}**\n\n` : '';
@@ -739,7 +769,8 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     panelWidth,
     setPanelWidth,
     injectExternalMessage,
-  }), [state, contextBasket, addToBasket, removeFromBasket, clearBasket, openPanel, closePanel, sendMessage, clearSessionAction, cancelStream, setApiKey, setModel, updateMeetingTitle, toggleAnonymization, toggleItemAnonymization, clearEntityMapAction, panelWidth, setPanelWidth, injectExternalMessage]);
+    injectConversationMessage,
+  }), [state, contextBasket, addToBasket, removeFromBasket, clearBasket, openPanel, closePanel, sendMessage, clearSessionAction, cancelStream, setApiKey, setModel, updateMeetingTitle, toggleAnonymization, toggleItemAnonymization, clearEntityMapAction, panelWidth, setPanelWidth, injectExternalMessage, injectConversationMessage]);
 
   return (
     <ClaudeContext.Provider value={value}>

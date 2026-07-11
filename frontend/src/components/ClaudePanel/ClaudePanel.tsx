@@ -65,6 +65,7 @@ export function ClaudePanel() {
     updateMeetingTitle,
     panelWidth,
     setPanelWidth,
+    injectConversationMessage,
   } = useClaude();
 
   const [inputText, setInputText] = useState('');
@@ -253,6 +254,18 @@ export function ClaudePanel() {
     if (!/@code\b/i.test(message)) {
       const route = await routeMessage(message, { anthropicKey: apiKey, canvasOpen: canvas.canvasVisible });
       if (route === 'canvas') {
+        // Ensure the panel is open with meeting context BEFORE injecting, so the conversation reset
+        // that openPanel performs on a meeting switch can't wipe the user message we're about to add.
+        // (openPanel fully awaits its saved-conversation restore, so injecting after it is safe.)
+        if (!projectDir || !meetingId || !isPanelOpen) {
+          let folder = projectDir || '';
+          if (!folder) {
+            try { folder = await invoke<string | null>('get_meeting_folder_path') || ''; } catch { /* ok */ }
+          }
+          await openPanel(meetingId || 'live-recording', meetingTitle || 'Live Recording', folder);
+        }
+        // Show the user's ORIGINAL spoken request (not the transcript-composed prompt) in the panel.
+        injectConversationMessage('user', message);
         await canvas.sendPrompt(
           composeCanvasPrompt(message, transcriptsRef.current, {
             enabled: canvas.transcriptOptIn,
@@ -280,7 +293,7 @@ export function ClaudePanel() {
       console.error('Voice command failed:', err);
       toast.error('Voice command failed: ' + (err instanceof Error ? err.message : String(err)));
     }
-  }, [isStreaming, sendMessage, openPanel, isPanelOpen, meetingId, meetingTitle, projectDir, apiKey, canvas]);
+  }, [isStreaming, sendMessage, openPanel, isPanelOpen, meetingId, meetingTitle, projectDir, apiKey, canvas, injectConversationMessage]);
 
   const { isListening, isHotkeyListening, cancelListening, feedTranscript, capturedText: voiceCapturedText } = useVoiceCommand({
     enabled: recordingState.isRecording,
@@ -406,6 +419,8 @@ export function ClaudePanel() {
       if (route === 'canvas') {
         setInputText('');
         if (inputRef.current) inputRef.current.style.height = 'auto';
+        // Show the user's ORIGINAL typed request (not the transcript-composed prompt) in the panel.
+        injectConversationMessage('user', text);
         await canvas.sendPrompt(
           composeCanvasPrompt(text, transcriptsRef.current, {
             enabled: canvas.transcriptOptIn,

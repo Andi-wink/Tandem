@@ -305,6 +305,17 @@ export function CanvasProvider({ children }: { children: React.ReactNode }) {
         setLastError(msg);
         flashStatus('error');
         toast.error(`Canvas: ${msg}`);
+      } else if (t === 'canvas:message') {
+        // The canvas agent's textual reply — relay it to the AI panel conversation. The origin
+        // check at the top of onMessage already validated the source.
+        const text = typeof data?.text === 'string' ? data.text : '';
+        if (text) {
+          try {
+            window.dispatchEvent(new CustomEvent('tandem:canvas-reply', { detail: { text } }));
+          } catch {
+            /* ignore */
+          }
+        }
       }
     };
     window.addEventListener('message', onMessage);

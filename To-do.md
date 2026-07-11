@@ -2,6 +2,20 @@
 
 ## Open
 
+### Whiteboard 4-iteration improvement loop (2026-07-10) — Fable plan / Opus build / Sonnet review — DONE
+Ran as an orchestrated workflow (14 subagents). Changes uncommitted in the working tree, across Tandem + the shared `agent-whiteboard` repo. Bundle rebuilt (`pnpm build:all`) + canvas server restarted so all of this is live.
+- [x] **I1 — Crash fix.** Real root cause (my earlier v4/v5-MCP + dual-tldraw guesses were BOTH wrong): tldraw 5's `getIndicatorPath` is abstract and the `HtmlShapeUtil` didn't implement it, so any HTML shape (which my mockup-steering prompt started producing) crashed on select/hover and persisted → endless reload. Fixed by implementing the method (+ a forward-compat copy in shared canvas-core; standalone tldraw-4 build verified intact).
+- [x] **I2 — AI↔user conversation in the panel** (canvas agent `message` replies forwarded via new `canvas:message` bridge + user request injected as a chat message) + **Settings toggle** to mute Tandem/"Claude Code" notices (does not mute the real conversation). Tandem tsc + cargo clean.
+- [x] **I3 — Image paste** into the board + **"</> Insert HTML"** quick-insert button. (Also fixed a pre-existing `pnpm build:all` hang by splitting the dev `/stream` middleware into `vite.config.dev.ts` — tldraw leaked a MessagePort under Node and blocked the build from exiting.)
+- [x] **I4 — Live website shape** ("Insert Website" → `WebsiteShapeUtil`, iframes a URL to draw on top, with an `/api/frame-check` + screenshot fallback for sites that block framing) + perf pass. SSRF guard added to the new frame endpoints (DNS-resolve + private-range denylist + redirect re-validation).
+
+**Follow-ups (non-blocking, from the adversarial reviews):**
+- [ ] Dark mode: the new `InsertHtmlButton` / `InsertWebsiteButton` / `WebsiteShapeUtil` toolbar UI hardcodes light-mode colors — add dark variants.
+- [ ] Self-heal gap: `CanvasCrashFallback`'s "Reset board data" only clears the local IndexedDB scratch store, not a per-meeting `.tldr.json`; a genuinely foreign shape type in a saved board could still re-crash on open (low risk now the html bug is fixed at root).
+- [ ] Canvas request bubble can be left with no reply if `canvas.sendPrompt()` rejects (ClaudePanel ~262/419) — show an error tied to the bubble.
+- [ ] Backend (uvicorn :5167) has died 3× this session — find why (unhandled exception / terminal-close) and make it resilient.
+- [ ] Changes span two repos and are uncommitted; agent-whiteboard `dist/` is gitignored (rebuild needed on other machines).
+
 ### Voice-driven canvas (feat/canvas-voice) — built, needs a runtime test
 Tandem hosts the agent-whiteboard tldraw Agent kit in a Tauri window and drives it. The canvas/agent
 code lives ONLY in agent-whiteboard (`apps/agent`, branch `feat/canvas-voice`); Tandem never forks it.

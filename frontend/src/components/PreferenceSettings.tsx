@@ -7,7 +7,7 @@ import { invoke } from "@tauri-apps/api/core"
 import Analytics from "@/lib/analytics"
 import AnalyticsConsentSwitch from "./AnalyticsConsentSwitch"
 import { useConfig, NotificationSettings } from "@/contexts/ConfigContext"
-import { useClaude } from "@/contexts/ClaudeContext"
+import { useClaude, PANEL_NOTIFICATIONS_STORAGE_KEY } from "@/contexts/ClaudeContext"
 
 export function PreferenceSettings() {
   const {
@@ -26,6 +26,15 @@ export function PreferenceSettings() {
   useEffect(() => {
     if (apiKey && !apiKeyInput) setApiKeyInput(apiKey);
   }, [apiKey]);
+
+  // "AI panel notifications" toggle: whether Tandem/Claude Code status notices appear in the AI
+  // panel. Hydrated from localStorage in an effect (avoids an SSR hydration mismatch). Default ON.
+  const [panelNotifications, setPanelNotifications] = useState(true);
+  useEffect(() => {
+    try {
+      setPanelNotifications(localStorage.getItem(PANEL_NOTIFICATIONS_STORAGE_KEY) !== '0');
+    } catch { /* ignore */ }
+  }, []);
 
   const [notificationsEnabled, setNotificationsEnabled] = useState<boolean | null>(null);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
@@ -166,6 +175,25 @@ export function PreferenceSettings() {
             <p className="text-sm text-muted-foreground">Enable or disable notifications of start and end of meeting</p>
           </div>
           <Switch checked={notificationsEnabledValue} onCheckedChange={setNotificationsEnabled} />
+        </div>
+      </div>
+
+      {/* AI Panel Notifications Section */}
+      <div className="bg-background rounded-lg border border-border p-6 shadow-sm">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h3 className="text-lg font-semibold text-foreground mb-2">AI panel notifications</h3>
+            <p className="text-sm text-muted-foreground">
+              Show Tandem and Claude Code status notices in the AI assistant panel. The AI conversation itself is always shown.
+            </p>
+          </div>
+          <Switch
+            checked={panelNotifications}
+            onCheckedChange={(v) => {
+              setPanelNotifications(v);
+              try { localStorage.setItem(PANEL_NOTIFICATIONS_STORAGE_KEY, v ? '1' : '0'); } catch { /* ignore */ }
+            }}
+          />
         </div>
       </div>
 
