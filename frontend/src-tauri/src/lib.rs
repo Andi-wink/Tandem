@@ -37,6 +37,7 @@ pub(crate) use perf_trace;
 pub mod analytics;
 pub mod api;
 pub mod audio;
+pub mod calendar_ics;
 pub mod canvas;
 pub mod clipboard;
 pub mod console_utils;
@@ -1108,6 +1109,10 @@ pub fn run() {
             canvas::commands::canvas_send_prompt,
             canvas::commands::canvas_transcribe_clip,
             canvas::commands::canvas_health_check,
+            // Calendar (read-only ICS) commands
+            calendar_ics::fetch_calendar_ics,
+            api::api_get_calendar_config,
+            api::api_save_calendar_config,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -39,6 +39,26 @@ test.describe('Settings Page', () => {
     await expect(tauriPage.getByRole('tab', { name: 'Summary' })).toHaveAttribute('data-state', 'active');
   });
 
+  test('General tab shows the Calendar section with a masked URL and interval', async ({ tauriPage }) => {
+    await expect(tauriPage.getByRole('heading', { name: 'Calendar' })).toBeVisible({ timeout: 10_000 });
+
+    // URL field is masked (password type) and hydrated from the mock config.
+    const urlField = tauriPage.locator('#calendar-ics-url');
+    await expect(urlField).toHaveAttribute('type', 'password');
+
+    // Interval select defaults to the mock's 15 minutes.
+    await expect(tauriPage.locator('#calendar-interval')).toHaveValue('15');
+  });
+
+  test('Test connection surfaces an event count', async ({ tauriPage }) => {
+    await expect(tauriPage.getByRole('heading', { name: 'Calendar' })).toBeVisible({ timeout: 10_000 });
+
+    await tauriPage.getByRole('button', { name: /test connection/i }).click();
+
+    // The mock ICS has 2 events, 1 today.
+    await expect(tauriPage.getByText(/Connected — 2 events found \(1 today\)/)).toBeVisible({ timeout: 10_000 });
+  });
+
   test('back button navigates to previous page', async ({ tauriPage }) => {
     // Navigate from home to settings
     await tauriPage.goto('/');

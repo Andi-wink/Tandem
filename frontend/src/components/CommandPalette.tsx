@@ -13,9 +13,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
+import { usePathname, useRouter } from 'next/navigation';
 import {
   FolderGit2, FolderKanban, Layers, Mic, Square, User, Users,
-  PanelRightOpen, PenTool, Plus, History, FileText,
+  PanelRightOpen, PenTool, Plus, History, FileText, CalendarDays, RefreshCw,
 } from 'lucide-react';
 import {
   Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem, CommandShortcut,
@@ -23,6 +24,7 @@ import {
 import { ProjectPicker, ProjectPickerSelection } from '@/components/ProjectPicker';
 import { useClaude } from '@/contexts/ClaudeContext';
 import { useCanvas } from '@/contexts/CanvasContext';
+import { useCalendar } from '@/contexts/CalendarContext';
 import { useSoloMode } from '@/contexts/SoloModeContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
@@ -55,6 +57,9 @@ export function CommandPalette() {
     isPanelOpen, openPanel, closePanel, meetingId, meetingTitle,
   } = useClaude();
   const { canvasVisible, hideCanvas, clearCanvas } = useCanvas();
+  const { configured: calendarConfigured, refresh: refreshCalendar } = useCalendar();
+  const router = useRouter();
+  const pathname = usePathname();
   const { activeProject } = useSoloMode();
   const { isRecording, recordingMode, setRecordingMode } = useRecordingState();
   const { currentMeeting } = useSidebar();
@@ -395,6 +400,41 @@ export function CommandPalette() {
                     </div>
                   </CommandItem>
                 )}
+
+                {calendarConfigured && (
+                  <CommandItem
+                    value="refresh calendar agenda"
+                    onSelect={() => {
+                      setOpen(false);
+                      void (async () => {
+                        const result = await refreshCalendar();
+                        if (!result) {
+                          toast.error('Could not refresh the calendar', {
+                            description: 'Check the calendar URL in Settings.',
+                          });
+                        } else {
+                          const n = result.todayCount;
+                          toast.success(`Calendar refreshed — ${n} ${n === 1 ? 'call' : 'calls'} today`);
+                        }
+                      })();
+                    }}
+                  >
+                    <RefreshCw />
+                    <span>Refresh calendar</span>
+                  </CommandItem>
+                )}
+
+                <CommandItem
+                  value="show today agenda calendar"
+                  onSelect={() => {
+                    setOpen(false);
+                    if (pathname !== '/') router.push('/');
+                    setTimeout(() => window.dispatchEvent(new CustomEvent('tandem:show-agenda')), 120);
+                  }}
+                >
+                  <CalendarDays />
+                  <span>Show today&apos;s agenda</span>
+                </CommandItem>
 
                 <CommandItem value="generate handoff claude code" onSelect={() => { void runHandoff(); setOpen(false); }}>
                   <FileText />

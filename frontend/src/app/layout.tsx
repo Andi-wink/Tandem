@@ -35,6 +35,7 @@ import { ThemeProvider } from 'next-themes'
 import { ComposeProviders } from '@/components/ComposeProviders'
 import { SoloModeProvider } from '@/contexts/SoloModeContext'
 import { CanvasProvider } from '@/contexts/CanvasContext'
+import { CalendarProvider } from '@/contexts/CalendarContext'
 import { CanvasVoiceListener } from '@/components/CanvasPanel/CanvasVoiceListener'
 import { CanvasHudGuard } from '@/components/CanvasPanel/CanvasHudGuard'
 import { WhiteboardPersistence } from '@/hooks/useWhiteboardPersistence'
@@ -149,6 +150,7 @@ export default function RootLayout({
           [RecordingStateProvider],
           [TranscriptProvider],
           [ConfigProvider],
+          [CalendarProvider],
           [OllamaDownloadProvider],
           [OnboardingProvider],
           [UpdateCheckProvider],

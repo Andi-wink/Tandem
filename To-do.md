@@ -2,6 +2,20 @@
 
 ## Open
 
+### Main-driver 4-iteration loop (2026-07-12) — IN PROGRESS
+Goal: make Tandem the daily main driver; headline feature = calendar integration (build on [research/proton-mail-calendar-integration/](research/proton-mail-calendar-integration/)).
+- [ ] I1 discovery: digest the existing Proton/Outlook calendar research + audit daily-driver gaps -> briefs
+- [x] I2 calendar foundation: read-only ICS (paste-a-URL, Outlook Publish preferred, Proton share-link supported), fetched CORS-free in Rust ([calendar_ics.rs](frontend/src-tauri/src/calendar_ics.rs)), parsed locally ([ics.ts](frontend/src/lib/ics.ts), 19 vitest cases incl. Windows-TZID + DAILY/WEEKLY RRULE), config in Rust SQLite ([migration](frontend/src-tauri/migrations/20260712000000_add_calendar_settings.sql)), Today agenda card on home ([TodayAgenda.tsx](frontend/src/components/TodayAgenda.tsx)), Calendar section in [PreferenceSettings](frontend/src/components/PreferenceSettings.tsx) with Test connection, 2 Ctrl+K commands. Gates green: cargo check + 7 new Rust tests, tsc, vitest 146/146, Playwright 29/29.
+- [ ] I3 calendar-driven routing: event -> client project (attendees/title feed projectRouter), one-click "start for this meeting", pre-call prep
+- [ ] I4 daily-driver polish + full verify (tsc/cargo/vitest/Playwright)
+
+#### I2 deferred (calendar foundation, 2026-07-12)
+- [ ] **Calendar -> routing pre-seed (I3 work):** feed matched event attendees/title into [projectRouter](frontend/src/services/projectRouter.ts) so a call auto-files under its client; seed the meeting name from the matched event; add a pre-call prep card. Not started this pass (I3 scope).
+- [ ] **MONTHLY/YEARLY RRULE** not expanded in [ics.ts](frontend/src/lib/ics.ts) — only DAILY/WEEKLY. A monthly recurring client call shows only its next base occurrence (surfaced as a warning in Settings Test-connection output). Add BYMONTHDAY/BYSETPOS expansion when needed.
+- [ ] **Two-way / write path (Graph or n8n):** creating/moving events, and any Outlook Graph or n8n Microsoft-Graph node, needs a one-time interactive OAuth consent by the user (agents cannot complete it). Deferred as the later OAuth-crossing track per [research/proton-mail-calendar-integration/01-ADDENDUM-n8n-docker-outlook.md](research/proton-mail-calendar-integration/01-ADDENDUM-n8n-docker-outlook.md).
+- [ ] **Proton staleness:** Proton share-link ICS feeds are provider-cached up to ~8h, so same-day changes can lag. Surfaced in Settings copy; no code fix possible (provider-side). Outlook Publish is the fresher feed.
+- [ ] **Retention / sidebar grouping** of past calendar days and "join from a past meeting" not built; agenda is today-only (yesterday..+7d window internally). Revisit if the user wants an upcoming-week view.
+
 ### UX friction 5-iteration loop (2026-07-10) — DONE (needs one manual runtime pass, see I5 deferred)
 North star: talk to Tandem like an OS; notes auto-route to the correct client project. Reported pain: the project/save-location modal costs several clicks per meeting.
 All four build iterations initially FAILED adversarial review; each got a fix pass that closed the blockers with verified gates (tsc clean, cargo clean, vitest 127/127, Playwright e2e 23/23).
@@ -89,6 +103,11 @@ drop a 12-35s chunk — likely the user-perceived word drops). Research report:
   floor: a 35s monologue still arrives as one block) and boundary artifacts.
   Needs a frontend partial/volatile rendering layer (TranscriptContext is
   append-only by sequence_id) + live-mic runtime testing.
+  **PLANNED 2026-07-12**: full 4-phase implementation plan in
+  [scribe-realtime-ws-plan.md](research/scribe-realtime-ws-plan.md) (Phase 0 API
+  spike + pricing gate, Phase 1 frontend partial layer, Phase 2 Rust WS session
+  engine behind a `scribe_v2_realtime` model setting, Phase 3 harness
+  measurement with keep-or-kill gates, Phase 4 manual runtime pass). Not started.
 - [ ] VAD-level mid-segment partial emit: silero holds a monologue as one 13-35s
   segment; no buffer knob can subdivide it. Needed if we stay on batch HTTP.
 - [ ] Consider min 5s instead of 4s for the CLOUD profile (QA: 6.21% @ 9.1s median

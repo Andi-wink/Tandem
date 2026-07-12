@@ -9,6 +9,8 @@ import AnalyticsConsentSwitch from "./AnalyticsConsentSwitch"
 import { useConfig, NotificationSettings } from "@/contexts/ConfigContext"
 import { useClaude, PANEL_NOTIFICATIONS_STORAGE_KEY } from "@/contexts/ClaudeContext"
 import { HANDOFF_ANONYMIZE_STORAGE_KEY, HANDOFF_PREF_SET_STORAGE_KEY } from "@/hooks/useHandoffExport"
+import { useCalendar } from "@/contexts/CalendarContext"
+import { parseIcs, eventsForToday } from "@/lib/ics"
 
 export function PreferenceSettings() {
   const {
@@ -22,6 +24,57 @@ export function PreferenceSettings() {
   const [apiKeyInput, setApiKeyInput] = useState(apiKey ?? '');
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
   const [apiKeySaved, setApiKeySaved] = useState(false);
+
+  // ── Calendar (read-only ICS) ──────────────────────────────────────────────
+  const { config: calendarConfig, saveConfig: saveCalendarConfig } = useCalendar();
+  const [calUrlInput, setCalUrlInput] = useState('');
+  const [calUrlVisible, setCalUrlVisible] = useState(false);
+  const [calInterval, setCalInterval] = useState(15);
+  const [calSaved, setCalSaved] = useState(false);
+  const [calTesting, setCalTesting] = useState(false);
+  const [calTestResult, setCalTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  // Hydrate the calendar inputs once the stored config loads.
+  useEffect(() => {
+    setCalUrlInput(calendarConfig.icsUrl ?? '');
+    setCalInterval(calendarConfig.refreshMinutes ?? 15);
+  }, [calendarConfig.icsUrl, calendarConfig.refreshMinutes]);
+
+  const handleTestCalendar = async () => {
+    const url = calUrlInput.trim();
+    if (!url) return;
+    setCalTesting(true);
+    setCalTestResult(null);
+    try {
+      // Test the TYPED url (not the saved one) so the user can validate before saving.
+      const ics = await invoke<string>('fetch_calendar_ics', { url });
+      const events = parseIcs(ics);
+      const today = eventsForToday(events, Date.now());
+      setCalTestResult({
+        ok: true,
+        message: `Connected — ${events.length} ${events.length === 1 ? 'event' : 'events'} found (${today.length} today).`,
+      });
+    } catch (e) {
+      // Never echo the URL. Give a three-part message.
+      const reason = typeof e === 'string' ? e : (e as Error)?.message || 'Unknown error';
+      setCalTestResult({
+        ok: false,
+        message: `Couldn't connect. Likely the URL is wrong, the calendar isn't published, or you're offline. Fix the link and try again. (${reason})`,
+      });
+    } finally {
+      setCalTesting(false);
+    }
+  };
+
+  const handleSaveCalendar = async () => {
+    const url = calUrlInput.trim();
+    try {
+      await saveCalendarConfig(url || null, calInterval);
+      setCalSaved(true);
+    } catch (e) {
+      setCalTestResult({ ok: false, message: `Could not save: ${typeof e === 'string' ? e : (e as Error)?.message}` });
+    }
+  };
 
   // Sync input when apiKey loads from backend
   useEffect(() => {
@@ -344,6 +397,87 @@ export function PreferenceSettings() {
             <a href="https://console.anthropic.com/" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
               console.anthropic.com
             </a>
+          </p>
+        </div>
+      </div>
+
+      {/* Calendar (read-only ICS) Section */}
+      <div className="bg-background rounded-lg border border-border p-6 shadow-sm">
+        <h3 className="text-lg font-semibold text-foreground mb-1">Calendar</h3>
+        <p className="text-sm text-muted-foreground mb-4">
+          Show today&apos;s calls on your home screen from a read-only calendar link. Fetched locally,
+          nothing leaves your machine. No sign-in required.
+        </p>
+        <div>
+          <label htmlFor="calendar-ics-url" className="block text-sm font-medium text-foreground mb-1">
+            Calendar link (ICS URL)
+          </label>
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <input
+                id="calendar-ics-url"
+                type={calUrlVisible ? 'text' : 'password'}
+                value={calUrlInput}
+                onChange={(e) => { setCalUrlInput(e.target.value); setCalSaved(false); setCalTestResult(null); }}
+                placeholder="https://…/calendar.ics  or  webcal://…"
+                className="w-full px-3 py-2 text-sm bg-background border border-border rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 pr-10"
+              />
+              <button
+                type="button"
+                onClick={() => setCalUrlVisible(!calUrlVisible)}
+                aria-label={calUrlVisible ? 'Hide calendar URL' : 'Show calendar URL'}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-muted-foreground"
+              >
+                {calUrlVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <button
+              onClick={handleSaveCalendar}
+              disabled={calUrlInput.trim() === (calendarConfig.icsUrl ?? '') && calInterval === calendarConfig.refreshMinutes}
+              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+            >
+              Save
+            </button>
+          </div>
+
+          <div className="mt-3 flex items-center gap-3">
+            <label htmlFor="calendar-interval" className="text-sm text-foreground">Refresh every</label>
+            <select
+              id="calendar-interval"
+              value={calInterval}
+              onChange={(e) => { setCalInterval(Number(e.target.value)); setCalSaved(false); }}
+              className="px-2 py-1.5 text-sm bg-background border border-border rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value={5}>5 minutes</option>
+              <option value={15}>15 minutes</option>
+              <option value={30}>30 minutes</option>
+              <option value={60}>60 minutes</option>
+            </select>
+            <button
+              type="button"
+              onClick={handleTestCalendar}
+              disabled={!calUrlInput.trim() || calTesting}
+              className="ml-auto px-3 py-1.5 text-sm font-medium border border-border rounded-md hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {calTesting ? 'Testing…' : 'Test connection'}
+            </button>
+          </div>
+
+          {calSaved && (
+            <p className="mt-2 text-xs text-green-600">Calendar link saved.</p>
+          )}
+          {calTestResult && (
+            <p className={`mt-2 text-xs ${calTestResult.ok ? 'text-green-600' : 'text-destructive'}`}>
+              {calTestResult.message}
+            </p>
+          )}
+
+          <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+            <strong className="font-medium text-foreground">Outlook</strong> (freshest): Settings → Calendar →
+            Shared calendars → Publish a calendar → copy the ICS link.{' '}
+            <strong className="font-medium text-foreground">Proton</strong>: share your calendar via link — supported,
+            but Proton caches the feed, so same-day changes can take several hours to appear.
+            Google secret-ICS links work too.
           </p>
         </div>
       </div>

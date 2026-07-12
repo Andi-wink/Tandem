@@ -9,7 +9,8 @@ use crate::{
         models::{MeetingModel, ProjectModel},
         repositories::{
             meeting::MeetingsRepository, project::ProjectRepository,
-            setting::SettingsRepository, transcript::TranscriptsRepository,
+            setting::{CalendarConfig, SettingsRepository},
+            transcript::TranscriptsRepository,
         },
     },
     onboarding::load_onboarding_status,
@@ -616,6 +617,42 @@ pub async fn api_get_api_key<R: Runtime>(
             Err(e.to_string())
         }
     }
+}
+
+#[tauri::command]
+pub async fn api_get_calendar_config<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+) -> Result<CalendarConfig, String> {
+    log_info!("api_get_calendar_config called (native)");
+    SettingsRepository::get_calendar_config(state.db_manager.pool())
+        .await
+        .map_err(|e| {
+            log_error!("Failed to get calendar config: {}", e);
+            e.to_string()
+        })
+}
+
+#[tauri::command]
+pub async fn api_save_calendar_config<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    ics_url: Option<String>,
+    refresh_minutes: i64,
+) -> Result<(), String> {
+    log_info!("api_save_calendar_config called (native)");
+    // Trim and treat an empty string as "no calendar" (clears it).
+    let trimmed = ics_url
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty());
+    // Clamp to a sane minimum so the poller never busy-loops.
+    let minutes = refresh_minutes.max(5);
+    SettingsRepository::save_calendar_config(state.db_manager.pool(), trimmed.as_deref(), minutes)
+        .await
+        .map_err(|e| {
+            log_error!("Failed to save calendar config: {}", e);
+            e.to_string()
+        })
 }
 
 #[tauri::command]

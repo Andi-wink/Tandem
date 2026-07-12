@@ -18,6 +18,7 @@ import { TimelineFilter, ScreenshotData } from '@/types';
 import { ScreenshotLightbox } from '@/components/ScreenshotLightbox';
 import { TranscriptChunks } from '@/components/TranscriptChunks';
 import { RegionSelectOverlay } from '@/components/RegionSelectOverlay';
+import { TodayAgenda } from '@/components/TodayAgenda';
 
 /**
  * TranscriptPanel Component
@@ -183,6 +184,8 @@ export function TranscriptPanel({
       <div className="pb-20">
         <div className="flex justify-center">
           <div className="w-2/3 max-w-[750px]">
+            {/* Today's agenda: only when idle (invisible-when-active during a call). */}
+            {!isRecording && <TodayAgenda />}
             <VirtualizedTranscriptView
               segments={segments}
               isRecording={isRecording}

@@ -22,6 +22,16 @@ pub struct SaveTranscriptConfigRequest {
     pub api_key: Option<String>,
 }
 
+/// Read-only calendar (ICS subscription) configuration.
+/// `ics_url` embeds a secret bearer token, so it lives in its own table.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct CalendarConfig {
+    #[serde(rename = "icsUrl")]
+    pub ics_url: Option<String>,
+    #[serde(rename = "refreshMinutes")]
+    pub refresh_minutes: i64,
+}
+
 pub struct SettingsRepository;
 
 // Transcript providers: localWhisper, deepgram, elevenLabs, groq, openai
@@ -347,6 +357,56 @@ impl SettingsRepository {
 
         Ok(())
     }
+
+    // ===== CALENDAR (ICS) CONFIG METHODS =====
+
+    /// Gets the read-only calendar configuration (ICS URL + refresh interval).
+    /// Returns a default (no URL, 15 min) when nothing is stored yet.
+    pub async fn get_calendar_config(
+        pool: &SqlitePool,
+    ) -> std::result::Result<CalendarConfig, sqlx::Error> {
+        use sqlx::Row;
+
+        let row = sqlx::query(
+            "SELECT ics_url, refresh_minutes FROM calendar_settings WHERE id = '1' LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?;
+
+        match row {
+            Some(record) => Ok(CalendarConfig {
+                ics_url: record.get("ics_url"),
+                refresh_minutes: record.get("refresh_minutes"),
+            }),
+            None => Ok(CalendarConfig {
+                ics_url: None,
+                refresh_minutes: 15,
+            }),
+        }
+    }
+
+    /// Saves the calendar configuration. An empty/None URL clears the calendar.
+    pub async fn save_calendar_config(
+        pool: &SqlitePool,
+        ics_url: Option<&str>,
+        refresh_minutes: i64,
+    ) -> std::result::Result<(), sqlx::Error> {
+        sqlx::query(
+            r#"
+            INSERT INTO calendar_settings (id, ics_url, refresh_minutes)
+            VALUES ('1', $1, $2)
+            ON CONFLICT(id) DO UPDATE SET
+                ics_url = excluded.ics_url,
+                refresh_minutes = excluded.refresh_minutes
+            "#,
+        )
+        .bind(ics_url)
+        .bind(refresh_minutes)
+        .execute(pool)
+        .await?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -609,6 +669,71 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(key.as_deref(), Some("custom-key"));
+    }
+
+    #[tokio::test]
+    async fn test_calendar_config_default_when_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let config = SettingsRepository::get_calendar_config(&pool)
+            .await
+            .unwrap();
+        assert!(config.ics_url.is_none());
+        assert_eq!(config.refresh_minutes, 15);
+    }
+
+    #[tokio::test]
+    async fn test_save_and_get_calendar_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        SettingsRepository::save_calendar_config(
+            &pool,
+            Some("https://example.com/secret/cal.ics"),
+            30,
+        )
+        .await
+        .unwrap();
+
+        let config = SettingsRepository::get_calendar_config(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            config.ics_url.as_deref(),
+            Some("https://example.com/secret/cal.ics")
+        );
+        assert_eq!(config.refresh_minutes, 30);
+    }
+
+    #[tokio::test]
+    async fn test_calendar_config_upsert_and_clear() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        SettingsRepository::save_calendar_config(&pool, Some("https://a.example/1.ics"), 15)
+            .await
+            .unwrap();
+        // Upsert: change URL + interval
+        SettingsRepository::save_calendar_config(&pool, Some("https://b.example/2.ics"), 60)
+            .await
+            .unwrap();
+
+        let config = SettingsRepository::get_calendar_config(&pool)
+            .await
+            .unwrap();
+        assert_eq!(config.ics_url.as_deref(), Some("https://b.example/2.ics"));
+        assert_eq!(config.refresh_minutes, 60);
+
+        // Clearing the URL (None) leaves the row but nulls the URL
+        SettingsRepository::save_calendar_config(&pool, None, 15)
+            .await
+            .unwrap();
+        let config = SettingsRepository::get_calendar_config(&pool)
+            .await
+            .unwrap();
+        assert!(config.ics_url.is_none());
+        assert_eq!(config.refresh_minutes, 15);
     }
 
     #[tokio::test]

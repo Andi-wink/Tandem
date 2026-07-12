@@ -134,6 +134,41 @@ const TAURI_MOCK_SCRIPT = `
         case 'get_meeting_folder_path':
           return 'C:\\\\Users\\\\test\\\\meetings';
 
+        // ---- Calendar (read-only ICS) ----
+        case 'api_get_calendar_config':
+          return { icsUrl: 'https://example.com/secret/cal.ics', refreshMinutes: 15 };
+        case 'api_save_calendar_config':
+          return null;
+        case 'fetch_calendar_ics': {
+          // Build a valid ICS with one event TODAY (14:00-14:30 UTC, Zoom link) and one TOMORROW,
+          // so agenda tests always have a deterministic "today" row.
+          var _pad = function(n) { return String(n).padStart(2, '0'); };
+          var _now = new Date();
+          var _today = _now.getUTCFullYear() + _pad(_now.getUTCMonth() + 1) + _pad(_now.getUTCDate());
+          var _tmr = new Date(_now.getTime() + 24 * 60 * 60 * 1000);
+          var _tomorrow = _tmr.getUTCFullYear() + _pad(_tmr.getUTCMonth() + 1) + _pad(_tmr.getUTCDate());
+          return [
+            'BEGIN:VCALENDAR',
+            'VERSION:2.0',
+            'PRODID:-//Tandem Test//EN',
+            'BEGIN:VEVENT',
+            'UID:today-1',
+            'SUMMARY:Acme discovery call',
+            'DTSTART:' + _today + 'T140000Z',
+            'DTEND:' + _today + 'T143000Z',
+            'LOCATION:https://us02web.zoom.us/j/8412345678?pwd=abcd',
+            'ATTENDEE;CN=Jane Client:mailto:jane@acme.com',
+            'END:VEVENT',
+            'BEGIN:VEVENT',
+            'UID:tmr-1',
+            'SUMMARY:Beta strategy sync',
+            'DTSTART:' + _tomorrow + 'T100000Z',
+            'DTEND:' + _tomorrow + 'T103000Z',
+            'END:VEVENT',
+            'END:VCALENDAR',
+          ].join('\\n');
+        }
+
         // ---- Audio devices ----
         case 'get_audio_devices':
           return [

@@ -14,14 +14,14 @@ test.describe('Sidebar Navigation', () => {
     await expandBtn.click();
 
     // After expanding, "Home" text should be visible in sidebar
-    await expect(tauriPage.getByText('Home')).toBeVisible({ timeout: 5_000 });
+    await expect(tauriPage.getByText('Home', { exact: true })).toBeVisible({ timeout: 5_000 });
   });
 
   test('expanded sidebar shows meeting list', async ({ tauriPage }) => {
     // Expand sidebar
     const expandBtn = tauriPage.locator('button[style*="translateX(50%)"]').first();
     await expandBtn.click();
-    await expect(tauriPage.getByText('Home')).toBeVisible({ timeout: 5_000 });
+    await expect(tauriPage.getByText('Home', { exact: true })).toBeVisible({ timeout: 5_000 });
 
     // Mock meetings should appear
     await expect(tauriPage.getByText('Team Standup 2026-02-23')).toBeVisible({ timeout: 5_000 });
@@ -33,10 +33,10 @@ test.describe('Sidebar Navigation', () => {
     // Expand sidebar
     const expandBtn = tauriPage.locator('button[style*="translateX(50%)"]').first();
     await expandBtn.click();
-    await expect(tauriPage.getByText('Home')).toBeVisible({ timeout: 5_000 });
+    await expect(tauriPage.getByText('Home', { exact: true })).toBeVisible({ timeout: 5_000 });
 
     // Click Settings in sidebar footer
-    await tauriPage.getByText('Settings').click();
+    await tauriPage.getByText('Settings', { exact: true }).click();
 
     // Should navigate to settings page
     await expect(tauriPage).toHaveURL(/.*settings/);
@@ -52,7 +52,7 @@ test.describe('Sidebar Navigation', () => {
     // Expand sidebar and click Home
     const expandBtn = tauriPage.locator('button[style*="translateX(50%)"]').first();
     await expandBtn.click();
-    await tauriPage.getByText('Home').click();
+    await tauriPage.getByText('Home', { exact: true }).click();
 
     // Should be back on home page
     await expect(tauriPage).toHaveURL(/localhost:3118\/?$/);
@@ -70,12 +70,12 @@ test.describe('Sidebar Navigation', () => {
     // Expand
     const toggleBtn = tauriPage.locator('button[style*="translateX(50%)"]').first();
     await toggleBtn.click();
-    await expect(tauriPage.getByText('Home')).toBeVisible({ timeout: 5_000 });
+    await expect(tauriPage.getByText('Home', { exact: true })).toBeVisible({ timeout: 5_000 });
 
     // Collapse
     await toggleBtn.click();
 
     // "Home" text should disappear (icons only in collapsed mode)
-    await expect(tauriPage.getByText('Home')).not.toBeVisible({ timeout: 5_000 });
+    await expect(tauriPage.getByText('Home', { exact: true })).not.toBeVisible({ timeout: 5_000 });
   });
 });
