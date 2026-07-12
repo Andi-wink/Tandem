@@ -2,12 +2,13 @@
 
 ## Open
 
-### Main-driver 4-iteration loop (2026-07-12) — IN PROGRESS
+### Main-driver 4-iteration loop (2026-07-12) — PAUSED AFTER I2 (user: plan only for now)
 Goal: make Tandem the daily main driver; headline feature = calendar integration (build on [research/proton-mail-calendar-integration/](research/proton-mail-calendar-integration/)).
-- [ ] I1 discovery: digest the existing Proton/Outlook calendar research + audit daily-driver gaps -> briefs
+I1+I2 done and committed (85932e8). I3+I4 are PLANNED, NOT BUILT — execution-ready plan in [research/main-driver-I3-I4-plan.md](research/main-driver-I3-I4-plan.md) (workflow wf_ea43eed1-40d journal caches I1/I2 for resume).
+- [x] I1 discovery: digest the existing Proton/Outlook calendar research + audit daily-driver gaps -> briefs
 - [x] I2 calendar foundation: read-only ICS (paste-a-URL, Outlook Publish preferred, Proton share-link supported), fetched CORS-free in Rust ([calendar_ics.rs](frontend/src-tauri/src/calendar_ics.rs)), parsed locally ([ics.ts](frontend/src/lib/ics.ts), 19 vitest cases incl. Windows-TZID + DAILY/WEEKLY RRULE), config in Rust SQLite ([migration](frontend/src-tauri/migrations/20260712000000_add_calendar_settings.sql)), Today agenda card on home ([TodayAgenda.tsx](frontend/src/components/TodayAgenda.tsx)), Calendar section in [PreferenceSettings](frontend/src/components/PreferenceSettings.tsx) with Test connection, 2 Ctrl+K commands. Gates green: cargo check + 7 new Rust tests, tsc, vitest 146/146, Playwright 29/29.
-- [ ] I3 calendar-driven routing: event -> client project (attendees/title feed projectRouter), one-click "start for this meeting", pre-call prep
-- [ ] I4 daily-driver polish + full verify (tsc/cargo/vitest/Playwright)
+- [ ] I3 calendar-driven routing (PLANNED ONLY): event -> client project, one-click "start for this meeting", pre-call prep — see plan doc; matcher + seed libs already built+tested (unwired)
+- [ ] I4 daily-driver polish + full verify (PLANNED ONLY): Alt+Shift+D global record hotkey, recording-stop-driven auto-summary (tray-stop included), action-items checklist + handoff, stretch: autostart plugin
 
 #### I2 deferred (calendar foundation, 2026-07-12)
 - [ ] **Calendar -> routing pre-seed (I3 work):** feed matched event attendees/title into [projectRouter](frontend/src/services/projectRouter.ts) so a call auto-files under its client; seed the meeting name from the matched event; add a pre-call prep card. Not started this pass (I3 scope).
