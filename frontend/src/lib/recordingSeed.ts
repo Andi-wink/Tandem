@@ -26,6 +26,8 @@ export interface RecordingSeed {
   projectName?: string;
   /** Human-readable match reason for the "Filed under X — matched …" toast. */
   signal?: string;
+  /** True when the user explicitly clicked a matched row (R1: explicit consent, never re-ask). */
+  userConfirmed?: boolean;
   /** Epoch ms the seed was written (drives the TTL). */
   createdAt: number;
 }

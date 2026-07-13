@@ -87,13 +87,15 @@ async fn start_recording<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
     meeting_name: Option<String>,
+    meeting_base_dir: Option<String>,
 ) -> Result<(), String> {
     log_info!("🔥 CALLED start_recording with meeting: {:?}", meeting_name);
     log_info!(
-        "📋 Backend received parameters - mic: {:?}, system: {:?}, meeting: {:?}",
+        "📋 Backend received parameters - mic: {:?}, system: {:?}, meeting: {:?}, base_dir: {:?}",
         mic_device_name,
         system_device_name,
-        meeting_name
+        meeting_name,
+        meeting_base_dir
     );
 
     if is_recording().await {
@@ -106,6 +108,7 @@ async fn start_recording<R: Runtime>(
         mic_device_name,
         system_device_name,
         meeting_name.clone(),
+        meeting_base_dir,
     )
     .await
     {
@@ -292,6 +295,116 @@ async fn delete_file(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Recursively copy a directory tree from `src` into `dst` (creating `dst`).
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            if let Some(parent) = to.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Relocate a saved meeting's folder into `dest_parent_dir`, preserving its leaf name, and update
+/// the SQLite `folder_path` row (R3 deferred filing). Plain Rust command because the plugin-fs ACL
+/// is $APPDATA-scoped. Refuses to move a folder the live recording is still writing.
+///
+/// Returns the new folder path on success. The move is a rename (fast path) with a
+/// copy-then-delete fallback for cross-drive moves; on any copy failure the source is left
+/// authoritative and the DB row is NOT updated.
+#[tauri::command]
+async fn relocate_meeting_folder(
+    state: tauri::State<'_, crate::state::AppState>,
+    meeting_id: String,
+    dest_parent_dir: String,
+) -> Result<String, String> {
+    use crate::database::repositories::meeting::MeetingsRepository;
+
+    let pool = state.db_manager.pool();
+    let meeting = MeetingsRepository::get_meeting_metadata(pool, &meeting_id)
+        .await
+        .map_err(|e| format!("Could not load the meeting: {}", e))?
+        .ok_or_else(|| "That meeting no longer exists.".to_string())?;
+
+    let src_str = meeting.folder_path.ok_or_else(|| {
+        "This meeting has no folder on disk yet, so there is nothing to move. It will file once it finishes saving.".to_string()
+    })?;
+    let src = std::path::Path::new(&src_str);
+
+    // Never move a folder the recording pipeline is still writing into.
+    if audio::recording_commands::is_folder_recording_active(&src_str) {
+        return Err(
+            "This recording is still writing to its folder. Filing will complete automatically once the recording finishes saving.".to_string(),
+        );
+    }
+
+    if !src.exists() {
+        return Err(format!(
+            "The recording folder was not found on disk ({}). It may have been moved already; nothing was changed.",
+            src_str
+        ));
+    }
+
+    let leaf = src
+        .file_name()
+        .ok_or_else(|| "Could not determine the recording folder name.".to_string())?;
+
+    let dest_parent = std::path::Path::new(&dest_parent_dir);
+    std::fs::create_dir_all(dest_parent)
+        .map_err(|e| format!("Could not create the destination folder ({}): {}. The files stay where they are.", dest_parent_dir, e))?;
+
+    // Pick a non-colliding destination: <parent>/<leaf>, then "<leaf> (2)", "(3)", …
+    let mut dest = dest_parent.join(leaf);
+    if dest.exists() {
+        let leaf_str = leaf.to_string_lossy().to_string();
+        let mut n = 2;
+        loop {
+            let candidate = dest_parent.join(format!("{} ({})", leaf_str, n));
+            if !candidate.exists() {
+                dest = candidate;
+                break;
+            }
+            n += 1;
+        }
+    }
+
+    // Same-folder no-op guard.
+    if dest == src {
+        return Ok(src_str);
+    }
+
+    // Fast path: rename. Falls back to recursive copy + delete for cross-drive moves.
+    if std::fs::rename(src, &dest).is_err() {
+        copy_dir_recursive(src, &dest).map_err(|e| {
+            // Copy failed partway: remove the partial dest, leave the source authoritative.
+            let _ = std::fs::remove_dir_all(&dest);
+            format!("Could not move the recording files: {}. The files stay in the original folder.", e)
+        })?;
+        // Copy succeeded — now remove the source. If this fails, the move still succeeded (dest is
+        // complete); the stale source is harmless.
+        if let Err(e) = std::fs::remove_dir_all(src) {
+            log::warn!("Relocated meeting copied to {} but source cleanup failed: {}", dest.display(), e);
+        }
+    }
+
+    let dest_str = dest.to_string_lossy().to_string();
+    MeetingsRepository::update_meeting_folder_path(pool, &meeting_id, &dest_str)
+        .await
+        .map_err(|e| format!("Files moved to {} but the database update failed: {}. Reopen the meeting to refresh.", dest_str, e))?;
+
+    log_info!("Relocated meeting {} folder -> {}", meeting_id, dest_str);
+    Ok(dest_str)
+}
+
 /// Write a base64-encoded payload to a binary file (e.g. a PNG export of the whiteboard),
 /// creating parent directories as needed. Accepts a bare base64 string or a data URL.
 #[tauri::command]
@@ -446,7 +559,7 @@ async fn start_recording_with_devices<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
 ) -> Result<(), String> {
-    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None).await
+    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None, None).await
 }
 
 #[tauri::command]
@@ -455,9 +568,10 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
     meeting_name: Option<String>,
+    meeting_base_dir: Option<String>,
 ) -> Result<(), String> {
-    log_info!("🚀 CALLED start_recording_with_devices_and_meeting - Mic: {:?}, System: {:?}, Meeting: {:?}",
-             mic_device_name, system_device_name, meeting_name);
+    log_info!("🚀 CALLED start_recording_with_devices_and_meeting - Mic: {:?}, System: {:?}, Meeting: {:?}, base_dir: {:?}",
+             mic_device_name, system_device_name, meeting_name, meeting_base_dir);
 
     // Clone meeting_name for notification use later
     let meeting_name_for_notification = meeting_name.clone();
@@ -469,7 +583,7 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
                 "No devices specified, starting with defaults and meeting: {:?}",
                 meeting_name
             );
-            audio::recording_commands::start_recording_with_meeting_name(app.clone(), meeting_name)
+            audio::recording_commands::start_recording_with_meeting_name(app.clone(), meeting_name, meeting_base_dir)
                 .await
         }
         _ => {
@@ -484,6 +598,7 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
                 mic_device_name,
                 system_device_name,
                 meeting_name,
+                meeting_base_dir,
             )
             .await
         }
@@ -1007,6 +1122,12 @@ pub fn run() {
             api::project_import_scanned,
             api::project_scan_directory,
             api::project_pick_directory,
+            // Client-folder discovery + clients-root setting (R2)
+            api::get_clients_root,
+            api::set_clients_root,
+            api::list_client_folders,
+            // Deferred meeting-folder relocation (R3)
+            relocate_meeting_folder,
             // Summary commands
             summary::api_process_transcript,
             summary::api_get_summary,

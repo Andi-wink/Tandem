@@ -8,11 +8,16 @@
  * polls the Rust `fetch_calendar_ics` command on the stored interval.
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { CalendarDays, RefreshCw, Video, ExternalLink } from 'lucide-react';
+import { CalendarDays, RefreshCw, Video, ExternalLink, Mic } from 'lucide-react';
 import { useCalendar } from '@/contexts/CalendarContext';
+import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import type { CalendarEvent } from '@/lib/ics';
+import { Project } from '@/services/projectService';
+import { getMatchPool } from '@/services/clientFolderDiscovery';
+import { rankEventProjectCandidates, type EventMatchResult } from '@/services/calendarEventMatcher';
+import { startRecordingForEvent } from '@/lib/startFromEvent';
 
 function fmtTime(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
@@ -28,7 +33,46 @@ function fmtAgo(ms: number | null): string | null {
   return `${hrs}h ago`;
 }
 
-function AgendaRow({ ev, now }: { ev: CalendarEvent; now: number }) {
+/** A short "matched X" / "X or Y?" chip summarizing the routing decision for a row. */
+function MatchChip({ match }: { match: EventMatchResult }) {
+  if (match.confidence === 'strong') {
+    const c = match.candidates[0];
+    return (
+      <span
+        data-testid="agenda-match"
+        title={`Matched ${c.signal}`}
+        className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+      >
+        Files under {c.project.name}
+      </span>
+    );
+  }
+  if (match.confidence === 'ambiguous') {
+    const names = match.candidates.slice(0, 2).map((c) => c.project.name).join(' or ');
+    return (
+      <span
+        data-testid="agenda-ambiguous"
+        title="Tandem will ask which folder when you start"
+        className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+      >
+        {names}?
+      </span>
+    );
+  }
+  return null;
+}
+
+function AgendaRow({
+  ev,
+  now,
+  match,
+  onRecord,
+}: {
+  ev: CalendarEvent;
+  now: number;
+  match?: EventMatchResult;
+  onRecord: (ev: CalendarEvent, match?: EventMatchResult) => void;
+}) {
   const inProgress = ev.startMs <= now && ev.endMs > now;
   return (
     <div
@@ -41,11 +85,26 @@ function AgendaRow({ ev, now }: { ev: CalendarEvent; now: number }) {
         {ev.allDay ? 'All day' : `${fmtTime(ev.startMs)}–${fmtTime(ev.endMs)}`}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium text-foreground">{ev.summary}</div>
+        <div className="flex items-center gap-2">
+          <span className="truncate text-sm font-medium text-foreground">{ev.summary}</span>
+          {match && match.confidence !== 'none' && <MatchChip match={match} />}
+        </div>
         {ev.location && !ev.joinUrl && (
           <div className="truncate text-xs text-muted-foreground">{ev.location}</div>
         )}
       </div>
+      {!ev.allDay && (
+        <button
+          type="button"
+          data-testid="agenda-record"
+          aria-label={`Start recording for ${ev.summary}`}
+          onClick={() => onRecord(ev, match)}
+          className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+        >
+          <Mic className="h-3.5 w-3.5" />
+          Record
+        </button>
+      )}
       {ev.joinUrl && (
         <a
           href={ev.joinUrl}
@@ -65,10 +124,58 @@ export function TodayAgenda() {
   const {
     todayEvents, configured, isRefreshing, error, lastRefreshedMs, refresh,
   } = useCalendar();
+  const { meetings } = useSidebar();
 
   const rootRef = useRef<HTMLDivElement>(null);
   const [highlight, setHighlight] = useState(false);
   const now = Date.now();
+
+  // Match pool = registered projects + discovered client folders (R2). Loaded once; refreshed when
+  // the set of events changes (a new day / calendar refresh).
+  const [matchPool, setMatchPool] = useState<Project[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    getMatchPool().then(({ pool }) => { if (!cancelled) setMatchPool(pool); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [todayEvents.length]);
+
+  // Per-event routing decision (strong / ambiguous / none).
+  const matches = useMemo(() => {
+    const m = new Map<string, EventMatchResult>();
+    if (matchPool.length === 0) return m;
+    for (const ev of todayEvents) {
+      m.set(`${ev.uid}-${ev.startMs}`, rankEventProjectCandidates(ev, matchPool));
+    }
+    return m;
+  }, [todayEvents, matchPool]);
+
+  // Prep line: the first matched, still-relevant call and that client's recent meetings.
+  const prep = useMemo(() => {
+    for (const ev of todayEvents) {
+      if (ev.allDay || ev.endMs <= now) continue;
+      const match = matches.get(`${ev.uid}-${ev.startMs}`);
+      if (!match || match.confidence === 'none') continue;
+      const client = match.candidates[0]?.project;
+      if (!client) continue;
+      const nameLower = client.name.toLowerCase();
+      const recent = meetings
+        .filter((mt) => mt.title && mt.title.toLowerCase().includes(nameLower))
+        .slice(0, 3);
+      if (recent.length === 0) return null;
+      return { client, evKey: `${ev.uid}-${ev.startMs}`, recent };
+    }
+    return null;
+  }, [todayEvents, matches, meetings, now]);
+
+  const handleRecord = (ev: CalendarEvent, match?: EventMatchResult) => {
+    // Clicking a row that shows a strong-match chip is explicit consent (R1: never re-ask).
+    const confirmedProject =
+      match?.confidence === 'strong' ? match.candidates[0].project : undefined;
+    void startRecordingForEvent(ev, {
+      confirmedProject,
+      confirmedSignal: match?.candidates[0]?.signal,
+    });
+  };
 
   // Palette "Show today's agenda" command scrolls to and briefly highlights the card.
   useEffect(() => {
@@ -135,9 +242,28 @@ export function TodayAgenda() {
         <p className="py-2 text-sm text-muted-foreground">No calls scheduled today.</p>
       ) : (
         <div className="flex flex-col gap-0.5">
-          {todayEvents.map((ev) => (
-            <AgendaRow key={`${ev.uid}-${ev.startMs}`} ev={ev} now={now} />
-          ))}
+          {todayEvents.map((ev) => {
+            const key = `${ev.uid}-${ev.startMs}`;
+            return (
+              <React.Fragment key={key}>
+                <AgendaRow ev={ev} now={now} match={matches.get(key)} onRecord={handleRecord} />
+                {prep && prep.evKey === key && (
+                  <div
+                    data-testid="agenda-prep"
+                    className="ml-24 pl-3 pb-1 text-xs text-muted-foreground"
+                  >
+                    Recent with {prep.client.name}:{' '}
+                    {prep.recent.map((mt, i) => (
+                      <span key={mt.id}>
+                        {i > 0 ? ', ' : ''}
+                        <span className="text-foreground">{mt.title}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </React.Fragment>
+            );
+          })}
           <div className="mt-2 flex items-center justify-end">
             <Link
               href="/settings"

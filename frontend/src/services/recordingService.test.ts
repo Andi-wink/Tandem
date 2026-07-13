@@ -49,6 +49,7 @@ describe('RecordingService', () => {
         mic_device_name: 'Mic 1',
         system_device_name: 'Speaker 1',
         meeting_name: 'Team Standup',
+        meeting_base_dir: null,
       });
     });
 
@@ -60,6 +61,19 @@ describe('RecordingService', () => {
         mic_device_name: null,
         system_device_name: null,
         meeting_name: 'Meeting',
+        meeting_base_dir: null,
+      });
+    });
+
+    it('passes the meeting base dir through when provided (R3)', async () => {
+      mockInvoke.mockResolvedValue(undefined);
+      await service.startRecordingWithDevices(null, null, 'Acme call', 'D:/clients/Acme/.tandem');
+
+      expect(mockInvoke).toHaveBeenCalledWith('start_recording_with_devices_and_meeting', {
+        mic_device_name: null,
+        system_device_name: null,
+        meeting_name: 'Acme call',
+        meeting_base_dir: 'D:/clients/Acme/.tandem',
       });
     });
   });

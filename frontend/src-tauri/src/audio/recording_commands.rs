@@ -165,13 +165,16 @@ async fn resolve_flush_profile<R: Runtime>(app: &AppHandle<R>) -> super::pipelin
 
 /// Start recording with default devices
 pub async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    start_recording_with_meeting_name(app, None).await
+    start_recording_with_meeting_name(app, None, None).await
 }
 
-/// Start recording with default devices and optional meeting name
+/// Start recording with default devices and optional meeting name.
+/// `meeting_base_dir` (R3): when Some, the meeting folder is created DATE-LED directly under this
+/// directory (a known project's `.tandem`) instead of the platform default recordings folder.
 pub async fn start_recording_with_meeting_name<R: Runtime>(
     app: AppHandle<R>,
     meeting_name: Option<String>,
+    meeting_base_dir: Option<String>,
 ) -> Result<(), String> {
     info!(
         "Starting recording with default devices, meeting: {:?}",
@@ -322,6 +325,11 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     });
     manager.set_meeting_name(Some(effective_meeting_name));
 
+    // R3: file directly under the seeded project's .tandem if provided.
+    if let Some(base) = meeting_base_dir.as_ref() {
+        manager.set_base_folder_override(Some(std::path::PathBuf::from(base)));
+    }
+
     // Set up error callback
     let app_for_error = app.clone();
     manager.set_error_callback(move |error| {
@@ -419,15 +427,17 @@ pub async fn start_recording_with_devices<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
 ) -> Result<(), String> {
-    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None).await
+    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None, None).await
 }
 
-/// Start recording with specific devices and optional meeting name
+/// Start recording with specific devices and optional meeting name.
+/// `meeting_base_dir` (R3): see `start_recording_with_meeting_name`.
 pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     app: AppHandle<R>,
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
     meeting_name: Option<String>,
+    meeting_base_dir: Option<String>,
 ) -> Result<(), String> {
     info!(
         "Starting recording with specific devices: mic={:?}, system={:?}, meeting={:?}",
@@ -502,6 +512,11 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         )
     });
     manager.set_meeting_name(Some(effective_meeting_name));
+
+    // R3: file directly under the seeded project's .tandem if provided.
+    if let Some(base) = meeting_base_dir.as_ref() {
+        manager.set_base_folder_override(Some(std::path::PathBuf::from(base)));
+    }
 
     // Set up error callback
     let app_for_error = app.clone();
@@ -1369,6 +1384,21 @@ pub fn get_recording_elapsed_secs() -> Option<f64> {
 pub fn get_current_meeting_folder() -> Option<std::path::PathBuf> {
     let manager_guard = RECORDING_MANAGER.try_lock().ok()?;
     manager_guard.as_ref()?.get_meeting_folder()
+}
+
+/// True when `path` is (a normalized match of) the folder the live recording is writing into.
+/// Used by the relocate command to hard-refuse moving a folder while the pipeline writes it (R3).
+pub fn is_folder_recording_active(path: &str) -> bool {
+    fn norm(p: &std::path::Path) -> String {
+        p.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_lowercase()
+    }
+    if !IS_RECORDING.load(Ordering::SeqCst) {
+        return false;
+    }
+    match get_current_meeting_folder() {
+        Some(active) => norm(&active) == norm(std::path::Path::new(path)),
+        None => false,
+    }
 }
 
 /// Get the base recordings directory (parent of per-meeting folders).

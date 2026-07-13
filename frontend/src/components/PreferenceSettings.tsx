@@ -76,6 +76,32 @@ export function PreferenceSettings() {
     }
   };
 
+  // ── Clients folder (R2): direct subfolders are offered as filing candidates for calls. ──
+  const [clientsRoot, setClientsRoot] = useState('');
+  const [clientsRootSaved, setClientsRootSaved] = useState(false);
+  useEffect(() => {
+    invoke<string>('get_clients_root').then(setClientsRoot).catch(() => {});
+  }, []);
+  const handleSaveClientsRoot = async () => {
+    try {
+      await invoke('set_clients_root', { path: clientsRoot.trim() || null });
+      // Re-read the effective value (empty falls back to the default).
+      const effective = await invoke<string>('get_clients_root');
+      setClientsRoot(effective);
+      setClientsRootSaved(true);
+    } catch {
+      /* non-fatal — leave the input as-is */
+    }
+  };
+  const handleBrowseClientsRoot = async () => {
+    try {
+      const dir = await invoke<string | null>('project_pick_directory', { startingDir: clientsRoot || null });
+      if (dir) { setClientsRoot(dir); setClientsRootSaved(false); }
+    } catch {
+      /* dialog cancelled */
+    }
+  };
+
   // Sync input when apiKey loads from backend
   useEffect(() => {
     if (apiKey && !apiKeyInput) setApiKeyInput(apiKey);
@@ -479,6 +505,42 @@ export function PreferenceSettings() {
             but Proton caches the feed, so same-day changes can take several hours to appear.
             Google secret-ICS links work too.
           </p>
+        </div>
+
+        {/* Clients folder (R2): discovered subfolders become filing candidates for calls. */}
+        <div className="mt-6 border-t border-border pt-6">
+          <label htmlFor="clients-root" className="block text-sm font-medium text-foreground mb-1">
+            Clients folder
+          </label>
+          <div className="flex gap-2">
+            <input
+              id="clients-root"
+              type="text"
+              value={clientsRoot}
+              onChange={(e) => { setClientsRoot(e.target.value); setClientsRootSaved(false); }}
+              placeholder="D:/Dev-projects/Client_projects"
+              className="flex-1 px-3 py-2 text-sm bg-background border border-border rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+            />
+            <button
+              type="button"
+              onClick={handleBrowseClientsRoot}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium border border-border rounded-md hover:bg-muted focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <FolderOpen className="w-4 h-4" />
+              Browse
+            </button>
+            <button
+              onClick={handleSaveClientsRoot}
+              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+            >
+              Save
+            </button>
+          </div>
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+            Direct subfolders are offered as filing candidates for calls, even when they are not
+            registered as projects.
+          </p>
+          {clientsRootSaved && <p className="mt-2 text-xs text-green-600">Clients folder saved.</p>}
         </div>
       </div>
     </div>

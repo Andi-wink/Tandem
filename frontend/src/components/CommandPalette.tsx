@@ -25,6 +25,8 @@ import { ProjectPicker, ProjectPickerSelection } from '@/components/ProjectPicke
 import { useClaude } from '@/contexts/ClaudeContext';
 import { useCanvas } from '@/contexts/CanvasContext';
 import { useCalendar } from '@/contexts/CalendarContext';
+import { findEventNear, findUpcomingEvent } from '@/services/calendarEventMatcher';
+import { startRecordingForEvent } from '@/lib/startFromEvent';
 import { useSoloMode } from '@/contexts/SoloModeContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
@@ -57,7 +59,7 @@ export function CommandPalette() {
     isPanelOpen, openPanel, closePanel, meetingId, meetingTitle,
   } = useClaude();
   const { canvasVisible, hideCanvas, clearCanvas } = useCanvas();
-  const { configured: calendarConfigured, refresh: refreshCalendar } = useCalendar();
+  const { configured: calendarConfigured, refresh: refreshCalendar, events: calendarEvents } = useCalendar();
   const router = useRouter();
   const pathname = usePathname();
   const { activeProject } = useSoloMode();
@@ -325,6 +327,23 @@ export function CommandPalette() {
                     <span>Start recording</span>
                   </CommandItem>
                 )}
+                {!isRecording && calendarConfigured && (() => {
+                  const ev = findEventNear(calendarEvents, Date.now())
+                    ?? findUpcomingEvent(calendarEvents, Date.now(), 60 * 60_000);
+                  if (!ev) return null;
+                  return (
+                    <CommandItem
+                      value={`start recording for event ${ev.summary}`}
+                      onSelect={() => { void startRecordingForEvent(ev); setOpen(false); }}
+                    >
+                      <CalendarDays />
+                      <div className="flex min-w-0 flex-col">
+                        <span className="truncate">Start recording for “{ev.summary}”</span>
+                        <span className="truncate text-xs text-muted-foreground">From your calendar</span>
+                      </div>
+                    </CommandItem>
+                  );
+                })()}
                 {isRecording && (
                   <CommandItem
                     value="stop recording"

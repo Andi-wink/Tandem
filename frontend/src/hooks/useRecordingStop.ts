@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
+import { peekPendingRelocation, clearPendingRelocation } from '@/lib/pendingRelocation';
+import { normalizeDir } from '@/lib/projectDirHistory';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
@@ -291,6 +294,107 @@ export function useRecordingStop(
           // Clean up IndexedDB meeting ID (redundant with markMeetingAsSaved cleanup, but ensures cleanup)
           sessionStorage.removeItem('indexeddb_current_meeting_id');
 
+          // R3: deferred relocation. If the call was filed to a project mid-recording, its folder
+          // could NOT be moved while the pipeline was writing. Now that the meeting is saved (audio
+          // merged into audio.mp4, transcripts persisted) and the handoff has settled (HANDOFF.md
+          // written), physically move the folder into <project>/.tandem and update the DB row.
+          // Ownership token for THIS recording session (stamped at recording start in page.tsx).
+          const currentToken = (() => {
+            try { return sessionStorage.getItem('tandem.currentRecordingToken'); } catch { return null; }
+          })();
+
+          const pending = peekPendingRelocation();
+          // Honor a deferred relocation ONLY if THIS session queued it. A stale entry from a
+          // crashed/failed prior session (token mismatch, or no current token) must never file this
+          // unrelated meeting — clear it and move on. This is the R3 "wrong folder" guard.
+          const ownedPending =
+            pending && currentToken && pending.meetingId === currentToken ? pending : null;
+          if (pending && !ownedPending) {
+            clearPendingRelocation();
+          }
+          if (ownedPending && meetingId) {
+            const originalParent = (() => {
+              if (!folderPath) return null;
+              const norm = folderPath.replace(/[\\/]+$/, '');
+              const idx = Math.max(norm.lastIndexOf('/'), norm.lastIndexOf('\\'));
+              return idx > 0 ? norm.slice(0, idx) : null;
+            })();
+            void (async () => {
+              try { if (handoffPromise) await handoffPromise; } catch { /* proceed regardless */ }
+              try {
+                await invoke<string>('relocate_meeting_folder', {
+                  meetingId,
+                  destParentDir: ownedPending.toProjectPath,
+                });
+                clearPendingRelocation();
+                await refetchMeetings();
+                toast.success(`Saved into ${ownedPending.projectName}/.tandem`, {
+                  description: 'Recording files filed with the client.',
+                  duration: 10000,
+                  action: originalParent
+                    ? {
+                        label: 'Undo',
+                        onClick: () => {
+                          void invoke('relocate_meeting_folder', { meetingId, destParentDir: originalParent })
+                            .then(() => refetchMeetings())
+                            .catch(() => { /* best-effort */ });
+                        },
+                      }
+                    : undefined,
+                });
+              } catch (relocErr) {
+                clearPendingRelocation();
+                toast.error(`Couldn't file into ${ownedPending.projectName}`, {
+                  description: `${relocErr instanceof Error ? relocErr.message : String(relocErr)} Files stay in the recordings folder; use Move to project to retry.`,
+                });
+              }
+            })();
+          }
+
+          // R3 issue-2: a calendar-seeded recording is created directly under <project>/.tandem via a
+          // Rust base override that can SILENTLY fall back to the default recordings folder when the
+          // dir is unwritable. Verify the ACTUAL saved folder against the expected tandem and relocate
+          // on fallback, so seeded artifacts always land with the client (never a silent miss).
+          // Skipped when an owned pending already handled filing (an explicit later choice wins).
+          try {
+            const rawSeed = (() => {
+              try { return sessionStorage.getItem('tandem.seedExpectedRelocation'); } catch { return null; }
+            })();
+            try { sessionStorage.removeItem('tandem.seedExpectedRelocation'); } catch { /* ignore */ }
+            if (rawSeed && folderPath && meetingId && !ownedPending) {
+              const seedExp = JSON.parse(rawSeed) as { token: string; tandem: string; projectName: string };
+              const parentOf = (p: string) => {
+                const norm = p.replace(/[\\/]+$/, '');
+                const idx = Math.max(norm.lastIndexOf('/'), norm.lastIndexOf('\\'));
+                return idx > 0 ? norm.slice(0, idx) : '';
+              };
+              // Already correctly placed (override succeeded) → nothing to do. Relocating would make
+              // relocate_meeting_folder mint a spurious "<leaf> (2)" copy, so guard against it.
+              const alreadyPlaced =
+                normalizeDir(parentOf(folderPath)) === normalizeDir(seedExp.tandem);
+              if (currentToken && seedExp.token === currentToken && !alreadyPlaced) {
+                void (async () => {
+                  try { if (handoffPromise) await handoffPromise; } catch { /* proceed regardless */ }
+                  try {
+                    await invoke<string>('relocate_meeting_folder', {
+                      meetingId,
+                      destParentDir: seedExp.tandem,
+                    });
+                    await refetchMeetings();
+                    toast.success(`Saved into ${seedExp.projectName}/.tandem`, {
+                      description: 'The scheduled folder was unavailable at start, so the files were filed after saving.',
+                      duration: 10000,
+                    });
+                  } catch (recErr) {
+                    toast.error(`Couldn't file into ${seedExp.projectName}`, {
+                      description: `${recErr instanceof Error ? recErr.message : String(recErr)} Files stay in the recordings folder; use Move to project to retry.`,
+                    });
+                  }
+                })();
+              }
+            }
+          } catch { /* malformed seed reconciliation entry — ignore */ }
+
           // Refetch meetings and set current meeting
           await refetchMeetings();
 
@@ -395,6 +499,10 @@ export function useRecordingStop(
 
         } catch (saveError) {
           console.error('Failed to save meeting to database:', saveError);
+          // R3: a failed save must not leave a dangling relocation intent that a LATER, unrelated
+          // recording could inherit and silently file into the wrong folder.
+          clearPendingRelocation();
+          try { sessionStorage.removeItem('tandem.seedExpectedRelocation'); } catch { /* ignore */ }
           setStatus(RecordingStatus.ERROR, saveError instanceof Error ? saveError.message : 'Unknown error');
           toast.error('Failed to save meeting', {
             description: saveError instanceof Error ? saveError.message : 'Unknown error'

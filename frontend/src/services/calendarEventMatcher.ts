@@ -30,6 +30,31 @@ export interface EventProjectMatch {
   signal: string;
 }
 
+/** One ranked candidate project for an event, with the signal that surfaced it. */
+export interface EventProjectCandidate {
+  project: Project;
+  /** Human-readable reason (e.g. "attendee @acme.com"). */
+  signal: string;
+  /** Which pass produced the strongest signal for this project. */
+  tier: 'attendee-domain' | 'title' | 'history';
+}
+
+/**
+ * Ranked match result. `confidence` is a deterministic function of the distinct-project count:
+ *   0 distinct -> 'none', exactly 1 -> 'strong', 2+ -> 'ambiguous'.
+ * `candidates` is ordered attendee-domain > title > history, stable (first-seen) within a tier.
+ */
+export interface EventMatchResult {
+  candidates: EventProjectCandidate[];
+  confidence: 'strong' | 'ambiguous' | 'none';
+}
+
+const TIER_RANK: Record<EventProjectCandidate['tier'], number> = {
+  'attendee-domain': 0,
+  title: 1,
+  history: 2,
+};
+
 /**
  * Consumer / freemail domains that identify a person, not an organisation. An attendee on one of
  * these tells us nothing about which client the call is for, so they must never drive routing.
@@ -69,11 +94,36 @@ function orgTokensFromDomain(domain: string): string[] {
   return [secondLast];
 }
 
-/** Map an event to the registered project it belongs to, or null. Pure and side-effect free. */
-export function matchEventToProject(ev: CalendarEvent, projects: Project[]): EventProjectMatch | null {
-  if (!projects || projects.length === 0) return null;
+/**
+ * Rank every registered project an event could belong to (R1). Unlike the first-hit-wins
+ * `matchEventToProject`, this runs ALL three passes to completion and collects every hit, so a call
+ * whose attendee domain points at one project while its title points at another surfaces BOTH as
+ * candidates instead of silently picking one. Pure and side-effect free.
+ */
+export function rankEventProjectCandidates(ev: CalendarEvent, projects: Project[]): EventMatchResult {
+  if (!projects || projects.length === 0) return { candidates: [], confidence: 'none' };
 
-  // ── Pass A: attendee email domain (strongest signal) ──
+  // Keyed by normalized project path so the same folder reached via two passes dedupes to one
+  // candidate carrying its strongest (lowest-rank) signal. `order` preserves first-seen position
+  // for stable sorting within a tier.
+  const byDir = new Map<string, EventProjectCandidate & { order: number }>();
+  let order = 0;
+
+  const add = (project: Project, signal: string, tier: EventProjectCandidate['tier']) => {
+    const key = normalizeDir(project.path);
+    const existing = byDir.get(key);
+    if (!existing) {
+      byDir.set(key, { project, signal, tier, order: order++ });
+      return;
+    }
+    // Keep the strongest (lowest-rank) tier's signal for this project.
+    if (TIER_RANK[tier] < TIER_RANK[existing.tier]) {
+      existing.tier = tier;
+      existing.signal = signal;
+    }
+  };
+
+  // ── Pass A: attendee email domain (strongest signal) — collect EVERY hit ──
   const emails = ev.attendeeEmails || [];
   const seenDomains = new Set<string>();
   for (const email of emails) {
@@ -86,17 +136,13 @@ export function matchEventToProject(ev: CalendarEvent, projects: Project[]): Eve
     for (const token of orgTokensFromDomain(domain)) {
       if (token.length < 3) continue; // too short to route on safely
       const matched = matchProjectByName(token, projects);
-      if (matched) {
-        return { project: matched, signal: `attendee @${domain}` };
-      }
+      if (matched) add(matched, `attendee @${domain}`, 'attendee-domain');
     }
   }
 
   // ── Pass B: event title tokens ──
   const titleResult = heuristicProjectRoute(ev.summary, '', projects);
-  if (titleResult) {
-    return { project: titleResult.project, signal: titleResult.signal };
-  }
+  if (titleResult) add(titleResult.project, titleResult.signal, 'title');
 
   // ── Pass C: frecency history mapped back to a registered project ──
   const hist = bestHistoryMatch(ev.summary);
@@ -104,11 +150,31 @@ export function matchEventToProject(ev: CalendarEvent, projects: Project[]): Eve
     const project = projects.find(p => normalizeDir(p.path) === normalizeDir(hist.dir));
     if (project) {
       const label = hist.lastMeetingTitle ? `previously filed "${hist.lastMeetingTitle}"` : 'previously filed here';
-      return { project, signal: label };
+      add(project, label, 'history');
     }
   }
 
-  return null;
+  const candidates = Array.from(byDir.values())
+    .sort((a, b) => TIER_RANK[a.tier] - TIER_RANK[b.tier] || a.order - b.order)
+    .map(({ order: _order, ...c }) => c);
+
+  const confidence: EventMatchResult['confidence'] =
+    candidates.length === 0 ? 'none' : candidates.length === 1 ? 'strong' : 'ambiguous';
+
+  return { candidates, confidence };
+}
+
+/**
+ * Map an event to the registered project it belongs to, or null. Thin wrapper over
+ * `rankEventProjectCandidates`: returns the single top candidate only when the match is
+ * unambiguous (exactly one distinct project across all passes), else null — preserving the
+ * "never route on noise / never silently pick between rivals" contract. Pure and side-effect free.
+ */
+export function matchEventToProject(ev: CalendarEvent, projects: Project[]): EventProjectMatch | null {
+  const { candidates, confidence } = rankEventProjectCandidates(ev, projects);
+  if (confidence !== 'strong') return null;
+  const top = candidates[0];
+  return { project: top.project, signal: top.signal };
 }
 
 /**

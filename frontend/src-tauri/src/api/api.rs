@@ -655,6 +655,87 @@ pub async fn api_save_calendar_config<R: Runtime>(
         })
 }
 
+/// Default clients-root directory when the user has not configured one.
+pub const DEFAULT_CLIENTS_ROOT: &str = "D:/Dev-projects/Client_projects";
+
+/// Case-insensitive folder names never offered as client candidates.
+const CLIENT_FOLDER_BLOCKLIST: &[&str] = &[
+    "node_modules", "target", "dist", "build", "__pycache__", "tmp", "temp",
+];
+
+#[tauri::command]
+pub async fn get_clients_root(
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let stored = SettingsRepository::get_clients_root(state.db_manager.pool())
+        .await
+        .map_err(|e| {
+            log_error!("Failed to get clients root: {}", e);
+            e.to_string()
+        })?;
+    Ok(stored.unwrap_or_else(|| DEFAULT_CLIENTS_ROOT.to_string()))
+}
+
+#[tauri::command]
+pub async fn set_clients_root(
+    state: tauri::State<'_, AppState>,
+    path: Option<String>,
+) -> Result<(), String> {
+    // Trim + normalize; an empty string clears back to the default.
+    let normalized = path
+        .map(|p| p.trim().replace('\\', "/").trim_end_matches('/').to_string())
+        .filter(|p| !p.is_empty());
+    SettingsRepository::save_clients_root(state.db_manager.pool(), normalized.as_deref())
+        .await
+        .map_err(|e| {
+            log_error!("Failed to set clients root: {}", e);
+            e.to_string()
+        })
+}
+
+/// List the direct subfolders of the clients root as filing candidates. Unlike
+/// `project_scan_directory`, this does NOT require project markers (.git/package.json/…) — client
+/// folders rarely have them. Directories only; skips names starting with '.' or '_' and a small
+/// blocklist. Returns [] (never an error) when the root is missing so a fresh install / CI stays clean.
+#[tauri::command]
+pub async fn list_client_folders(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<ScannedProject>, String> {
+    let root = get_clients_root(state).await?;
+    let parent = std::path::Path::new(&root);
+    if !parent.is_dir() {
+        // Missing/unconfigured root is not an error — just no candidates.
+        return Ok(Vec::new());
+    }
+
+    let mut folders = Vec::new();
+    let entries = match std::fs::read_dir(parent) {
+        Ok(e) => e,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        if name.starts_with('.') || name.starts_with('_') {
+            continue;
+        }
+        if CLIENT_FOLDER_BLOCKLIST.iter().any(|b| b.eq_ignore_ascii_case(&name)) {
+            continue;
+        }
+        folders.push(ScannedProject {
+            name,
+            path: path.to_string_lossy().to_string(),
+        });
+    }
+
+    folders.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(folders)
+}
+
 #[tauri::command]
 pub async fn api_get_transcript_config<R: Runtime>(
     _app: AppHandle<R>,

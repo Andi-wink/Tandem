@@ -69,12 +69,15 @@ export class RecordingService {
   async startRecordingWithDevices(
     micDeviceName: string | null,
     systemDeviceName: string | null,
-    meetingName: string
+    meetingName: string,
+    meetingBaseDir: string | null = null
   ): Promise<void> {
     return invoke('start_recording_with_devices_and_meeting', {
       mic_device_name: micDeviceName,
       system_device_name: systemDeviceName,
-      meeting_name: meetingName
+      meeting_name: meetingName,
+      // R3: when set (a seeded project's .tandem), the folder is created DATE-LED there at start.
+      meeting_base_dir: meetingBaseDir
     });
   }
 

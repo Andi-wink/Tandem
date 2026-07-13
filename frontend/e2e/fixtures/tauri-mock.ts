@@ -66,10 +66,47 @@ const TAURI_MOCK_SCRIPT = `
     },
 
     invoke: async function(cmd, args) {
+      // Record every invoke so specs can assert what the UI called.
+      if (!window.__TAURI_MOCK_CALLS__) window.__TAURI_MOCK_CALLS__ = [];
+      window.__TAURI_MOCK_CALLS__.push({ cmd: cmd, args: args });
+
       // Event plugin commands
       if (cmd.startsWith('plugin:event|')) return _handleEventPlugin(cmd, args);
 
       switch (cmd) {
+        // ---- Solo projects + client-folder discovery (R2) ----
+        case 'project_list':
+          return [
+            { id: 'acme', name: 'Acme', path: 'D:/Dev-projects/Client_projects/Acme',
+              aliases: '[]', auto_discovered: 0, created_at: '2026-01-01', updated_at: '2026-01-01' },
+          ];
+        case 'project_create':
+          return {
+            id: 'created-' + ((args && args.name) || 'x'),
+            name: (args && args.name) || 'Project',
+            path: (args && args.path) || '',
+            aliases: (args && args.aliases) || '[]',
+            auto_discovered: 0, created_at: '2026-01-01', updated_at: '2026-01-01',
+          };
+        case 'list_client_folders':
+          return [
+            { name: 'Globex', path: 'D:/Dev-projects/Client_projects/Globex' },
+            { name: 'ARO', path: 'D:/Dev-projects/Client_projects/ARO' },
+            { name: 'Openclaw', path: 'D:/Dev-projects/Client_projects/Openclaw' },
+            { name: 'n8n', path: 'D:/Dev-projects/Client_projects/n8n' },
+          ];
+        case 'get_clients_root':
+          return 'D:/Dev-projects/Client_projects';
+        case 'set_clients_root':
+          return null;
+        case 'get_recordings_base_dir':
+          return 'C:\\\\Users\\\\test\\\\.meetily\\\\recordings';
+        case 'relocate_meeting_folder':
+          return ((args && args.destParentDir) || 'C:/dest') + '/Meeting moved';
+        case 'start_recording':
+        case 'start_recording_with_devices_and_meeting':
+        case 'start_recording_with_devices':
+          return null;
         // ---- Layout.tsx (blocks entire app) ----
         case 'get_onboarding_status':
           return { completed: true, version: '1.0', current_step: 4,
@@ -157,6 +194,13 @@ const TAURI_MOCK_SCRIPT = `
             'DTSTART:' + _today + 'T140000Z',
             'DTEND:' + _today + 'T143000Z',
             'LOCATION:https://us02web.zoom.us/j/8412345678?pwd=abcd',
+            'ATTENDEE;CN=Jane Client:mailto:jane@acme.com',
+            'END:VEVENT',
+            'BEGIN:VEVENT',
+            'UID:today-2',
+            'SUMMARY:Globex roadmap review',
+            'DTSTART:' + _today + 'T160000Z',
+            'DTEND:' + _today + 'T163000Z',
             'ATTENDEE;CN=Jane Client:mailto:jane@acme.com',
             'END:VEVENT',
             'BEGIN:VEVENT',

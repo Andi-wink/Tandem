@@ -233,6 +233,32 @@ impl MeetingsRepository {
         Ok(true)
     }
 
+    /// Update only the meeting's folder_path (used when relocating the meeting folder on disk
+    /// without renaming it, e.g. filing a call under a project's .tandem after recording stops).
+    pub async fn update_meeting_folder_path(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        new_folder_path: &str,
+    ) -> Result<bool, SqlxError> {
+        if meeting_id.trim().is_empty() {
+            return Err(SqlxError::Protocol(
+                "meeting_id cannot be empty".to_string(),
+            ));
+        }
+
+        let now = Utc::now().naive_utc();
+        let rows_affected = sqlx::query(
+            "UPDATE meetings SET folder_path = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(new_folder_path)
+        .bind(now)
+        .bind(meeting_id)
+        .execute(pool)
+        .await?;
+
+        Ok(rows_affected.rows_affected() > 0)
+    }
+
     pub async fn update_meeting_name(
         pool: &SqlitePool,
         meeting_id: &str,

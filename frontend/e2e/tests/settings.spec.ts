@@ -55,8 +55,8 @@ test.describe('Settings Page', () => {
 
     await tauriPage.getByRole('button', { name: /test connection/i }).click();
 
-    // The mock ICS has 2 events, 1 today.
-    await expect(tauriPage.getByText(/Connected — 2 events found \(1 today\)/)).toBeVisible({ timeout: 10_000 });
+    // The mock ICS has 3 events, 2 today.
+    await expect(tauriPage.getByText(/Connected — 3 events found \(2 today\)/)).toBeVisible({ timeout: 10_000 });
   });
 
   test('back button navigates to previous page', async ({ tauriPage }) => {

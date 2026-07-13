@@ -8,7 +8,7 @@ use serde::{Serialize, Deserialize};
 use std::path::PathBuf;
 
 use super::recording_state::AudioChunk;
-use super::audio_processing::create_meeting_folder;
+use super::audio_processing::{create_meeting_folder, create_dated_meeting_folder};
 use super::incremental_saver::IncrementalAudioSaver;
 
 /// Structured transcript segment for JSON export
@@ -57,6 +57,9 @@ pub struct RecordingSaver {
     incremental_saver: Option<Arc<AsyncMutex<IncrementalAudioSaver>>>,
     meeting_folder: Option<PathBuf>,
     meeting_name: Option<String>,
+    /// When set (R3), the meeting folder is created DATE-LED directly under this base directory
+    /// (typically `<project>/.tandem`) instead of the platform default recordings folder.
+    base_folder_override: Option<PathBuf>,
     metadata: Option<MeetingMetadata>,
     transcript_segments: Arc<Mutex<Vec<TranscriptSegment>>>,
     chunk_receiver: Option<mpsc::UnboundedReceiver<AudioChunk>>,
@@ -69,6 +72,7 @@ impl RecordingSaver {
             incremental_saver: None,
             meeting_folder: None,
             meeting_name: None,
+            base_folder_override: None,
             metadata: None,
             transcript_segments: Arc::new(Mutex::new(Vec::new())),
             chunk_receiver: None,
@@ -79,6 +83,19 @@ impl RecordingSaver {
     /// Set the meeting name for this recording session
     pub fn set_meeting_name(&mut self, name: Option<String>) {
         self.meeting_name = name;
+    }
+
+    /// Set the base directory the meeting folder is created under (R3). Only absolute paths are
+    /// honored; a relative/empty path is ignored so a bad seed can never redirect the write.
+    pub fn set_base_folder_override(&mut self, dir: Option<PathBuf>) {
+        self.base_folder_override = match dir {
+            Some(p) if p.is_absolute() => Some(p),
+            Some(p) => {
+                warn!("Ignoring non-absolute meeting base override: {}", p.display());
+                None
+            }
+            None => None,
+        };
     }
 
     /// Set device information in metadata
@@ -238,11 +255,37 @@ impl RecordingSaver {
     /// * `meeting_name` - Name of the meeting
     /// * `create_checkpoints` - Whether to create .checkpoints/ directory and IncrementalAudioSaver
     fn initialize_meeting_folder(&mut self, meeting_name: &str, create_checkpoints: bool) -> Result<()> {
-        // Load preferences to get base recordings folder
-        let base_folder = super::recording_preferences::get_default_recordings_folder();
-
-        // Create meeting folder structure (with or without .checkpoints/ subdirectory)
-        let meeting_folder = create_meeting_folder(&base_folder, meeting_name, create_checkpoints)?;
+        // R3: when a base override is set (a known project's .tandem dir), create the meeting folder
+        // DATE-LED directly there so it files under the client at start. On ANY failure (unwritable
+        // dir, missing project) fall back to the platform default — a bad seed must never abort a
+        // recording. The frontend then relocates post-stop via the pendingRelocation path.
+        let meeting_folder = match &self.base_folder_override {
+            Some(base) => {
+                if let Err(e) = std::fs::create_dir_all(base) {
+                    warn!("Could not create meeting base override {}: {} — falling back to default", base.display(), e);
+                    let base_folder = super::recording_preferences::get_default_recordings_folder();
+                    create_meeting_folder(&base_folder, meeting_name, create_checkpoints)?
+                } else {
+                    match create_dated_meeting_folder(base, meeting_name, create_checkpoints) {
+                        Ok(folder) => {
+                            info!("📁 Meeting folder created under project base: {}", folder.display());
+                            folder
+                        }
+                        Err(e) => {
+                            warn!("Dated folder create failed under {}: {} — falling back to default", base.display(), e);
+                            let base_folder = super::recording_preferences::get_default_recordings_folder();
+                            create_meeting_folder(&base_folder, meeting_name, create_checkpoints)?
+                        }
+                    }
+                }
+            }
+            None => {
+                // Load preferences to get base recordings folder
+                let base_folder = super::recording_preferences::get_default_recordings_folder();
+                // Create meeting folder structure (with or without .checkpoints/ subdirectory)
+                create_meeting_folder(&base_folder, meeting_name, create_checkpoints)?
+            }
+        };
 
         // Only initialize incremental saver if checkpoints are needed (auto_save is true)
         if create_checkpoints {

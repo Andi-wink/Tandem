@@ -33,8 +33,14 @@ import { useSoloMode } from '@/contexts/SoloModeContext';
 import { useSoloModeRouter } from '@/hooks/useSoloModeRouter';
 import { useProjectAutoRoute } from '@/hooks/useProjectAutoRoute';
 import { useProjectRouteActions } from '@/hooks/useProjectRouteActions';
-import { createProject } from '@/services/projectService';
+import { createProject, Project } from '@/services/projectService';
 import { ProjectPickerSelection } from '@/components/ProjectPicker';
+import { peekRecordingSeed, clearRecordingSeed } from '@/lib/recordingSeed';
+import { clearPendingRelocation } from '@/lib/pendingRelocation';
+import { useCalendar } from '@/contexts/CalendarContext';
+import { findEventNear, rankEventProjectCandidates } from '@/services/calendarEventMatcher';
+import { getMatchPool } from '@/services/clientFolderDiscovery';
+import type { ChooserCandidate } from '@/lib/startFromEvent';
 
 export default function Home() {
   // Local page state (not moved to contexts)
@@ -44,6 +50,9 @@ export default function Home() {
 
   // Global "Move to project" / "Change" picker (opened by the tandem:open-project-picker event).
   const [movePickerOpen, setMovePickerOpen] = useState(false);
+  // R1: when the picker is opened as the ambiguity CHOOSER, it carries ranked candidates + a title.
+  const [movePickerCandidates, setMovePickerCandidates] = useState<ChooserCandidate[] | undefined>(undefined);
+  const [movePickerTitle, setMovePickerTitle] = useState<string | undefined>(undefined);
   // Fed to useProjectAutoRoute's suppression check. Recording now starts straight into the meeting
   // folder (no pre-record modal), so this stays '' — the guard is dormant until a pre-pick surface
   // returns, at which point setting it will suppress auto-routing over an explicit choice.
@@ -99,12 +108,44 @@ export default function Home() {
   });
   const { fileUnder } = useProjectRouteActions();
 
-  // Open the global Move/Change picker on the shared window event (fired by the "Filed under X"
-  // toast's Change button and by a spoken-name miss).
+  // Calendar events feed the "manual start near a matched event" auto-filing. Read via a ref inside
+  // the eslint-disabled isRecording effect so it never widens that effect's dep array (re-fire trap).
+  const { events: calendarEvents } = useCalendar();
+  const calendarEventsRef = useRef(calendarEvents);
+  calendarEventsRef.current = calendarEvents;
+  // Stable ref to fileUnder so the isRecording effect can file without depending on it.
+  const fileUnderRef = useRef(fileUnder);
+  fileUnderRef.current = fileUnder;
+  // Recording state via ref so the eslint-disabled isRecording effect can read recordingMode etc.
+  const recordingStateRef = useRef(recordingState);
+  recordingStateRef.current = recordingState;
+
+  // Open the ambiguity chooser (ranked candidates) non-blockingly.
+  const openChooser = (candidates: ChooserCandidate[], title?: string) => {
+    setMovePickerCandidates(candidates);
+    setMovePickerTitle(title ?? 'Which folder is this call for?');
+    setMovePickerOpen(true);
+  };
+  const openChooserRef = useRef(openChooser);
+  openChooserRef.current = openChooser;
+
+  // Open the global Move/Change picker on the shared window event. Fired plainly by the "Filed under
+  // X" toast's Change button / a spoken-name miss (no detail), OR as the ambiguity chooser by
+  // startFromEvent (detail carries ranked candidates + meetingTitle).
   useEffect(() => {
-    const onOpen = () => setMovePickerOpen(true);
-    window.addEventListener('tandem:open-project-picker', onOpen);
-    return () => window.removeEventListener('tandem:open-project-picker', onOpen);
+    const onOpen = (e: Event) => {
+      const detail = (e as CustomEvent<{ candidates?: ChooserCandidate[]; meetingTitle?: string }>).detail;
+      if (detail?.candidates && detail.candidates.length > 0) {
+        setMovePickerCandidates(detail.candidates);
+        setMovePickerTitle('Which folder is this call for?');
+      } else {
+        setMovePickerCandidates(undefined);
+        setMovePickerTitle(undefined);
+      }
+      setMovePickerOpen(true);
+    };
+    window.addEventListener('tandem:open-project-picker', onOpen as EventListener);
+    return () => window.removeEventListener('tandem:open-project-picker', onOpen as EventListener);
   }, []);
 
   // Post-hoc "Move to project" for the current/last meeting. A registered project files directly;
@@ -112,8 +153,16 @@ export default function Home() {
   // and either way fileUnder records the correction into frecency so the router learns.
   const handleMovePickerSelect = async (sel: ProjectPickerSelection) => {
     setMovePickerOpen(false);
+    // Whether this pick came from the ambiguity chooser (carries a per-row match signal).
+    const chosenCandidate = movePickerCandidates?.find(
+      (c) => c.dir === sel.dir || (sel.project && c.project?.id === sel.project.id),
+    );
+    setMovePickerCandidates(undefined);
+    setMovePickerTitle(undefined);
     let project = sel.project;
     if (!project) {
+      // Unregistered pick (a browsed folder OR a discovered client folder) — adopt via createProject
+      // (same path the header switcher uses), so it becomes a first-class project going forward.
       if (!sel.dir) { toast.error('No folder to file under'); return; }
       try {
         project = await createProject(sel.name, sel.dir, []);
@@ -122,7 +171,7 @@ export default function Home() {
         return;
       }
     }
-    await fileUnder(project, 'chosen manually');
+    await fileUnder(project, chosenCandidate?.signal ?? 'chosen manually');
   };
 
   // Auto-rename meeting after 2 min of active recording (e.g. "Meeting with Steph 27.04.2026")
@@ -310,7 +359,9 @@ export default function Home() {
     // folder and let useProjectAutoRoute file the call under the right project once early transcript
     // arrives (with a "Filed under X — Undo / Change" toast). The AI panel still shows its own
     // lightweight setup modal lazily on first AI use if an API key or dir is missing.
-    preRecordDirRef.current = '';
+    // I3: a calendar seed with a matched project re-arms the suppression guard so auto-routing
+    // doesn't fight the explicit calendar choice.
+    preRecordDirRef.current = peekRecordingSeed()?.projectPath || '';
     startFn();
   };
 
@@ -322,8 +373,87 @@ export default function Home() {
     if (recordingState.isRecording) {
       // Fresh identity per recording: a new id means the AI panel starts clean (no carryover
       // conversation/basket from the previous meeting) and won't restore the prior live session.
-      liveRecordingIdRef.current = `live-${Date.now()}`;
-      openPanel(liveRecordingIdRef.current, meetingTitle || 'Live Recording', preRecordDirRef.current, false);
+      const liveId = `live-${Date.now()}`;
+      liveRecordingIdRef.current = liveId;
+      // R3 hardening: bind the deferred-relocation machinery to THIS recording session and wipe any
+      // stale intent left by a crashed/failed prior session, so it can never file this unrelated
+      // meeting into the wrong folder. Must run BEFORE any fileUnder call below (which queues fresh
+      // pending) so we clear the old slot without discarding this session's own queue.
+      try {
+        sessionStorage.setItem('tandem.currentRecordingToken', liveId);
+        sessionStorage.removeItem('tandem.seedExpectedRelocation');
+        clearPendingRelocation();
+      } catch { /* sessionStorage unavailable — deferred relocation simply won't run */ }
+      openPanel(liveId, meetingTitle || 'Live Recording', preRecordDirRef.current, false);
+
+      // ── I3 / R1: auto-file the call under its project ──
+      // All reads go through refs so this eslint-disabled effect never re-fires mid-call.
+      const isSolo = recordingStateRef.current.recordingMode === 'solo';
+      if (!isSolo) {
+        const seed = peekRecordingSeed();
+        if (seed) {
+          // Started from a calendar event (agenda/palette).
+          if (seed.projectPath) {
+            // Strong / user-confirmed: the folder was created inside <project>/.tandem at start, so
+            // skip relocation. Consent already given — never re-ask.
+            const stub: Project = {
+              id: seed.projectId || `seed:${seed.projectPath}`,
+              name: seed.projectName || 'Project',
+              path: seed.projectPath,
+              aliases: [],
+              auto_discovered: false,
+            };
+            // R3 issue-2: the folder is created directly under <project>/.tandem via the Rust base
+            // override, so we skip the deferred relocation here. But that override can SILENTLY fall
+            // back to the default recordings folder when the dir is unwritable, with no signal back.
+            // Record the expected tandem so useRecordingStop can verify against the ACTUAL saved
+            // folder and relocate on fallback — artifacts must ALWAYS land with the client.
+            try {
+              const sep = seed.projectPath.includes('\\') ? '\\' : '/';
+              sessionStorage.setItem('tandem.seedExpectedRelocation', JSON.stringify({
+                token: liveId,
+                tandem: `${seed.projectPath}${sep}.tandem`,
+                projectName: seed.projectName || 'Project',
+              }));
+            } catch { /* sessionStorage unavailable — fallback reconciliation simply won't run */ }
+            void fileUnderRef.current(stub, seed.signal || 'from your calendar', {
+              meetingId: liveId,
+              meetingTitle: seed.title,
+              skipRelocation: true,
+            });
+          }
+          // Ambiguous / none: startFromEvent already opened the chooser (or left it title-only).
+          clearRecordingSeed();
+        } else {
+          // Manual start (no seed): if we're within ~10 min of a matched event, offer the same
+          // auto-filing (strong) or chooser (ambiguous). Fully async, ref-only reads.
+          void (async () => {
+            const near = findEventNear(calendarEventsRef.current, Date.now());
+            if (!near) return;
+            const { pool } = await getMatchPool();
+            const { candidates, confidence } = rankEventProjectCandidates(near, pool);
+            if (confidence === 'strong') {
+              const top = candidates[0];
+              // No skipRelocation: the folder was created in the default recordings dir, so file it
+              // via the deferred (pending) relocation after stop.
+              void fileUnderRef.current(top.project, top.signal, {
+                meetingId: liveRecordingIdRef.current,
+                meetingTitle: near.summary,
+              });
+            } else if (confidence === 'ambiguous') {
+              openChooserRef.current(
+                candidates.map((c) => ({
+                  dir: c.project.path,
+                  name: c.project.name,
+                  signal: c.signal,
+                  project: c.project.id.startsWith('discovered:') ? undefined : c.project,
+                })),
+                'Which folder is this call for?',
+              );
+            }
+          })();
+        }
+      }
     }
   }, [recordingState.isRecording]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -334,11 +464,13 @@ export default function Home() {
     <div
       className="flex flex-col h-screen bg-background"
     >
-      {/* Move-to-project / Change picker (user-initiated only) */}
+      {/* Move-to-project / Change picker (user-initiated) + R1 ambiguity chooser (candidates set). */}
       <ProjectPickerDialog
         open={movePickerOpen}
+        title={movePickerTitle}
+        candidates={movePickerCandidates}
         meetingTitle={meetingTitle}
-        onClose={() => setMovePickerOpen(false)}
+        onClose={() => { setMovePickerOpen(false); setMovePickerCandidates(undefined); setMovePickerTitle(undefined); }}
         onSelect={handleMovePickerSelect}
       />
 

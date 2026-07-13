@@ -11,19 +11,40 @@
  */
 
 import { useCallback, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { useClaude } from '@/contexts/ClaudeContext';
 import { useSoloMode } from '@/contexts/SoloModeContext';
 import { useTranscripts } from '@/contexts/TranscriptContext';
+import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { listProjects, Project } from '@/services/projectService';
 import { matchProjectByName } from '@/services/soloRoutingService';
-import { recordProjectDirUse } from '@/lib/projectDirHistory';
+import { recordProjectDirUse, normalizeDir } from '@/lib/projectDirHistory';
 import { ensureTandemClaudeMd } from '@/services/handoffService';
+import {
+  setPendingRelocation,
+  clearPendingRelocation,
+} from '@/lib/pendingRelocation';
+
+/** Options for fileUnder — opts win over stale context refs (load-bearing at recording-start). */
+export interface FileUnderOpts {
+  meetingId?: string;
+  meetingTitle?: string;
+  /** R3: skip the .tandem relocation (the folder was already created inside <project>/.tandem). */
+  skipRelocation?: boolean;
+}
+
+/** Build a project's `.tandem` directory path with the platform separator of the project path. */
+function tandemPathFor(projectPath: string): string {
+  const sep = projectPath.includes('\\') ? '\\' : '/';
+  return `${projectPath}${sep}.tandem`;
+}
 
 export function useProjectRouteActions() {
   const { projectDir, meetingId, meetingTitle, openPanel } = useClaude();
   const { activeProject, sessionFolder, switchProject, clearActiveProject } = useSoloMode();
   const { transcripts } = useTranscripts();
+  const recordingState = useRecordingState();
 
   // Read volatile values off refs so the returned callbacks stay stable and never fire on a stale
   // closure (transcripts especially churns on every segment).
@@ -39,13 +60,19 @@ export function useProjectRouteActions() {
   meetingTitleRef.current = meetingTitle;
   const sessionFolderRef = useRef(sessionFolder);
   sessionFolderRef.current = sessionFolder;
+  // Recording state via ref only — reading isRecording directly would churn the callback and, in
+  // page.tsx's eslint-disabled isRecording effect, re-fire it mid-call.
+  const isRecordingRef = useRef(recordingState.isRecording);
+  isRecordingRef.current = recordingState.isRecording;
 
   const fileUnder = useCallback(
-    async (project: Project, signal: string) => {
+    async (project: Project, signal: string, opts?: FileUnderOpts) => {
       const prev = { dir: projectDirRef.current, active: activeProjectRef.current };
-      const mId = meetingIdRef.current;
-      const mTitle = meetingTitleRef.current;
+      // opts win over refs (refs are stale in the same tick at recording-start — load-bearing).
+      const mId = opts?.meetingId ?? meetingIdRef.current;
+      const mTitle = opts?.meetingTitle ?? meetingTitleRef.current;
       const len = transcriptsRef.current.length;
+      const projectTandem = tandemPathFor(project.path);
 
       // Apply: active project drives screenshot/whiteboard/feed routing; projectDir drives the AI
       // panel + live-transcript writer + @code handoff. Same meetingId preserves the conversation.
@@ -54,16 +81,68 @@ export function useProjectRouteActions() {
       recordProjectDirUse(project.path, project.name, mTitle);
       ensureTandemClaudeMd(project.path, sessionFolderRef.current).catch(() => {});
 
+      // ── R3: physically file the meeting folder into <project>/.tandem ──
+      // Three cases:
+      //  (a) skipRelocation — the folder was created inside .tandem at recording-start (seed path).
+      //  (b) recording active — DEFER: never move under the live writer. Queue for useRecordingStop.
+      //  (c) not recording (post-call) — relocate now via the saved meeting's folder_path.
+      let relocationRan: { newPath: string } | null = null;
+      let deferred = false;
+      if (!opts?.skipRelocation) {
+        if (isRecordingRef.current) {
+          // Bind the deferred relocation to THIS recording session (mId is the live-<ts> token set
+          // at recording start). Without a token we cannot prove ownership at stop, so skip deferral
+          // rather than risk filing an unrelated meeting — the user can still Move to project.
+          if (mId) {
+            setPendingRelocation({ meetingId: mId, toProjectPath: projectTandem, projectName: project.name });
+            deferred = true;
+          }
+        } else if (mId && !mId.startsWith('live-')) {
+          try {
+            const newPath = await invoke<string>('relocate_meeting_folder', {
+              meetingId: mId,
+              destParentDir: projectTandem,
+            });
+            // Only treat as a real move when the folder actually landed under the project.
+            if (normalizeDir(newPath).startsWith(normalizeDir(projectTandem))) {
+              relocationRan = { newPath };
+            }
+          } catch (e) {
+            toast.error(`Filed under ${project.name}, but moving the files failed`, {
+              description: `${e instanceof Error ? e.message : String(e)} The files stay in the recordings folder; use Move to project to retry.`,
+            });
+          }
+        }
+      }
+
       const undo = () => {
         const revertLen = transcriptsRef.current.length;
         if (prev.active) switchProject(prev.active, revertLen);
         else clearActiveProject();
         if (mId && mTitle) openPanel(mId, mTitle, prev.dir || '', false);
+        // Cancel a queued relocation so a dismissed filing never moves anything.
+        clearPendingRelocation();
+        // If the relocation already ran (post-call), move the folder back to the default recordings
+        // base so undo truly reverses the filing.
+        if (relocationRan && mId) {
+          void (async () => {
+            try {
+              const base = await invoke<string | null>('get_recordings_base_dir');
+              if (base) await invoke('relocate_meeting_folder', { meetingId: mId, destParentDir: base });
+            } catch { /* best-effort */ }
+          })();
+        }
         toast.success(`Reverted to ${prev.active?.name ?? 'meeting folder'}`);
       };
 
+      const description = relocationRan
+        ? `Saved into ${project.name}/.tandem`
+        : deferred
+          ? `Matched ${signal} — files move into ${project.name}/.tandem when the recording saves`
+          : `Matched ${signal}`;
+
       toast(`Filed under ${project.name}`, {
-        description: `Matched ${signal}`,
+        description,
         duration: 15000,
         action: { label: 'Undo', onClick: undo },
         cancel: {

@@ -9,7 +9,20 @@ import { useClipboard } from '@/contexts/ClipboardContext';
 import { recordingService } from '@/services/recordingService';
 import Analytics from '@/lib/analytics';
 import { showRecordingNotification } from '@/lib/recordingNotification';
+import { peekRecordingSeed } from '@/lib/recordingSeed';
 import { toast } from 'sonner';
+
+/**
+ * R3: the base directory the meeting folder should be created under, derived from a calendar seed.
+ * When the event routed to a project, we file directly into `<project>/.tandem` at start; otherwise
+ * null (default recordings folder, with post-stop relocation handling any later filing).
+ */
+function seedMeetingBaseDir(): string | null {
+  const seed = peekRecordingSeed();
+  if (!seed?.projectPath) return null;
+  const sep = seed.projectPath.includes('\\') ? '\\' : '/';
+  return `${seed.projectPath}${sep}.tandem`;
+}
 
 interface UseRecordingStartReturn {
   handleRecordingStart: () => Promise<void>;
@@ -41,8 +54,10 @@ export function useRecordingStart(
   const { clearScreenshots } = useScreenshots();
   const { clearClipboard } = useClipboard();
 
-  // Generate meeting title with timestamp
+  // Generate meeting title: prefer a calendar seed's event title (I3), else the timestamp format.
   const generateMeetingTitle = useCallback(() => {
+    const seeded = peekRecordingSeed()?.title?.trim();
+    if (seeded) return seeded;
     const now = new Date();
     const day = String(now.getDate()).padStart(2, '0');
     const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -123,7 +138,8 @@ export function useRecordingStart(
       await recordingService.startRecordingWithDevices(
         selectedDevices?.micDevice || null,
         selectedDevices?.systemDevice || null,
-        randomTitle
+        randomTitle,
+        seedMeetingBaseDir()
       );
       console.log('Backend recording started successfully');
 
@@ -194,7 +210,8 @@ export function useRecordingStart(
             const result = await recordingService.startRecordingWithDevices(
               selectedDevices?.micDevice || null,
               selectedDevices?.systemDevice || null,
-              generatedMeetingTitle
+              generatedMeetingTitle,
+              seedMeetingBaseDir()
             );
             console.log('Auto-start backend recording result:', result);
 
@@ -285,7 +302,8 @@ export function useRecordingStart(
         const result = await recordingService.startRecordingWithDevices(
           selectedDevices?.micDevice || null,
           selectedDevices?.systemDevice || null,
-          generatedMeetingTitle
+          generatedMeetingTitle,
+          seedMeetingBaseDir()
         );
         console.log('Backend recording result:', result);
 

@@ -407,6 +407,49 @@ impl SettingsRepository {
 
         Ok(())
     }
+
+    // ===== CLIENTS ROOT (client-folder discovery) =====
+
+    /// Gets the configured "clients root" directory (whose subfolders are offered as filing
+    /// candidates for calls). Reuses the key-value `app_settings` table. Returns None when unset —
+    /// the command layer supplies the machine default.
+    pub async fn get_clients_root(
+        pool: &SqlitePool,
+    ) -> std::result::Result<Option<String>, sqlx::Error> {
+        let value: Option<String> =
+            sqlx::query_scalar("SELECT value FROM app_settings WHERE key = 'clients_root' LIMIT 1")
+                .fetch_optional(pool)
+                .await?
+                .flatten();
+        Ok(value.filter(|v| !v.trim().is_empty()))
+    }
+
+    /// Saves (or, with None, clears) the clients-root directory.
+    pub async fn save_clients_root(
+        pool: &SqlitePool,
+        clients_root: Option<&str>,
+    ) -> std::result::Result<(), sqlx::Error> {
+        match clients_root {
+            Some(path) if !path.trim().is_empty() => {
+                sqlx::query(
+                    r#"
+                    INSERT INTO app_settings (key, value)
+                    VALUES ('clients_root', $1)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                    "#,
+                )
+                .bind(path.trim())
+                .execute(pool)
+                .await?;
+            }
+            _ => {
+                sqlx::query("DELETE FROM app_settings WHERE key = 'clients_root'")
+                    .execute(pool)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

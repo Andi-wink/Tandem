@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   matchEventToProject,
+  rankEventProjectCandidates,
   findEventNear,
   findUpcomingEvent,
 } from './calendarEventMatcher';
@@ -89,19 +90,75 @@ describe('matchEventToProject — history (pass C)', () => {
   });
 });
 
-describe('matchEventToProject — precedence A > B > C', () => {
-  it('prefers the attendee domain over a conflicting title token', () => {
-    // Title says Globex, attendees are @acme.com — the domain wins.
-    const e = ev({ summary: 'Globex discovery call', attendeeEmails: ['jane@acme.com'] });
+describe('matchEventToProject — single-project confidence', () => {
+  it('returns the project when domain AND title point at the SAME project (dedup -> strong)', () => {
+    // Title token "acme" and attendee @acme.com both resolve to Acme: one distinct project.
+    const e = ev({ summary: 'Acme discovery call', attendeeEmails: ['jane@acme.com'] });
     const m = matchEventToProject(e, [ACME, GLOBEX]);
     expect(m?.project.name).toBe('Acme');
+    // Strongest tier (attendee-domain) wins the signal.
+    expect(m?.signal).toContain('@acme.com');
   });
 
-  it('prefers the title over history when both are present', () => {
+  it('returns null when domain and title point at DIFFERENT projects (ambiguous)', () => {
+    // Title says Globex, attendees are @acme.com — two rivals, so no silent pick.
+    const e = ev({ summary: 'Globex discovery call', attendeeEmails: ['jane@acme.com'] });
+    expect(matchEventToProject(e, [ACME, GLOBEX])).toBeNull();
+  });
+});
+
+describe('rankEventProjectCandidates — confidence matrix', () => {
+  it('single domain hit -> strong', () => {
+    const e = ev({ summary: 'Weekly sync', attendeeEmails: ['jane@acme.com'] });
+    const r = rankEventProjectCandidates(e, [ACME, GLOBEX]);
+    expect(r.confidence).toBe('strong');
+    expect(r.candidates.map(c => c.project.name)).toEqual(['Acme']);
+    expect(r.candidates[0].tier).toBe('attendee-domain');
+  });
+
+  it('domain hit + DIFFERENT title hit -> ambiguous, domain ranked first', () => {
+    // The "Instagram call: the Instagram project OR the client's own folder?" case.
+    const e = ev({ summary: 'Globex discovery call', attendeeEmails: ['jane@acme.com'] });
+    const r = rankEventProjectCandidates(e, [ACME, GLOBEX]);
+    expect(r.confidence).toBe('ambiguous');
+    expect(r.candidates.map(c => c.project.name)).toEqual(['Acme', 'Globex']);
+    expect(r.candidates[0].tier).toBe('attendee-domain');
+    expect(r.candidates[1].tier).toBe('title');
+  });
+
+  it('same project via domain AND title -> strong (dedup, strongest signal kept)', () => {
+    const e = ev({ summary: 'Acme discovery call', attendeeEmails: ['jane@acme.com'] });
+    const r = rankEventProjectCandidates(e, [ACME, GLOBEX]);
+    expect(r.confidence).toBe('strong');
+    expect(r.candidates).toHaveLength(1);
+    expect(r.candidates[0].tier).toBe('attendee-domain');
+  });
+
+  it('all-freemail + generic title -> none', () => {
+    const e = ev({ summary: 'Weekly sync', attendeeEmails: ['me@gmail.com'] });
+    const r = rankEventProjectCandidates(e, [ACME, GLOBEX]);
+    expect(r.confidence).toBe('none');
+    expect(r.candidates).toHaveLength(0);
+  });
+
+  it('title hit + DIFFERENT history hit -> ambiguous, title ranked above history', () => {
     recordProjectDirUse(GLOBEX.path, GLOBEX.name, 'Acme roadmap');
-    const e = ev({ summary: 'Acme roadmap' }); // title token "acme" -> Acme via pass B
-    const m = matchEventToProject(e, [ACME, GLOBEX]);
-    expect(m?.project.name).toBe('Acme');
+    const e = ev({ summary: 'Acme roadmap' }); // title token "acme" -> Acme; history -> Globex
+    const r = rankEventProjectCandidates(e, [ACME, GLOBEX]);
+    expect(r.confidence).toBe('ambiguous');
+    expect(r.candidates.map(c => c.project.name)).toEqual(['Acme', 'Globex']);
+    expect(r.candidates[0].tier).toBe('title');
+    expect(r.candidates[1].tier).toBe('history');
+  });
+
+  it('discovered-folder stubs participate as candidates', () => {
+    // An unregistered client folder surfaced as a stub (Phase B) should rank like any project.
+    const stub = proj('Instagram', 'D:/Dev-projects/Client_projects/Instagram');
+    const e = ev({ summary: 'Instagram content plan' });
+    const r = rankEventProjectCandidates(e, [stub]);
+    expect(r.confidence).toBe('strong');
+    expect(r.candidates[0].project.path).toContain('Instagram');
+    expect(r.candidates[0].tier).toBe('title');
   });
 });
 

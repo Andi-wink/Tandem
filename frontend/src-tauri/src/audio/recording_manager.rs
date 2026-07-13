@@ -445,6 +445,11 @@ impl RecordingManager {
         self.recording_saver.set_meeting_name(name);
     }
 
+    /// Set the base directory the meeting folder is created under (R3, e.g. `<project>/.tandem`).
+    pub fn set_base_folder_override(&mut self, dir: Option<std::path::PathBuf>) {
+        self.recording_saver.set_base_folder_override(dir);
+    }
+
     /// Add a structured transcript segment to be saved later
     pub fn add_transcript_segment(&self, segment: super::recording_saver::TranscriptSegment) {
         self.recording_saver.add_transcript_segment(segment);

@@ -53,4 +53,22 @@ describe('recordingSeed', () => {
     window.sessionStorage.setItem('tandem.recordingSeed', '{not json');
     expect(peekRecordingSeed()).toBeNull();
   });
+
+  it('round-trips the userConfirmed flag (R1 explicit consent)', () => {
+    setRecordingSeed({
+      title: 'Nate, Instagram automation',
+      eventUid: 'e-ig',
+      projectPath: 'D:/Dev-projects/Client_projects/Instagram',
+      projectName: 'Instagram',
+      userConfirmed: true,
+    });
+    const seed = peekRecordingSeed();
+    expect(seed?.userConfirmed).toBe(true);
+    expect(seed?.projectName).toBe('Instagram');
+  });
+
+  it('leaves userConfirmed undefined when not set', () => {
+    setRecordingSeed({ title: 'Weekly sync', eventUid: 'e-w' });
+    expect(peekRecordingSeed()?.userConfirmed).toBeUndefined();
+  });
 });

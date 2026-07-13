@@ -40,6 +40,37 @@ pub fn create_meeting_folder(
     let timestamp = Utc::now().format("%Y-%m-%d_%H-%M").to_string();
     let sanitized_name = sanitize_filename(meeting_name);
     let folder_name = format!("{}_{}", sanitized_name, timestamp);
+    create_meeting_folder_named(base_path, &folder_name, create_checkpoints_dir)
+}
+
+/// Create a meeting folder whose leaf name is DATE-LED so siblings inside a project's `.tandem`
+/// directory sort newest-last, matching the on-disk convention (e.g. "Meeting 2026-06-19_19-24-54_…").
+/// Used when a recording is filed to a known project at start time (R3).
+///
+/// Folder name: `Meeting {LOCAL %Y-%m-%d_%H-%M-%S}_{sanitized meeting name}`.
+pub fn create_dated_meeting_folder(
+    base_path: &PathBuf,
+    meeting_name: &str,
+    create_checkpoints_dir: bool,
+) -> Result<PathBuf> {
+    // Local time (not UTC) so the folder date matches the user's calendar day; seconds included so
+    // two calls in the same minute don't collide.
+    let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+    let sanitized_name = sanitize_filename(meeting_name);
+    let folder_name = if sanitized_name.is_empty() {
+        format!("Meeting {}", timestamp)
+    } else {
+        format!("Meeting {}_{}", timestamp, sanitized_name)
+    };
+    create_meeting_folder_named(base_path, &folder_name, create_checkpoints_dir)
+}
+
+/// Shared body: create `base_path/folder_name` (and optionally its `.checkpoints/` subdir).
+fn create_meeting_folder_named(
+    base_path: &PathBuf,
+    folder_name: &str,
+    create_checkpoints_dir: bool,
+) -> Result<PathBuf> {
     let meeting_folder = base_path.join(folder_name);
 
     // Create main meeting folder
@@ -734,4 +765,37 @@ pub fn write_transcript_json_to_file(
     std::fs::write(&file_path, json_string)?;
 
     Ok(file_path.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod dated_folder_tests {
+    use super::*;
+
+    #[test]
+    fn dated_meeting_folder_is_date_led_and_sorts_newest_last() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+
+        let folder = create_dated_meeting_folder(&base, "Nate, Instagram automation", false).unwrap();
+        let leaf = folder.file_name().unwrap().to_string_lossy().to_string();
+
+        // Date-led "Meeting YYYY-MM-DD_HH-MM-SS_<name>" so lexical sort == chronological sort.
+        assert!(leaf.starts_with("Meeting "), "leaf was: {}", leaf);
+        assert!(leaf.contains("Nate, Instagram automation") || leaf.contains("Nate_ Instagram automation"),
+                "sanitized name missing in: {}", leaf);
+        assert!(folder.exists());
+
+        // A later folder (simulated by a lexically-larger date) sorts after an earlier one.
+        let earlier = "Meeting 2026-06-19_19-24-54_Old call";
+        assert!(leaf.as_str() > earlier, "{} should sort after {}", leaf, earlier);
+    }
+
+    #[test]
+    fn dated_meeting_folder_handles_empty_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = create_dated_meeting_folder(&dir.path().to_path_buf(), "", false).unwrap();
+        let leaf = folder.file_name().unwrap().to_string_lossy().to_string();
+        assert!(leaf.starts_with("Meeting "));
+        assert!(!leaf.ends_with('_'));
+    }
 }

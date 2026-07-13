@@ -2,12 +2,14 @@
 
 import React, { useEffect } from 'react';
 import { X } from 'lucide-react';
-import { ProjectPicker, ProjectPickerSelection } from '@/components/ProjectPicker';
+import { ProjectPicker, ProjectPickerSelection, ProjectPickerCandidate } from '@/components/ProjectPicker';
 
 interface ProjectPickerDialogProps {
   open: boolean;
   title?: string;
   meetingTitle?: string | null;
+  /** R1 ambiguity chooser: ranked candidates pinned above the rest. */
+  candidates?: ProjectPickerCandidate[];
   onSelect: (sel: ProjectPickerSelection) => void;
   onClose: () => void;
 }
@@ -21,6 +23,7 @@ export function ProjectPickerDialog({
   open,
   title = 'Move to project',
   meetingTitle,
+  candidates,
   onSelect,
   onClose,
 }: ProjectPickerDialogProps) {
@@ -50,11 +53,14 @@ export function ProjectPickerDialog({
         </div>
         <div className="px-4 py-4">
           <p className="text-xs text-muted-foreground mb-2">
-            Pick where this meeting&apos;s notes and AI work should be filed.
+            {candidates && candidates.length > 0
+              ? 'This call could belong to more than one folder. Pick the right one, or dismiss to leave it unfiled.'
+              : 'Pick where this meeting’s notes and AI work should be filed.'}
           </p>
           <ProjectPicker
             allowBrowse
             meetingTitle={meetingTitle}
+            candidates={candidates}
             onSelect={onSelect}
             onEscape={onClose}
           />
