@@ -16,6 +16,16 @@ impl ProjectRepository {
         Ok(projects)
     }
 
+    /// Create a project, or return the existing one if `path` is already registered.
+    ///
+    /// `path` has a UNIQUE constraint, and callers frequently "adopt" a folder that may already be
+    /// a registered project but hasn't shown up yet in the caller's local project list (e.g. the
+    /// frontend's project picker resolves `listProjects()` asynchronously, so a fast click on a
+    /// not-yet-loaded row falls through to "create a project for this dir"). Without this check
+    /// that INSERT fails on the UNIQUE constraint, the frontend surfaces an error and the user's
+    /// selection appears to silently do nothing — requiring them to reopen the picker and pick again
+    /// once the project list has caught up. Treating create-by-path as idempotent fixes that at the
+    /// root instead of requiring every caller to pre-check.
     pub async fn create_project(
         pool: &SqlitePool,
         name: &str,
@@ -23,6 +33,10 @@ impl ProjectRepository {
         aliases: &str,
         auto_discovered: bool,
     ) -> std::result::Result<ProjectModel, sqlx::Error> {
+        if let Some(existing) = Self::find_by_path(pool, path).await? {
+            return Ok(existing);
+        }
+
         let id = Uuid::new_v4().to_string();
         let auto_disc: i64 = if auto_discovered { 1 } else { 0 };
 
