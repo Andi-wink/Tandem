@@ -38,6 +38,8 @@ interface ProjectPickerProps {
   meetingTitle?: string | null;
   /** Ranked candidates pinned as a "Suggested" section above the rest (R1 chooser). */
   candidates?: ProjectPickerCandidate[];
+  /** Extra pickable projects merged with the registered list (e.g. discovered client folders). */
+  extraProjects?: Project[];
   /** Show the "Browse for folder..." row (default true). */
   allowBrowse?: boolean;
   /** Focus the search input on mount (default true). */
@@ -62,6 +64,7 @@ export function ProjectPicker({
   defaultLabel = 'Meeting folder',
   meetingTitle,
   candidates,
+  extraProjects,
   allowBrowse = true,
   autoFocus = true,
   onSelect,
@@ -117,8 +120,10 @@ export function ProjectPicker({
       }
     }
 
-    // Registered projects — merge in any matching history frecency.
-    for (const p of projects) {
+    // Registered projects (plus any extra pickable projects, e.g. discovered client folders) —
+    // merge in matching history frecency. Deduped by normalized path; registered wins on collision
+    // because it is iterated first.
+    for (const p of [...projects, ...(extraProjects ?? [])]) {
       const key = normalizeDir(p.path);
       if (seen.has(key)) continue;
       seen.add(key);
@@ -156,7 +161,7 @@ export function ProjectPicker({
     });
 
     return rows;
-  }, [defaultDir, defaultLabel, projects, history, candidates]);
+  }, [defaultDir, defaultLabel, projects, history, candidates, extraProjects]);
 
   // Apply the fuzzy filter: every query token must be a substring of name, an alias, or the path.
   const filteredRows = useMemo<Row[]>(() => {
@@ -331,7 +336,7 @@ export function ProjectPicker({
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
                   <span className="text-sm font-medium text-foreground truncate">{row.name}</span>
-                  {row.source === 'project' && (
+                  {row.source === 'project' && !row.project?.id.startsWith('discovered:') && (
                     <span className="text-[10px] text-muted-foreground flex-shrink-0">Solo</span>
                   )}
                   {row.source === 'suggested' && (

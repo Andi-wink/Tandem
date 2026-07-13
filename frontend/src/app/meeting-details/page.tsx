@@ -15,6 +15,7 @@ interface MeetingDetailsResponse {
   title: string;
   created_at: string;
   updated_at: string;
+  folder_path?: string;
   transcripts: Transcript[];
 }
 
@@ -45,6 +46,7 @@ function MeetingDetailsContent() {
     totalCount,
     loadedCount,
     loadMore,
+    refetchMetadata,
     error: transcriptError,
   } = usePaginatedTranscripts({ meetingId: meetingId || '' });
 
@@ -132,6 +134,7 @@ function MeetingDetailsContent() {
         title: metadata.title,
         created_at: metadata.created_at,
         updated_at: metadata.updated_at,
+        folder_path: metadata.folder_path, // where the meeting physically lives (Filed-under row + whiteboard)
         transcripts: transcripts, // Paginated transcripts from hook
       });
 
@@ -148,16 +151,16 @@ function MeetingDetailsContent() {
     }
   }, [transcriptError]);
 
-  // Extract fetchMeetingDetails for use in child components (now refetches via hook)
+  // Extract fetchMeetingDetails for use in child components. The pagination hook only loads
+  // metadata once per meetingId, so after a folder relocate (folder_path changes without the id
+  // changing) we must force a metadata refetch — otherwise meeting.folder_path used by the
+  // Whiteboard button / hasWhiteboard check / SummaryPanel stays pointed at the vacated path.
   const fetchMeetingDetails = useCallback(async () => {
     if (!meetingId || meetingId === 'intro-call') {
       return;
     }
-
-    // The usePaginatedTranscripts hook automatically refetches when meetingId changes
-    // This function is kept for compatibility with onMeetingUpdated callback
-    console.log('fetchMeetingDetails called - pagination hook will handle refetch');
-  }, [meetingId]);
+    await refetchMetadata();
+  }, [meetingId, refetchMetadata]);
 
   // Reset states when meetingId changes (prevent race conditions)
   useEffect(() => {

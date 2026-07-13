@@ -103,6 +103,8 @@ const TAURI_MOCK_SCRIPT = `
           return 'C:\\\\Users\\\\test\\\\.meetily\\\\recordings';
         case 'relocate_meeting_folder':
           return ((args && args.destParentDir) || 'C:/dest') + '/Meeting moved';
+        case 'show_in_folder':
+          return null;
         case 'start_recording':
         case 'start_recording_with_devices_and_meeting':
         case 'start_recording_with_devices':

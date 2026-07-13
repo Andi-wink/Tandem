@@ -8,6 +8,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
 import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
+import { FiledUnderRow } from '@/components/MeetingDetails/FiledUnderRow';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 
 // Custom hooks
@@ -198,6 +199,12 @@ export default function PageContent({
       transition={{ duration: 0.3, ease: 'easeOut' }}
       className="flex flex-col h-screen bg-background"
     >
+      <FiledUnderRow
+        meetingId={meeting.id}
+        meetingTitle={meetingData.meetingTitle || meeting.title || 'Meeting'}
+        folderPath={meeting.folder_path}
+        onRelocated={() => { if (onMeetingUpdated) void onMeetingUpdated(); }}
+      />
       <div className="flex flex-1 overflow-hidden">
         <TranscriptPanel
           transcripts={meetingData.transcripts}

@@ -3,6 +3,7 @@
 import React, { useEffect } from 'react';
 import { X } from 'lucide-react';
 import { ProjectPicker, ProjectPickerSelection, ProjectPickerCandidate } from '@/components/ProjectPicker';
+import { Project } from '@/services/projectService';
 
 interface ProjectPickerDialogProps {
   open: boolean;
@@ -10,6 +11,8 @@ interface ProjectPickerDialogProps {
   meetingTitle?: string | null;
   /** R1 ambiguity chooser: ranked candidates pinned above the rest. */
   candidates?: ProjectPickerCandidate[];
+  /** Extra pickable projects merged with the registered list (e.g. discovered client folders). */
+  extraProjects?: Project[];
   onSelect: (sel: ProjectPickerSelection) => void;
   onClose: () => void;
 }
@@ -24,6 +27,7 @@ export function ProjectPickerDialog({
   title = 'Move to project',
   meetingTitle,
   candidates,
+  extraProjects,
   onSelect,
   onClose,
 }: ProjectPickerDialogProps) {
@@ -61,6 +65,7 @@ export function ProjectPickerDialog({
             allowBrowse
             meetingTitle={meetingTitle}
             candidates={candidates}
+            extraProjects={extraProjects}
             onSelect={onSelect}
             onEscape={onClose}
           />

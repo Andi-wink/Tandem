@@ -28,6 +28,8 @@ interface UsePaginatedTranscriptsReturn {
     // Actions
     loadMore: () => Promise<void>;
     reset: () => void;
+    /** Force a fresh metadata (+ artifact) reload, e.g. after the meeting folder is relocated. */
+    refetchMetadata: () => Promise<void>;
 }
 
 /**
@@ -201,6 +203,25 @@ export function usePaginatedTranscripts({
         loadInitial();
     }, [meetingId, reset, loadMetadata, loadTranscriptsAtOffset]);
 
+    // Force a metadata refresh without changing meetingId (folder_path can change under us when a
+    // meeting is relocated). Also reloads screenshots/clipboard from the new folder so their paths
+    // don't point at the now-vacated location.
+    const refetchMetadata = useCallback(async () => {
+        const meta = await loadMetadata();
+        if (meta?.folder_path) {
+            try {
+                setScreenshots(await loadScreenshotsJson(meta.folder_path));
+            } catch (err) {
+                console.warn('Failed to reload screenshots after relocate:', err);
+            }
+            try {
+                setClipboardItems(await loadClipboardJson(meta.folder_path));
+            } catch (err) {
+                console.warn('Failed to reload clipboard items after relocate:', err);
+            }
+        }
+    }, [loadMetadata]);
+
     // Convert to segments (memoized)
     const segments = useMemo(() =>
         convertTranscriptsToSegments(transcripts),
@@ -221,5 +242,6 @@ export function usePaginatedTranscripts({
         error,
         loadMore,
         reset,
+        refetchMetadata,
     };
 }
