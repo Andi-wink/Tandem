@@ -1,5 +1,49 @@
 # I5: pre-meeting recording prompt (plan)
 
+## I5b addendum (user feedback 2026-07-14, AUTHORITATIVE, overrides the "never fire while
+## recording" rule below)
+
+User: "I might still be in a meeting, so I need it to not conflict with the current meeting I'm
+in and kick me out of it. It's just a notification. Have an option where I can click to start the
+recording in it. That then closes off the last meeting as done, and then starts in the new
+meeting, with the meeting being saved as whatever the calendar invite is called."
+
+Spec:
+- When NOT recording: keep I5 behavior exactly (focus + dialog + native notification).
+- When ALREADY recording and a new event enters its firing window: fire a HANDOVER notification
+  instead of suppressing. Absolutely no focus_main_window call, no modal dialog, no window
+  unminimize, nothing that could disturb a live call or screen share. Present:
+  1. an in-app sonner toast (persistent until start of event + grace, dismissible) with the text
+     "Next: <event summary> starts in <n>" and an action button "Wrap up and start next";
+  2. a native Windows notification with the same text (backup for minimized app). pingTaskbar is
+     acceptable (subtle) but optional.
+- Clicking "Wrap up and start next": stop the current recording through the SAME code path as
+  the Stop button / I4 off-route hotkey stop (invoke stop_recording + full handleRecordingStop
+  post-processing: transcripts saved, auto-summary latch fires, meeting stays filed where it
+  was). AWAIT completion of the stop/save before starting the next one. Then call
+  startRecordingForEvent(ev) so the new recording is titled with the calendar invite summary and
+  filed under the matched folder (same consent semantics as the dialog: strong match auto,
+  ambiguous opens the picker without blocking the start).
+- Ignoring the toast: current recording continues untouched; the handover offer auto-expires at
+  event start + the same 30s grace; mark fired only when shown (same persist-at-show guarantee
+  as the dialog path); it must not re-fire.
+- Engine change: isRecording no longer suppresses selection; it selects presentation mode
+  (dialog vs handover). The queue semantics stay: only one surface at a time; a recording
+  starting mid-queue no longer clears the queue but converts pending items to handover mode when
+  they surface. Keep the persist-only-at-show invariant for both modes.
+- Settings: reuse the same enabled/lead-time settings; no separate toggle needed.
+- Tests: vitest for mode selection (recording -> handover, not suppressed; handover expiry;
+  no re-fire), and the stop-then-start sequencing helper if extracted pure (stop must resolve
+  before start dispatch). Playwright: mock recording state active + event in window -> toast
+  visible, no dialog; click action -> stop_recording invoked then start_recording with seeded
+  title (assert ordering via __TAURI_MOCK_CALLS__).
+
+Risks for skeptics: double-stop races (toast click while user simultaneously presses Stop or
+Alt+Shift+D; stopInProgressRef must make this safe), start firing before transcripts finished
+saving (ordering), handover toast surviving navigation, toast firing during the brief window
+between stop and start of a handover (must not offer a second handover for the same event),
+auto-summary of the closed meeting still kicking off, seed TTL (2 min) vs long stop times.
+
 User request (2026-07-14): "would it be possible that the app pops up when a new meeting is about
 to start, maybe one minute before, asking if I want to start the recording and suggesting a folder
 to do it?" Skeptical QA each iteration.
