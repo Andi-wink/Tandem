@@ -7,6 +7,8 @@ import { EmptyStateSummary } from '@/components/EmptyStateSummary';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { SummaryGeneratorButtonGroup } from './SummaryGeneratorButtonGroup';
 import { SummaryUpdaterButtonGroup } from './SummaryUpdaterButtonGroup';
+import { ActionItemsChecklist } from './ActionItemsChecklist';
+import { extractActionItems } from '@/lib/actionItems';
 import Analytics from '@/lib/analytics';
 import { RefObject } from 'react';
 
@@ -15,6 +17,7 @@ interface SummaryPanelProps {
     id: string;
     title: string;
     created_at: string;
+    folder_path?: string;
   };
   meetingTitle: string;
   onTitleChange: (title: string) => void;
@@ -243,6 +246,12 @@ export function SummaryPanel({
             </div>
           )}
           <div className="p-6 w-full">
+            <ActionItemsChecklist
+              meetingId={meeting.id}
+              meetingTitle={meetingTitle}
+              folderPath={meeting.folder_path}
+              items={extractActionItems(aiSummary)}
+            />
             <BlockNoteSummaryView
               ref={summaryRef}
               summaryData={aiSummary}

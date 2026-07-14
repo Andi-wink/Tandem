@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { LoaderIcon } from "lucide-react";
 import { useConfig } from "@/contexts/ConfigContext";
 import { usePaginatedTranscripts } from "@/hooks/usePaginatedTranscripts";
+import { hasAutoSummaryStarted } from "@/lib/autoSummary";
 
 interface MeetingDetailsResponse {
   id: string;
@@ -74,6 +75,14 @@ function MeetingDetailsContent() {
       return;
     }
 
+    // I4: the recording-stop path already kicks off summary generation for this meeting.
+    // Skip the legacy query-param generation to avoid a duplicate run for the same meeting.
+    if (meetingId && hasAutoSummaryStarted(meetingId)) {
+      console.log('Stop-driven auto-summary already started for this meeting, skipping page auto-generation');
+      setHasCheckedAutoGen(true);
+      return;
+    }
+
     // Respect user's auto-summary toggle preference
     if (!isAutoSummary) {
       console.log('Auto-summary is disabled in settings');
@@ -116,7 +125,7 @@ function MeetingDetailsContent() {
     }
 
     setHasCheckedAutoGen(true);
-  }, [hasCheckedAutoGen, checkForGemmaModel, source, isAutoSummary]);
+  }, [hasCheckedAutoGen, checkForGemmaModel, source, isAutoSummary, meetingId]);
 
   // Sync meeting metadata from pagination hook to meeting details state
   useEffect(() => {
@@ -162,6 +171,111 @@ function MeetingDetailsContent() {
     await refetchMetadata();
   }, [meetingId, refetchMetadata]);
 
+  // Fetch + normalize this meeting's summary from the backend. Hoisted to component scope so both
+  // the initial load and the auto-summary "summary-updated" refetch (I4) share one implementation.
+  const fetchMeetingSummary = useCallback(async () => {
+    if (!meetingId || meetingId === 'intro-call') return;
+    try {
+      const summary = await invoke('api_get_summary', {
+        meetingId: meetingId,
+      }) as any;
+
+      console.log('FETCH SUMMARY: Raw response:', summary);
+
+      // Check if the summary request failed with 404 or error status, or if no summary exists yet (idle)
+      // Note: 'cancelled' and 'failed' statuses can still have data if backup was restored
+      if (summary.status === 'idle' || (!summary.data && summary.status === 'error')) {
+        console.warn('Meeting summary not found or no summary generated yet:', summary.error || 'idle');
+        setMeetingSummary(null);
+        return;
+      }
+
+      const summaryData = summary.data || {};
+
+      // Parse if it's a JSON string (backend may return double-encoded JSON)
+      let parsedData = summaryData;
+      if (typeof summaryData === 'string') {
+        try {
+          parsedData = JSON.parse(summaryData);
+        } catch (e) {
+          parsedData = {};
+        }
+      }
+
+      console.log('🔍 FETCH SUMMARY: Parsed data:', parsedData);
+
+      // Priority 1: BlockNote JSON format
+      if (parsedData.summary_json) {
+        setMeetingSummary(parsedData as any);
+        return;
+      }
+
+      // Priority 2: Markdown format
+      if (parsedData.markdown) {
+        setMeetingSummary(parsedData as any);
+        return;
+      }
+
+      // Legacy format - apply formatting
+      console.log('LEGACY FORMAT: Detected legacy format, applying section formatting');
+
+      const { MeetingName, _section_order, ...restSummaryData } = parsedData;
+
+      // Format the summary data with consistent styling - PRESERVE ORDER
+      const formattedSummary: Summary = {};
+
+      // Use section order if available to maintain exact order and handle duplicates
+      const sectionKeys = _section_order || Object.keys(restSummaryData);
+
+      console.log('LEGACY FORMAT: Processing sections:', sectionKeys);
+
+      for (const key of sectionKeys) {
+        try {
+          const section = restSummaryData[key];
+          // Comprehensive null checks to prevent the error
+          if (section &&
+            typeof section === 'object' &&
+            'title' in section &&
+            'blocks' in section) {
+            const typedSection = section as { title?: string; blocks?: any[] };
+
+            // Ensure blocks is an array before mapping
+            if (Array.isArray(typedSection.blocks)) {
+              formattedSummary[key] = {
+                title: typedSection.title || key,
+                blocks: typedSection.blocks.map((block: any) => ({
+                  ...block,
+                  // type: 'bullet',
+                  color: 'default',
+                  content: block?.content?.trim() || ''
+                }))
+              };
+            } else {
+              // Handle case where blocks is not an array
+              console.warn(`LEGACY FORMAT: Section ${key} has invalid blocks:`, typedSection.blocks);
+              formattedSummary[key] = {
+                title: typedSection.title || key,
+                blocks: []
+              };
+            }
+          } else {
+            console.warn(`LEGACY FORMAT: Skipping invalid section ${key}:`, section);
+          }
+        } catch (error) {
+          console.warn(`LEGACY FORMAT: Error processing section ${key}:`, error);
+          // Continue processing other sections
+        }
+      }
+
+      console.log('LEGACY FORMAT: Formatted summary:', formattedSummary);
+      setMeetingSummary(formattedSummary);
+    } catch (error) {
+      console.error('FETCH SUMMARY: Error fetching meeting summary:', error);
+      // Don't set error state for summary fetch failure, set to null to show generate button
+      setMeetingSummary(null);
+    }
+  }, [meetingId]);
+
   // Reset states when meetingId changes (prevent race conditions)
   useEffect(() => {
     setMeetingDetails(null);
@@ -201,108 +315,6 @@ function MeetingDetailsContent() {
     setError(null);
     setIsLoading(true);
 
-    const fetchMeetingSummary = async () => {
-      try {
-        const summary = await invoke('api_get_summary', {
-          meetingId: meetingId,
-        }) as any;
-
-        console.log('FETCH SUMMARY: Raw response:', summary);
-
-        // Check if the summary request failed with 404 or error status, or if no summary exists yet (idle)
-        // Note: 'cancelled' and 'failed' statuses can still have data if backup was restored
-        if (summary.status === 'idle' || (!summary.data && summary.status === 'error')) {
-          console.warn('Meeting summary not found or no summary generated yet:', summary.error || 'idle');
-          setMeetingSummary(null);
-          return;
-        }
-
-        const summaryData = summary.data || {};
-
-        // Parse if it's a JSON string (backend may return double-encoded JSON)
-        let parsedData = summaryData;
-        if (typeof summaryData === 'string') {
-          try {
-            parsedData = JSON.parse(summaryData);
-          } catch (e) {
-            parsedData = {};
-          }
-        }
-
-        console.log('🔍 FETCH SUMMARY: Parsed data:', parsedData);
-
-        // Priority 1: BlockNote JSON format
-        if (parsedData.summary_json) {
-          setMeetingSummary(parsedData as any);
-          return;
-        }
-
-        // Priority 2: Markdown format
-        if (parsedData.markdown) {
-          setMeetingSummary(parsedData as any);
-          return;
-        }
-
-        // Legacy format - apply formatting
-        console.log('LEGACY FORMAT: Detected legacy format, applying section formatting');
-
-        const { MeetingName, _section_order, ...restSummaryData } = parsedData;
-
-        // Format the summary data with consistent styling - PRESERVE ORDER
-        const formattedSummary: Summary = {};
-
-        // Use section order if available to maintain exact order and handle duplicates
-        const sectionKeys = _section_order || Object.keys(restSummaryData);
-
-        console.log('LEGACY FORMAT: Processing sections:', sectionKeys);
-
-        for (const key of sectionKeys) {
-          try {
-            const section = restSummaryData[key];
-            // Comprehensive null checks to prevent the error
-            if (section &&
-              typeof section === 'object' &&
-              'title' in section &&
-              'blocks' in section) {
-              const typedSection = section as { title?: string; blocks?: any[] };
-
-              // Ensure blocks is an array before mapping
-              if (Array.isArray(typedSection.blocks)) {
-                formattedSummary[key] = {
-                  title: typedSection.title || key,
-                  blocks: typedSection.blocks.map((block: any) => ({
-                    ...block,
-                    // type: 'bullet',
-                    color: 'default',
-                    content: block?.content?.trim() || ''
-                  }))
-                };
-              } else {
-                // Handle case where blocks is not an array
-                console.warn(`LEGACY FORMAT: Section ${key} has invalid blocks:`, typedSection.blocks);
-                formattedSummary[key] = {
-                  title: typedSection.title || key,
-                  blocks: []
-                };
-              }
-            } else {
-              console.warn(`LEGACY FORMAT: Skipping invalid section ${key}:`, section);
-            }
-          } catch (error) {
-            console.warn(`LEGACY FORMAT: Error processing section ${key}:`, error);
-            // Continue processing other sections
-          }
-        }
-
-        console.log('LEGACY FORMAT: Formatted summary:', formattedSummary);
-        setMeetingSummary(formattedSummary);
-      } catch (error) {
-        console.error('FETCH SUMMARY: Error fetching meeting summary:', error);
-        // Don't set error state for summary fetch failure, set to null to show generate button
-        setMeetingSummary(null);
-      }
-    };
-
     const loadData = async () => {
       try {
         await fetchMeetingSummary();
@@ -312,7 +324,20 @@ function MeetingDetailsContent() {
     };
 
     loadData();
-  }, [meetingId]);
+  }, [meetingId, fetchMeetingSummary]);
+
+  // I4: when the stop-driven auto-summary finishes for THIS meeting while the page is already open,
+  // refetch so the freshly written summary appears without a manual reload.
+  useEffect(() => {
+    const onSummaryUpdated = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { meetingId?: string } | undefined;
+      if (detail?.meetingId && detail.meetingId === meetingId) {
+        void fetchMeetingSummary();
+      }
+    };
+    window.addEventListener('tandem:summary-updated', onSummaryUpdated);
+    return () => window.removeEventListener('tandem:summary-updated', onSummaryUpdated);
+  }, [meetingId, fetchMeetingSummary]);
 
   // Auto-generation check: runs when meeting is loaded with no summary
   useEffect(() => {

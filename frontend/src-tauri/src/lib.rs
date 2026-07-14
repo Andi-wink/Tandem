@@ -679,9 +679,10 @@ pub fn run() {
             let clipboard_shortcut: Shortcut = "Alt+Shift+V".parse().expect("Invalid shortcut: Alt+Shift+V");
             let canvas_shortcut: Shortcut = "Alt+Shift+A".parse().expect("Invalid shortcut: Alt+Shift+A");
             let voice_command_shortcut: Shortcut = "Alt+Shift+Q".parse().expect("Invalid shortcut: Alt+Shift+Q");
+            let record_shortcut: Shortcut = "Alt+Shift+D".parse().expect("Invalid shortcut: Alt+Shift+D");
 
             tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcuts(["Alt+Shift+S", "Alt+Shift+R", "Alt+Shift+V", "Alt+Shift+A", "Alt+Shift+Q"])
+                .with_shortcuts(["Alt+Shift+S", "Alt+Shift+R", "Alt+Shift+V", "Alt+Shift+A", "Alt+Shift+Q", "Alt+Shift+D"])
                 .expect("Failed to parse global shortcuts")
                 .with_handler(move |app, shortcut, event| {
                     use tauri::Emitter as _;
@@ -717,6 +718,17 @@ pub fn run() {
                                 log::info!("Global shortcut released: Alt+Shift+Q (voice command — stop)");
                                 let _ = app.emit("voice-command-stop", ());
                             }
+                        }
+                        return;
+                    }
+
+                    // Global record start/stop toggle (Alt+Shift+D). Fires on the Pressed edge only.
+                    // The renderer decides start-vs-stop from the current recording state and drives
+                    // the exact same code paths as the on-screen record/stop button (I4).
+                    if shortcut == &record_shortcut {
+                        if let ShortcutState::Pressed = event.state {
+                            log::info!("Global shortcut pressed: Alt+Shift+D (record toggle)");
+                            let _ = app.emit("global-record-toggle", ());
                         }
                         return;
                     }
@@ -860,7 +872,7 @@ pub fn run() {
             }
 
             // Global shortcuts are registered via .with_shortcuts() on the plugin builder
-            log::info!("Global shortcuts registered via plugin builder (Alt+Shift+S, Alt+Shift+R, Alt+Shift+V, Alt+Shift+A, Alt+Shift+Q)");
+            log::info!("Global shortcuts registered via plugin builder (Alt+Shift+S, Alt+Shift+R, Alt+Shift+V, Alt+Shift+A, Alt+Shift+Q, Alt+Shift+D)");
 
             // Canvas: spawn + supervise the agent-whiteboard servers so the whiteboard (and its MCP
             // canvas server, for "Connect MCP") are reachable on localhost the moment Tandem launches

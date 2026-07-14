@@ -309,6 +309,32 @@ export function PreferenceSettings() {
         </div>
       </div>
 
+      {/* Keyboard Shortcuts Section */}
+      <div className="bg-background rounded-lg border border-border p-6 shadow-sm">
+        <h3 className="text-lg font-semibold text-foreground mb-2">Keyboard shortcuts</h3>
+        <p className="text-sm text-muted-foreground mb-4">
+          Global shortcuts work even when Tandem is in the background.
+        </p>
+        <ul className="space-y-2.5">
+          {[
+            { keys: 'Alt+Shift+D', label: 'Start or stop recording (toggle)' },
+            { keys: 'Alt+Shift+Q', label: 'Hold to talk to the AI assistant (push-to-talk)' },
+            { keys: 'Alt+Shift+A', label: 'Hold to talk to the canvas (push-to-talk)' },
+            { keys: 'Alt+Shift+S', label: 'Region screenshot' },
+            { keys: 'Alt+Shift+R', label: 'Annotate screenshot' },
+            { keys: 'Alt+Shift+V', label: 'Capture clipboard' },
+            { keys: 'Ctrl+K', label: 'Command palette' },
+          ].map((s) => (
+            <li key={s.keys} className="flex items-center justify-between gap-4">
+              <span className="text-sm text-muted-foreground">{s.label}</span>
+              <kbd className="shrink-0 rounded border border-border bg-muted px-2 py-1 text-xs font-medium text-foreground tabular-nums">
+                {s.keys}
+              </kbd>
+            </li>
+          ))}
+        </ul>
+      </div>
+
       {/* Data Storage Locations Section */}
       <div className="bg-background rounded-lg border border-border p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-foreground mb-4">Data Storage Locations</h3>

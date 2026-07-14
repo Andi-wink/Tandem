@@ -10,6 +10,14 @@ import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { storageService } from '@/services/storageService';
 import { transcriptService } from '@/services/transcriptService';
+import { Transcript } from '@/types';
+import {
+  buildTranscriptText,
+  hasAutoSummaryStarted,
+  isAutoSummaryEnabled,
+  markAutoSummaryStarted,
+  resetAutoSummary,
+} from '@/lib/autoSummary';
 import Analytics from '@/lib/analytics';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
@@ -64,9 +72,92 @@ export function useRecordingStop(
     setMeetings,
     meetings,
     setIsMeetingActive,
+    startSummaryPolling,
   } = useSidebar();
 
   const router = useRouter();
+
+  // Stop-driven auto-summary (I4): kick off summary generation the moment transcripts are saved,
+  // from ANY stop source (tray, hotkey, UI). Idempotent per meeting id so the legacy
+  // `?source=recording` page path can never double-generate. Fire-and-forget; failures are calm.
+  const kickoffAutoSummary = useCallback(async (meetingId: string, transcripts: Transcript[]) => {
+    if (!isAutoSummaryEnabled()) return;
+    if (hasAutoSummaryStarted(meetingId)) return;
+    if (!transcripts.length) return;
+
+    const toastId = `auto-summary-${meetingId}`;
+    try {
+      // Summarizing needs a configured model. Resolve the config BEFORE taking the idempotency
+      // latch: if no provider is configured we must leave the latch UNSET so the legacy
+      // meeting-details `?source=recording` fallback (which auto-configures gemma3:1b on first run)
+      // still runs. Latching first and only releasing after a slow config read is a race — the page
+      // could mount, see the latch, and skip, leaving the meeting with no summary at all.
+      let provider: string | null = null;
+      let model: string | null = null;
+      try {
+        const cfg = await invoke('api_get_model_config') as { provider?: string; model?: string } | null;
+        provider = cfg?.provider ?? null;
+        model = cfg?.model ?? null;
+      } catch { /* no config saved yet */ }
+
+      if (!provider) {
+        console.log('[autoSummary] No model configured — leaving the legacy fallback to summarize');
+        return;
+      }
+
+      // A provider is configured: commit the latch now (before any further await) so the legacy
+      // page path sees the guard and never double-generates this meeting.
+      markAutoSummaryStarted(meetingId);
+
+      toast.loading('Summarizing…', { id: toastId, description: 'Generating your meeting summary.' });
+
+      const transcriptText = buildTranscriptText(transcripts);
+      const result = await invoke('api_process_transcript', {
+        text: transcriptText,
+        model: provider,
+        modelName: model || '',
+        meetingId,
+        chunkSize: 40000,
+        overlap: 1000,
+        customPrompt: '',
+        templateId: 'standard_meeting',
+      }) as { process_id?: string };
+
+      const processId = result?.process_id;
+      if (!processId) {
+        toast.dismiss(toastId);
+        resetAutoSummary(meetingId);
+        return;
+      }
+
+      startSummaryPolling(meetingId, processId, (poll: any) => {
+        if (poll.status === 'completed' && poll.data) {
+          toast.success('Summary ready', {
+            id: toastId,
+            description: 'Your meeting summary is ready to view.',
+            action: {
+              label: 'View',
+              onClick: () => {
+                router.push(`/meeting-details?id=${meetingId}`);
+                Analytics.trackButtonClick('view_summary_from_toast', 'auto_summary');
+              },
+            },
+            duration: 10000,
+          });
+          // Nudge an already-open meeting-details page to refetch the freshly written summary.
+          window.dispatchEvent(new CustomEvent('tandem:summary-updated', { detail: { meetingId } }));
+        } else if (poll.status === 'error' || poll.status === 'failed' || poll.status === 'cancelled' || poll.status === 'idle') {
+          toast.dismiss(toastId);
+          // Let the user retry manually from the meeting page.
+          resetAutoSummary(meetingId);
+        }
+      });
+    } catch (err) {
+      console.error('[autoSummary] Failed to kick off stop-driven summary:', err);
+      toast.dismiss(toastId);
+      resetAutoSummary(meetingId);
+    }
+  }, [router, startSummaryPolling]);
 
   // Guard to prevent duplicate/concurrent stop calls (e.g., from UI and tray simultaneously)
   const stopInProgressRef = useRef(false);
@@ -415,6 +506,10 @@ export function useRecordingStop(
           // Mark as completed
           setStatus(RecordingStatus.COMPLETED);
 
+          // I4: kick off the summary now that transcripts are persisted — works for tray/hotkey
+          // stops that never navigate through the meeting-details page. Idempotent per meeting id.
+          void kickoffAutoSummary(meetingId, freshTranscripts);
+
           // Show success toast with navigation option
           toast.success('Recording saved successfully!', {
             description: `${freshTranscripts.length} transcript segments saved.`,
@@ -541,6 +636,7 @@ export function useRecordingStop(
     meetings,
     setIsMeetingActive,
     router,
+    kickoffAutoSummary,
   ]);
 
   // Expose handleRecordingStop function to window for Rust callbacks
