@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, FolderGit2, Clock, Layers } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar } from './SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
@@ -23,6 +23,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { VisuallyHidden } from "@/components/ui/visually-hidden"
+
+import { listProjects, Project } from '@/services/projectService';
+import {
+  groupMeetingsByProject,
+  loadCollapsedGroups,
+  saveCollapsedGroups,
+  loadGroupMode,
+  saveGroupMode,
+  SidebarViewMode,
+} from '@/lib/sidebarGrouping';
 
 import { MessageToast } from '../MessageToast';
 import Logo from '../Logo';
@@ -83,6 +93,52 @@ const Sidebar: React.FC = () => {
     currentTitle: ''
   });
   const [editingTitle, setEditingTitle] = useState<string>('');
+
+  // ── Project-grouped view (I6) ──────────────────────────────────────────────
+  // "Recent" is the flat, recency-sorted list (default). "By project" groups meetings under the
+  // project they are filed under. Both the mode and per-group collapse state persist to localStorage.
+  const [viewMode, setViewMode] = useState<SidebarViewMode>('recent');
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [projects, setProjects] = useState<Project[]>([]);
+
+  // Restore persisted view mode + collapse state once on mount.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    setViewMode(loadGroupMode(window.localStorage));
+    setCollapsedGroups(loadCollapsedGroups(window.localStorage));
+  }, []);
+
+  // Load registered projects so group labels resolve from a single batched call (never a per-meeting
+  // async lookup in the render loop). Re-runs whenever `meetings` changes: filing a meeting under a
+  // brand-new project refetches meetings (updating folder_path), and this keeps the project registry
+  // in step so the new project resolves to its own group instead of silently falling into "Unfiled".
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await listProjects();
+        if (!cancelled) setProjects(list);
+      } catch {
+        if (!cancelled) setProjects([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [meetings]);
+
+  const changeViewMode = useCallback((mode: SidebarViewMode) => {
+    setViewMode(mode);
+    if (typeof window !== 'undefined') saveGroupMode(window.localStorage, mode);
+  }, []);
+
+  const toggleGroupCollapsed = useCallback((groupKey: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
+      if (typeof window !== 'undefined') saveCollapsedGroups(window.localStorage, next);
+      return next;
+    });
+  }, []);
 
   // Ensure 'meetings' folder is always expanded
   useEffect(() => {
@@ -287,6 +343,20 @@ const Sidebar: React.FC = () => {
       })
       .filter((item): item is SidebarItem => item !== undefined);
   }, [sidebarItems, searchQuery, searchResults]);
+
+  // Grouping is only active when the user has chosen "By project" and is NOT searching. While a
+  // search query is live we fall back to the flat filtered list so search behaviour is identical
+  // in both modes (the meetings folder must be expanded, matching the flat view's own guard).
+  const groupingActive =
+    viewMode === 'byProject' && !searchQuery.trim() && expandedFolders.has('meetings');
+
+  const meetingGroups = useMemo(() => {
+    if (!groupingActive) return [];
+    return groupMeetingsByProject(
+      meetings.map((m) => ({ id: m.id, title: m.title, folderPath: m.folderPath })),
+      projects.map((p) => ({ name: p.name, path: p.path })),
+    );
+  }, [groupingActive, meetings, projects]);
 
 
   const handleDelete = async (itemId: string) => {
@@ -709,19 +779,89 @@ const Sidebar: React.FC = () => {
                     </div>
                   </div>
                 ))}
+
+                {/* View toggle: Recent (flat) vs By project (grouped). */}
+                <div
+                  role="tablist"
+                  aria-label="Meeting list view"
+                  className="mx-3 mt-1 mb-1 flex items-center gap-1 rounded-lg bg-muted p-0.5"
+                >
+                  <button
+                    role="tab"
+                    aria-selected={viewMode === 'recent'}
+                    data-testid="sidebar-view-recent"
+                    onClick={() => changeViewMode('recent')}
+                    className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${viewMode === 'recent' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                  >
+                    <Clock className="w-3.5 h-3.5" />
+                    Recent
+                  </button>
+                  <button
+                    role="tab"
+                    aria-selected={viewMode === 'byProject'}
+                    data-testid="sidebar-view-by-project"
+                    onClick={() => changeViewMode('byProject')}
+                    className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${viewMode === 'byProject' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                  >
+                    <Layers className="w-3.5 h-3.5" />
+                    By project
+                  </button>
+                </div>
               </div>
             )}
 
             {/* Scrollable meeting items */}
             {!isCollapsed && (
               <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0">
-                {filteredSidebarItems
-                  .filter(item => item.type === 'folder' && expandedFolders.has(item.id) && item.children)
-                  .map(item => (
-                    <div key={`${item.id}-children`} className="mx-3">
-                      {item.children!.map(child => renderItem(child, 1))}
+                {groupingActive ? (
+                  meetingGroups.length === 0 ? (
+                    <div className="mx-3 px-3 py-4 text-xs text-muted-foreground">
+                      No meetings yet.
                     </div>
-                  ))}
+                  ) : (
+                    meetingGroups.map((group) => {
+                      const isGroupCollapsed = collapsedGroups.has(group.key);
+                      return (
+                        <div key={group.key} className="mx-3" data-testid="sidebar-group">
+                          <button
+                            type="button"
+                            data-testid="sidebar-group-header"
+                            data-group-key={group.key}
+                            aria-expanded={!isGroupCollapsed}
+                            onClick={() => toggleGroupCollapsed(group.key)}
+                            className="flex w-full items-center gap-1.5 rounded-lg px-3 py-2 my-0.5 text-sm font-medium text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                          >
+                            {isGroupCollapsed ? (
+                              <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                            ) : (
+                              <ChevronDown className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                            )}
+                            <FolderGit2 className={`w-4 h-4 flex-shrink-0 ${group.isUnfiled ? 'text-muted-foreground' : 'text-brand'}`} />
+                            <span className="truncate text-left">{group.label}</span>
+                            <span className="ml-auto flex-shrink-0 tabular-nums text-xs text-muted-foreground">
+                              {group.meetings.length}
+                            </span>
+                          </button>
+                          {!isGroupCollapsed && (
+                            <div className="ml-2">
+                              {group.meetings.map((m) =>
+                                renderItem({ id: m.id, title: m.title, type: 'file' }, 1),
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )
+                ) : (
+                  filteredSidebarItems
+                    .filter(item => item.type === 'folder' && expandedFolders.has(item.id) && item.children)
+                    .map(item => (
+                      <div key={`${item.id}-children`} className="mx-3">
+                        {item.children!.map(child => renderItem(child, 1))}
+                      </div>
+                    ))
+                )}
               </div>
             )}
           </div>

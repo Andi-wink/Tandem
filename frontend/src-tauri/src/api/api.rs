@@ -32,6 +32,9 @@ pub struct ApiResponse<T> {
 pub struct Meeting {
     pub id: String,
     pub title: String,
+    /// Physical folder this meeting was saved to (used by the sidebar to group meetings by the
+    /// project they are filed under). None when the meeting has no folder on disk yet.
+    pub folder_path: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -345,6 +348,7 @@ pub async fn api_get_meetings<R: Runtime>(
                 .map(|m| Meeting {
                     id: m.id,
                     title: m.title,
+                    folder_path: m.folder_path,
                 })
                 .collect();
             Ok(result)

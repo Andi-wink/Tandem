@@ -10,17 +10,23 @@
  * project page; its own Escape calls onEscape -> setPage('root'), so it never closes the palette.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { defaultFilter } from 'cmdk';
 import { toast } from 'sonner';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   FolderGit2, FolderKanban, Layers, Mic, Square, User, Users,
-  PanelRightOpen, PenTool, Plus, History, FileText, CalendarDays, RefreshCw,
+  PanelRightOpen, PenTool, Plus, History, FileText, CalendarDays, RefreshCw, NotebookText,
 } from 'lucide-react';
 import {
   Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem, CommandShortcut,
 } from '@/components/ui/command';
+import {
+  buildPaletteMeetingRows,
+  shouldSearchMeetings,
+  PaletteMeetingRow,
+} from '@/lib/paletteMeetingSearch';
 import { ProjectPicker, ProjectPickerSelection } from '@/components/ProjectPicker';
 import { useClaude } from '@/contexts/ClaudeContext';
 import { useCanvas } from '@/contexts/CanvasContext';
@@ -64,13 +70,28 @@ export function CommandPalette() {
   const pathname = usePathname();
   const { activeProject } = useSoloMode();
   const { isRecording, recordingMode, setRecordingMode } = useRecordingState();
-  const { currentMeeting } = useSidebar();
+  const { currentMeeting, setCurrentMeeting, meetings } = useSidebar();
   const { fileUnder } = useProjectRouteActions();
 
   const [open, setOpen] = useState(false);
   const [page, setPage] = useState<Page>('root');
   const [projectRows, setProjectRows] = useState<ProjectRow[]>([]);
   const [boards, setBoards] = useState<WhiteboardMeta[]>([]);
+
+  // ── Meeting search (I6) ────────────────────────────────────────────────────
+  // Typing >2 chars searches meetings (debounced) and shows them in a "Meetings" group below the
+  // commands. allProjects resolves each row's project chip in one batched pass (no per-row async).
+  const [query, setQuery] = useState('');
+  const [allProjects, setAllProjects] = useState<Project[]>([]);
+  // `query` is the input text that produced these rows. Rendering compares it against the live input
+  // so stale rows from a prior query are never shown (or actioned) while a newer search is in flight.
+  const [meetingResult, setMeetingResult] = useState<{ rows: PaletteMeetingRow[]; overflow: number; query: string }>({
+    rows: [],
+    overflow: 0,
+    query: '',
+  });
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const searchTokenRef = useRef(0);
 
   // The most identifying title we have for pinning the likely project (panel context first, then
   // the sidebar's current meeting).
@@ -122,10 +143,16 @@ export function CommandPalette() {
   useEffect(() => {
     if (!open) return;
     setPage('root');
+    // Fresh palette each open: no stale query or meeting rows from a prior session.
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchTokenRef.current++;
+    setQuery('');
+    setMeetingResult({ rows: [], overflow: 0, query: '' });
     let cancelled = false;
     (async () => {
       let projects: Project[] = [];
       try { projects = await listProjects(); } catch { projects = []; }
+      if (!cancelled) setAllProjects(projects);
       const history = getProjectDirHistory();
       const now = Date.now();
       const seen = new Set<string>();
@@ -175,6 +202,55 @@ export function CommandPalette() {
     })();
     return () => { cancelled = true; };
   }, [page, activeProject?.path]);
+
+  // Debounced meeting search: past 2 chars, hit the transcript index and merge with title matches
+  // (both handled by the pure buildPaletteMeetingRows). A token guards against out-of-order results.
+  const runMeetingSearch = useCallback((raw: string) => {
+    setQuery(raw);
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    if (!shouldSearchMeetings(raw)) {
+      searchTokenRef.current++;
+      setMeetingResult({ rows: [], overflow: 0, query: raw });
+      return;
+    }
+    const token = ++searchTokenRef.current;
+    searchDebounceRef.current = setTimeout(async () => {
+      let transcripts: Array<{ id: string; title: string; matchContext?: string; timestamp?: string }> = [];
+      try {
+        transcripts = await invoke('api_search_transcripts', { query: raw });
+      } catch {
+        transcripts = [];
+      }
+      if (token !== searchTokenRef.current) return; // a newer keystroke superseded this one
+      const result = buildPaletteMeetingRows(
+        raw,
+        meetings.map((m) => ({ id: m.id, title: m.title, folderPath: m.folderPath })),
+        transcripts,
+        allProjects.map((p) => ({ name: p.name, path: p.path })),
+      );
+      setMeetingResult({ ...result, query: raw });
+    }, 200);
+  }, [meetings, allProjects]);
+
+  const navigateToMeeting = useCallback((row: PaletteMeetingRow) => {
+    setCurrentMeeting({ id: row.id, title: row.title });
+    setOpen(false);
+    router.push(`/meeting-details?id=${row.id}`);
+  }, [router, setCurrentMeeting]);
+
+  // Whether the on-screen rows belong to the query currently in the input. A newer keystroke (past
+  // the search threshold) whose result has not landed yet is "pending": we suppress the old rows.
+  const meetingResultCurrent = meetingResult.query === query;
+  const meetingsSearchPending = shouldSearchMeetings(query) && !meetingResultCurrent;
+
+  // cmdk reorders groups by their top item's score during search, so a high-scoring meeting could
+  // otherwise float above the commands. Pin meeting rows to a low fixed score so any matching
+  // command ranks above them, while keeping them visible (they are already server-filtered).
+  const paletteFilter = useCallback(
+    (value: string, search: string, keywords?: string[]) =>
+      value.startsWith('meeting-result:') ? 0.0001 : defaultFilter(value, search, keywords),
+    [],
+  );
 
   // Register an unregistered dir on the fly, then file the meeting under it (copies page.tsx's
   // handleMovePickerSelect so the router learns the correction identically).
@@ -278,8 +354,13 @@ export function CommandPalette() {
             </div>
           </div>
         ) : (
-          <Command>
-            <CommandInput autoFocus placeholder="Search projects and commands…" />
+          <Command filter={paletteFilter}>
+            <CommandInput
+              autoFocus
+              placeholder="Search meetings, projects and commands…"
+              value={query}
+              onValueChange={runMeetingSearch}
+            />
             <CommandList>
               <CommandEmpty>No results.</CommandEmpty>
 
@@ -461,6 +542,64 @@ export function CommandPalette() {
                   <CommandShortcut>/handoff</CommandShortcut>
                 </CommandItem>
               </CommandGroup>
+
+              {shouldSearchMeetings(query) && (meetingsSearchPending || (meetingResultCurrent && meetingResult.rows.length > 0)) && (
+                <CommandGroup heading="Meetings">
+                  {meetingsSearchPending ? (
+                    // A newer query is debouncing / in flight: show a searching hint rather than the
+                    // previous query's rows, so no stale row can be arrow-selected or Enter-navigated.
+                    <CommandItem value="meeting-result:searching" disabled className="text-xs text-muted-foreground">
+                      <NotebookText />
+                      <span>Searching…</span>
+                    </CommandItem>
+                  ) : (
+                    <>
+                      {meetingResult.rows.map((row) => (
+                        <CommandItem
+                          key={row.id}
+                          data-testid="palette-meeting-row"
+                          // Value is unique per meeting id (never the title) so two meetings sharing a
+                          // title get distinct cmdk selection state; the title rides along as a keyword.
+                          // paletteFilter pins any `meeting-result:` row below the commands regardless.
+                          value={`meeting-result:${row.id}`}
+                          keywords={[row.title]}
+                          onSelect={() => navigateToMeeting(row)}
+                        >
+                          <NotebookText />
+                          <div className="flex min-w-0 flex-col">
+                            <div className="flex min-w-0 items-center gap-1.5">
+                              <span className="truncate">{row.title}</span>
+                              {row.projectName && (
+                                <span className="flex-shrink-0 inline-flex items-center gap-1 rounded bg-brand-muted px-1.5 py-0.5 text-[10px] font-medium text-brand-muted-foreground">
+                                  <FolderGit2 className="!h-3 !w-3" />
+                                  {row.projectName}
+                                </span>
+                              )}
+                            </div>
+                            {row.snippet ? (
+                              <span className="truncate text-xs text-muted-foreground">{row.snippet}</span>
+                            ) : row.date ? (
+                              <span className="truncate text-xs text-muted-foreground tabular-nums">
+                                {new Date(row.date).toLocaleDateString()}
+                              </span>
+                            ) : null}
+                          </div>
+                        </CommandItem>
+                      ))}
+                      {meetingResult.overflow > 0 && (
+                        <CommandItem
+                          value="meeting-result:more-in-sidebar"
+                          disabled
+                          className="text-xs text-muted-foreground"
+                        >
+                          <Layers />
+                          <span>{meetingResult.overflow} more in sidebar search</span>
+                        </CommandItem>
+                      )}
+                    </>
+                  )}
+                </CommandGroup>
+              )}
             </CommandList>
           </Command>
         )}

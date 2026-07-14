@@ -42,7 +42,7 @@ test.describe('Today agenda (calendar overlay)', () => {
     await expect(tauriPage.getByTestId('today-agenda')).toBeVisible({ timeout: 15_000 });
 
     await tauriPage.keyboard.press('Control+k');
-    await expect(tauriPage.getByPlaceholder('Search projects and commands…')).toBeVisible();
+    await expect(tauriPage.getByPlaceholder('Search meetings, projects and commands…')).toBeVisible();
 
     await expect(tauriPage.getByText('Refresh calendar')).toBeVisible();
     const showAgenda = tauriPage.getByText("Show today's agenda");

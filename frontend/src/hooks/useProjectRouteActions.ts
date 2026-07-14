@@ -17,6 +17,7 @@ import { useClaude } from '@/contexts/ClaudeContext';
 import { useSoloMode } from '@/contexts/SoloModeContext';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { listProjects, Project } from '@/services/projectService';
 import { matchProjectByName } from '@/services/soloRoutingService';
 import { recordProjectDirUse, normalizeDir } from '@/lib/projectDirHistory';
@@ -45,6 +46,7 @@ export function useProjectRouteActions() {
   const { activeProject, sessionFolder, switchProject, clearActiveProject } = useSoloMode();
   const { transcripts } = useTranscripts();
   const recordingState = useRecordingState();
+  const { refetchMeetings } = useSidebar();
 
   // Read volatile values off refs so the returned callbacks stay stable and never fire on a stale
   // closure (transcripts especially churns on every segment).
@@ -115,6 +117,11 @@ export function useProjectRouteActions() {
         }
       }
 
+      // Pull the new folder_path into the sidebar's in-memory meetings so the "By project" grouping
+      // (and the palette's project chip) reflect the move immediately, without waiting for an
+      // unrelated refetch. The sidebar's project registry re-loads off this same meetings change.
+      if (relocationRan) void refetchMeetings();
+
       const undo = () => {
         const revertLen = transcriptsRef.current.length;
         if (prev.active) switchProject(prev.active, revertLen);
@@ -151,7 +158,7 @@ export function useProjectRouteActions() {
         },
       });
     },
-    [switchProject, openPanel, clearActiveProject],
+    [switchProject, openPanel, clearActiveProject, refetchMeetings],
   );
 
   /** Resolve a spoken/typed project name fuzzily and file under it; on a miss, offer the picker.
