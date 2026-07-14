@@ -349,6 +349,13 @@ export const test = base.extend<TauriFixtures>({
     // Inject Tauri mock BEFORE any navigation
     await page.addInitScript(TAURI_MOCK_SCRIPT);
 
+    // The pre-meeting reminder (I5) is always mounted and would otherwise pop its modal over any
+    // spec that happens to run within ~90s of the fixture calendar's fixed 14:00/16:00 UTC events.
+    // Default it OFF here so it never contaminates unrelated specs; meeting-reminder.spec opts in.
+    await page.addInitScript(() => {
+      try { window.localStorage.setItem('tandem.reminder.enabled', '0'); } catch { /* ignore */ }
+    });
+
     // Intercept direct HTTP calls to the FastAPI backend
     await page.route('**/localhost:5167/**', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: 'null' }),

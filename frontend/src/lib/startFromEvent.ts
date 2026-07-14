@@ -1,5 +1,5 @@
 /**
- * startFromEvent — turn a calendar event into a seeded recording start (I3 + R1/R2/R3).
+ * startFromEvent: turn a calendar event into a seeded recording start (I3 + R1/R2/R3).
  *
  * Flow:
  *  1. Build the match pool (registered projects + discovered client folders).
@@ -8,13 +8,13 @@
  *     directly into <project>/.tandem at start.
  *     AMBIGUOUS: seed title-only, then open the chooser (non-blocking) so the user picks the folder.
  *     NONE: seed title-only.
- *  4. Always dispatch `tandem:request-start-recording` — the chooser NEVER gates the start (R1).
+ *  4. Always dispatch `tandem:request-start-recording`: the chooser NEVER gates the start (R1).
  *
  * Pure orchestration around setRecordingSeed + a window event; no React.
  */
 
 import type { CalendarEvent } from '@/lib/ics';
-import { Project } from '@/services/projectService';
+import { Project, createProject } from '@/services/projectService';
 import { rankEventProjectCandidates, type EventProjectCandidate } from '@/services/calendarEventMatcher';
 import { getMatchPool, isDiscoveredStub } from '@/services/clientFolderDiscovery';
 import { setRecordingSeed } from '@/lib/recordingSeed';
@@ -38,7 +38,7 @@ function toChooserCandidate(c: EventProjectCandidate): ChooserCandidate {
 }
 
 export interface StartFromEventOpts {
-  /** An explicit user pick (e.g. clicking a matched agenda row) — counts as consent, never re-ask. */
+  /** An explicit user pick (e.g. clicking a matched agenda row): counts as consent, never re-ask. */
   confirmedProject?: Project;
   /** Signal text for the confirmed project (falls back to the ranked signal). */
   confirmedSignal?: string;
@@ -58,14 +58,26 @@ export async function startRecordingForEvent(
   const confirmed = opts?.confirmedProject;
 
   if (confirmed) {
-    // Explicit consent: seed straight to the confirmed project.
+    // Explicit consent. If the pick is a discovered (unregistered) client folder, adopt it into a
+    // real project first, exactly as the chooser path does, so it gets a stable id, aliases and
+    // routing history instead of being filed under a throwaway "discovered:" id. createProject is
+    // idempotent by path, so a folder that is already registered simply resolves to its project.
+    let project = confirmed;
+    if (isDiscoveredStub(confirmed)) {
+      try {
+        project = await createProject(confirmed.name, confirmed.path, []);
+      } catch {
+        // Adoption failed: fall back to filing by path so the recording still lands correctly.
+        project = confirmed;
+      }
+    }
     setRecordingSeed({
       title: ev.summary,
       eventUid: ev.uid,
-      projectId: confirmed.id,
-      projectPath: confirmed.path,
-      projectName: confirmed.name,
-      signal: opts?.confirmedSignal ?? candidates.find(c => c.project.path === confirmed.path)?.signal ?? 'chosen from agenda',
+      projectId: project.id,
+      projectPath: project.path,
+      projectName: project.name,
+      signal: opts?.confirmedSignal ?? candidates.find(c => c.project.path === project.path)?.signal ?? 'chosen from agenda',
       userConfirmed: true,
     });
   } else if (confidence === 'strong') {
@@ -82,7 +94,7 @@ export async function startRecordingForEvent(
     // Seed title-only; the chooser (opened below) decides filing without blocking the start.
     setRecordingSeed({ title: ev.summary, eventUid: ev.uid });
   } else {
-    // No distinctive match — title-only seed; transcript auto-routing takes over later.
+    // No distinctive match: title-only seed; transcript auto-routing takes over later.
     setRecordingSeed({ title: ev.summary, eventUid: ev.uid });
   }
 

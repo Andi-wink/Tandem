@@ -36,6 +36,7 @@ import { ComposeProviders } from '@/components/ComposeProviders'
 import { SoloModeProvider } from '@/contexts/SoloModeContext'
 import { CanvasProvider } from '@/contexts/CanvasContext'
 import { CalendarProvider } from '@/contexts/CalendarContext'
+import { MeetingReminderHost } from '@/components/MeetingReminderDialog'
 import { CanvasVoiceListener } from '@/components/CanvasPanel/CanvasVoiceListener'
 import { CanvasHudGuard } from '@/components/CanvasPanel/CanvasHudGuard'
 import { WhiteboardPersistence } from '@/hooks/useWhiteboardPersistence'
@@ -190,6 +191,9 @@ export default function RootLayout({
                 <CanvasVoiceListener />
                 <WhiteboardPersistence />
                 <CanvasHudGuard />
+              </ErrorBoundary>
+              <ErrorBoundary fallbackLabel="Meeting reminder">
+                <MeetingReminderHost />
               </ErrorBoundary>
             </div>
           )}

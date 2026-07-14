@@ -444,6 +444,32 @@ async fn relay_event<R: Runtime>(
         .map_err(|e| format!("relay_event('{}') failed: {}", event, e))
 }
 
+/// Bring the main window to the foreground. Used by the pre-meeting recording prompt (I5) so the
+/// dialog is seen even when Tandem is minimized or behind other windows. Delegates to the tray's
+/// shared helper so the unminimize/show/set_focus sequence lives in exactly one place.
+#[tauri::command]
+fn focus_main_window<R: Runtime>(app: AppHandle<R>) {
+    tray::focus_main_window(&app);
+}
+
+/// Fire a native OS notification as a backup for the pre-meeting recording prompt (I5), so an
+/// imminent call is noticed even when the window is not focused. Thin wrapper over the notification
+/// plugin's Rust API (the same path recording notifications use); needs no extra JS capability.
+#[tauri::command]
+fn notify_meeting_starting<R: Runtime>(
+    app: AppHandle<R>,
+    title: String,
+    body: String,
+) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| format!("notify_meeting_starting failed: {}", e))
+}
+
 /// One saved whiteboard in a client's library ({project}/.tandem/whiteboards/).
 #[derive(serde::Serialize)]
 pub struct WhiteboardMeta {
@@ -990,6 +1016,8 @@ pub fn run() {
             delete_file,
             save_base64_file,
             relay_event,
+            focus_main_window,
+            notify_meeting_starting,
             list_whiteboards,
             analytics::commands::init_analytics,
             analytics::commands::disable_analytics,

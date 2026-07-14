@@ -528,7 +528,9 @@ fn build_menu<R: Runtime>(
         .build()
 }
 
-fn focus_main_window<R: Runtime>(app: &AppHandle<R>) {
+/// Bring the main window to the foreground (unminimize/show/set_focus). Shared with the I5
+/// pre-meeting prompt's `focus_main_window` Tauri command so both use one implementation.
+pub(crate) fn focus_main_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();

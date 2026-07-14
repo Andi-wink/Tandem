@@ -11,6 +11,7 @@ import { useClaude, PANEL_NOTIFICATIONS_STORAGE_KEY } from "@/contexts/ClaudeCon
 import { HANDOFF_ANONYMIZE_STORAGE_KEY, HANDOFF_PREF_SET_STORAGE_KEY } from "@/hooks/useHandoffExport"
 import { useCalendar } from "@/contexts/CalendarContext"
 import { parseIcs, eventsForToday } from "@/lib/ics"
+import { REMINDER_ENABLED_KEY, REMINDER_LEAD_SECS_KEY } from "@/hooks/useMeetingReminder"
 
 export function PreferenceSettings() {
   const {
@@ -113,6 +114,18 @@ export function PreferenceSettings() {
   useEffect(() => {
     try {
       setPanelNotifications(localStorage.getItem(PANEL_NOTIFICATIONS_STORAGE_KEY) !== '0');
+    } catch { /* ignore */ }
+  }, []);
+
+  // "Meeting reminders" toggle + lead-time: pre-meeting recording prompt (I5). Default ON, 60s.
+  // Hydrated from localStorage in an effect (avoids an SSR hydration mismatch).
+  const [remindersEnabled, setRemindersEnabled] = useState(true);
+  const [reminderLeadSecs, setReminderLeadSecs] = useState(60);
+  useEffect(() => {
+    try {
+      setRemindersEnabled(localStorage.getItem(REMINDER_ENABLED_KEY) !== '0');
+      const stored = Number(localStorage.getItem(REMINDER_LEAD_SECS_KEY));
+      if (Number.isFinite(stored) && stored > 0) setReminderLeadSecs(stored);
     } catch { /* ignore */ }
   }, []);
 
@@ -531,6 +544,46 @@ export function PreferenceSettings() {
             but Proton caches the feed, so same-day changes can take several hours to appear.
             Google secret-ICS links work too.
           </p>
+        </div>
+
+        {/* Meeting reminders (I5): pre-call prompt to start recording. */}
+        <div className="mt-6 border-t border-border pt-6">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h4 className="text-sm font-medium text-foreground mb-1">Meeting reminders</h4>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Before a scheduled call starts, Tandem prompts you to start recording and suggests
+                the folder to file it under. It never starts recording on its own.
+              </p>
+            </div>
+            <Switch
+              checked={remindersEnabled}
+              onCheckedChange={(v) => {
+                setRemindersEnabled(v);
+                try { localStorage.setItem(REMINDER_ENABLED_KEY, v ? '1' : '0'); } catch { /* ignore */ }
+              }}
+              aria-label="Meeting reminders"
+            />
+          </div>
+          <div className="mt-3 flex items-center gap-3">
+            <label htmlFor="reminder-lead" className="text-sm text-foreground">Remind me</label>
+            <select
+              id="reminder-lead"
+              value={reminderLeadSecs}
+              disabled={!remindersEnabled}
+              onChange={(e) => {
+                const secs = Number(e.target.value);
+                setReminderLeadSecs(secs);
+                try { localStorage.setItem(REMINDER_LEAD_SECS_KEY, String(secs)); } catch { /* ignore */ }
+              }}
+              className="px-2 py-1.5 text-sm bg-background border border-border rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
+            >
+              <option value={30}>30 seconds before</option>
+              <option value={60}>1 minute before</option>
+              <option value={120}>2 minutes before</option>
+              <option value={300}>5 minutes before</option>
+            </select>
+          </div>
         </div>
 
         {/* Clients folder (R2): discovered subfolders become filing candidates for calls. */}
