@@ -13,6 +13,29 @@ pub fn get_clipboard_dir(base_dir: &Path) -> PathBuf {
     base_dir.join("clipboard")
 }
 
+/// Open the clipboard, retrying briefly on a transient failure. The Windows clipboard is a
+/// single exclusive OS resource (OpenClipboard/CloseClipboard): a background reader (such as the
+/// quick-capture watcher, which polls every ~1.5s) or another app can hold it for a few
+/// milliseconds. Without a retry, a one-shot capture (Alt+Shift+V) that races that read would
+/// fail outright. A short bounded backoff lets the contending holder release first.
+fn open_clipboard_with_retry() -> Result<Clipboard> {
+    const ATTEMPTS: u32 = 8;
+    let mut last_err: Option<arboard::Error> = None;
+    for _ in 0..ATTEMPTS {
+        match Clipboard::new() {
+            Ok(cb) => return Ok(cb),
+            Err(e) => {
+                last_err = Some(e);
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        }
+    }
+    match last_err {
+        Some(e) => Err(anyhow::Error::new(e).context("Failed to open clipboard after retries")),
+        None => Err(anyhow!("Failed to open clipboard")),
+    }
+}
+
 /// Read the current clipboard content (text or image).
 /// If the clipboard contains an image it is saved to `clipboard_dir` as a PNG file
 /// and a JPEG thumbnail is generated (reusing the screenshot thumbnail helper).
@@ -20,7 +43,7 @@ pub fn read_clipboard(
     clipboard_dir: &Path,
     recording_elapsed_secs: Option<f64>,
 ) -> Result<ClipboardData> {
-    let mut clipboard = Clipboard::new().context("Failed to open clipboard")?;
+    let mut clipboard = open_clipboard_with_retry()?;
 
     let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
     let id = Uuid::new_v4().to_string();

@@ -98,6 +98,9 @@ interface ClaudeContextValue extends ClaudeState {
   // Inject a raw conversation message (user or assistant) with no SSE call — used to surface the
   // canvas agent's back-and-forth in the panel.
   injectConversationMessage: (role: ClaudeMessageRole, text: string) => void;
+  // Quick capture (Alt+Shift+N) Ctrl+Enter: drop captured content into the context basket and
+  // reveal the panel so the user can immediately ask about it.
+  captureIntoPanel: (content: string, label?: string) => void;
 }
 
 const ClaudeContext = createContext<ClaudeContextValue | null>(null);
@@ -691,6 +694,19 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     injectConversationMessage('assistant', `📋 **Claude Code:**\n\n${text}`);
   }, [injectConversationMessage]);
 
+  const captureIntoPanel = useCallback((content: string, label = 'Quick capture') => {
+    const trimmed = content.trim();
+    if (!trimmed) return;
+    addToBasket({
+      id: `quick-capture-${crypto.randomUUID()}`,
+      type: 'note',
+      label,
+      preview: trimmed.slice(0, 80),
+      fullContent: trimmed,
+    });
+    setState(prev => ({ ...prev, isPanelOpen: true }));
+  }, [addToBasket]);
+
   // Persist the conversation to the meeting folder when the recording stops, so it can be reviewed
   // later (mirrors how screenshots/clipboard/whiteboard are saved). The event carries folder_path.
   useEffect(() => {
@@ -770,7 +786,8 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     setPanelWidth,
     injectExternalMessage,
     injectConversationMessage,
-  }), [state, contextBasket, addToBasket, removeFromBasket, clearBasket, openPanel, closePanel, sendMessage, clearSessionAction, cancelStream, setApiKey, setModel, updateMeetingTitle, toggleAnonymization, toggleItemAnonymization, clearEntityMapAction, panelWidth, setPanelWidth, injectExternalMessage, injectConversationMessage]);
+    captureIntoPanel,
+  }), [state, contextBasket, addToBasket, removeFromBasket, clearBasket, openPanel, closePanel, sendMessage, clearSessionAction, cancelStream, setApiKey, setModel, updateMeetingTitle, toggleAnonymization, toggleItemAnonymization, clearEntityMapAction, panelWidth, setPanelWidth, injectExternalMessage, injectConversationMessage, captureIntoPanel]);
 
   return (
     <ClaudeContext.Provider value={value}>

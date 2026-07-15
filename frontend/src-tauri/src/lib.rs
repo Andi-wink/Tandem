@@ -41,6 +41,7 @@ pub mod calendar_ics;
 pub mod canvas;
 pub mod clipboard;
 pub mod console_utils;
+pub mod quick_capture;
 pub mod database;
 mod migration;
 pub mod notifications;
@@ -706,9 +707,10 @@ pub fn run() {
             let canvas_shortcut: Shortcut = "Alt+Shift+A".parse().expect("Invalid shortcut: Alt+Shift+A");
             let voice_command_shortcut: Shortcut = "Alt+Shift+Q".parse().expect("Invalid shortcut: Alt+Shift+Q");
             let record_shortcut: Shortcut = "Alt+Shift+E".parse().expect("Invalid shortcut: Alt+Shift+E");
+            let quick_capture_shortcut: Shortcut = "Alt+Shift+N".parse().expect("Invalid shortcut: Alt+Shift+N");
 
             tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcuts(["Alt+Shift+S", "Alt+Shift+R", "Alt+Shift+V", "Alt+Shift+A", "Alt+Shift+Q", "Alt+Shift+E"])
+                .with_shortcuts(["Alt+Shift+S", "Alt+Shift+R", "Alt+Shift+V", "Alt+Shift+A", "Alt+Shift+Q", "Alt+Shift+E", "Alt+Shift+N"])
                 .expect("Failed to parse global shortcuts")
                 .with_handler(move |app, shortcut, event| {
                     use tauri::Emitter as _;
@@ -755,6 +757,20 @@ pub fn run() {
                         if let ShortcutState::Pressed = event.state {
                             log::info!("Global shortcut pressed: Alt+Shift+E (record toggle)");
                             let _ = app.emit("global-record-toggle", ());
+                        }
+                        return;
+                    }
+
+                    // Global quick-capture bar (Alt+Shift+N). Fires on the Pressed edge only. Opens
+                    // (or dismisses) the frameless capture window. Run window creation on the main
+                    // thread to satisfy the platform windowing requirements.
+                    if shortcut == &quick_capture_shortcut {
+                        if let ShortcutState::Pressed = event.state {
+                            log::info!("Global shortcut pressed: Alt+Shift+N (quick capture)");
+                            let app_for_main = app.clone();
+                            let _ = app.run_on_main_thread(move || {
+                                quick_capture::commands::open_or_toggle(&app_for_main);
+                            });
                         }
                         return;
                     }
@@ -886,9 +902,17 @@ pub fn run() {
         )) as NotificationManagerState<tauri::Wry>)
         .manage(audio::init_system_audio_state())
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
+        .manage(Arc::new(quick_capture::QuickCaptureState::new()))
         .setup(|_app| {
             // Migrate data from old Meetily paths to Tandem paths (runs once)
             migration::run_migration();
+
+            // Quick capture (Alt+Shift+N): start the rolling clipboard watcher. It only records
+            // while the feature is enabled and keeps its buffer memory-only (see quick_capture).
+            {
+                let qc_state = _app.state::<Arc<quick_capture::QuickCaptureState>>().inner().clone();
+                quick_capture::commands::spawn_clipboard_watcher(qc_state);
+            }
 
             log::info!("Application setup complete");
 
@@ -1274,6 +1298,13 @@ pub fn run() {
             calendar_ics::fetch_calendar_ics,
             api::api_get_calendar_config,
             api::api_save_calendar_config,
+            // Quick capture (Alt+Shift+N)
+            quick_capture::commands::quick_capture_open,
+            quick_capture::commands::quick_capture_close,
+            quick_capture::commands::get_quick_capture_clips,
+            quick_capture::commands::set_quick_capture_enabled,
+            quick_capture::commands::save_quick_capture,
+            quick_capture::commands::quick_capture_send_to_ai,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

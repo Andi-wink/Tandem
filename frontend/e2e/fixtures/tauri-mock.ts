@@ -99,6 +99,20 @@ const TAURI_MOCK_SCRIPT = `
           return 'D:/Dev-projects/Client_projects';
         case 'set_clients_root':
           return null;
+
+        // ---- Quick capture (Alt+Shift+N) ----
+        case 'get_quick_capture_clips':
+          return window.__QC_CLIPS__ || [
+            { id: 'clip-1', text: 'Latest copied text about Acme onboarding cost' },
+            { id: 'clip-2', text: 'Second copied snippet' },
+          ];
+        case 'save_quick_capture':
+          return ((args && args.projectPath) || '') + '/.tandem/notes/' + ((args && args.filename) || 'note.md');
+        case 'quick_capture_send_to_ai':
+        case 'quick_capture_close':
+        case 'quick_capture_open':
+        case 'set_quick_capture_enabled':
+          return null;
         case 'get_recordings_base_dir':
           return 'C:\\\\Users\\\\test\\\\.meetily\\\\recordings';
         case 'relocate_meeting_folder':

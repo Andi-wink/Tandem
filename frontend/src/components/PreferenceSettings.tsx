@@ -12,6 +12,7 @@ import { HANDOFF_ANONYMIZE_STORAGE_KEY, HANDOFF_PREF_SET_STORAGE_KEY } from "@/h
 import { useCalendar } from "@/contexts/CalendarContext"
 import { parseIcs, eventsForToday } from "@/lib/ics"
 import { REMINDER_ENABLED_KEY, REMINDER_LEAD_SECS_KEY } from "@/hooks/useMeetingReminder"
+import { QUICK_CAPTURE_ENABLED_KEY } from "@/components/QuickCaptureListener"
 
 export function PreferenceSettings() {
   const {
@@ -126,6 +127,15 @@ export function PreferenceSettings() {
       setRemindersEnabled(localStorage.getItem(REMINDER_ENABLED_KEY) !== '0');
       const stored = Number(localStorage.getItem(REMINDER_LEAD_SECS_KEY));
       if (Number.isFinite(stored) && stored > 0) setReminderLeadSecs(stored);
+    } catch { /* ignore */ }
+  }, []);
+
+  // "Quick capture" toggle: whether Alt+Shift+N opens the capture bar and the rolling clipboard
+  // watcher runs. Default ON. Hydrated from localStorage; disabling clears the in-memory buffer.
+  const [quickCaptureEnabled, setQuickCaptureEnabled] = useState(true);
+  useEffect(() => {
+    try {
+      setQuickCaptureEnabled(localStorage.getItem(QUICK_CAPTURE_ENABLED_KEY) !== '0');
     } catch { /* ignore */ }
   }, []);
 
@@ -322,6 +332,29 @@ export function PreferenceSettings() {
         </div>
       </div>
 
+      {/* Quick Capture Section */}
+      <div className="bg-background rounded-lg border border-border p-6 shadow-sm">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h3 className="text-lg font-semibold text-foreground mb-2">Quick capture</h3>
+            <p className="text-sm text-muted-foreground">
+              Press Alt+Shift+N anywhere to drop what you just copied, plus a quick note, into the
+              right project as a dated note. Tandem keeps the last few copied text items in memory
+              only (text copies only, images are not captured), and clears them when this is off.
+            </p>
+          </div>
+          <Switch
+            checked={quickCaptureEnabled}
+            onCheckedChange={(v) => {
+              setQuickCaptureEnabled(v);
+              try { localStorage.setItem(QUICK_CAPTURE_ENABLED_KEY, v ? '1' : '0'); } catch { /* ignore */ }
+              invoke('set_quick_capture_enabled', { enabled: v }).catch(() => {});
+            }}
+            aria-label="Quick capture"
+          />
+        </div>
+      </div>
+
       {/* Keyboard Shortcuts Section */}
       <div className="bg-background rounded-lg border border-border p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-foreground mb-2">Keyboard shortcuts</h3>
@@ -336,6 +369,7 @@ export function PreferenceSettings() {
             { keys: 'Alt+Shift+S', label: 'Region screenshot' },
             { keys: 'Alt+Shift+R', label: 'Annotate screenshot' },
             { keys: 'Alt+Shift+V', label: 'Capture clipboard' },
+            { keys: 'Alt+Shift+N', label: 'Quick capture (clipboard to a project note)' },
             { keys: 'Ctrl+K', label: 'Command palette' },
           ].map((s) => (
             <li key={s.keys} className="flex items-center justify-between gap-4">

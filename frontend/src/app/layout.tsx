@@ -38,6 +38,7 @@ import { CanvasProvider } from '@/contexts/CanvasContext'
 import { CalendarProvider } from '@/contexts/CalendarContext'
 import { MeetingReminderHost } from '@/components/MeetingReminderDialog'
 import { CanvasVoiceListener } from '@/components/CanvasPanel/CanvasVoiceListener'
+import { QuickCaptureListener } from '@/components/QuickCaptureListener'
 import { CanvasHudGuard } from '@/components/CanvasPanel/CanvasHudGuard'
 import { WhiteboardPersistence } from '@/hooks/useWhiteboardPersistence'
 import { logger } from '@/lib/logger'
@@ -65,6 +66,10 @@ export default function RootLayout({
   // minimal, transparent tree instead: just the theme tokens + the pill itself.
   const pathname = usePathname()
   const isSoloHud = pathname === '/solo-hud'
+  // The global quick-capture bar (/capture) runs in its own frameless always-on-top window and
+  // must NOT inherit the full app shell / providers (Sidebar, AI panel, onboarding gate). Render a
+  // minimal tree with just the theme tokens; the page talks to Rust through commands directly.
+  const isCapture = pathname === '/capture'
 
   useEffect(() => {
     // Check onboarding status first
@@ -141,6 +146,18 @@ export default function RootLayout({
     )
   }
 
+  if (isCapture) {
+    return (
+      <html lang="en" suppressHydrationWarning>
+        <body className={`${sourceSans3.variable} font-sans antialiased`}>
+          <ThemeProvider attribute="class" defaultTheme="dark" storageKey="tandem-theme" enableSystem={false}>
+            {children}
+          </ThemeProvider>
+        </body>
+      </html>
+    )
+  }
+
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={`${sourceSans3.variable} font-sans antialiased`}>
@@ -194,6 +211,9 @@ export default function RootLayout({
               </ErrorBoundary>
               <ErrorBoundary fallbackLabel="Meeting reminder">
                 <MeetingReminderHost />
+              </ErrorBoundary>
+              <ErrorBoundary fallbackLabel="Quick capture">
+                <QuickCaptureListener />
               </ErrorBoundary>
             </div>
           )}

@@ -5,7 +5,13 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  // Single worker by design. The suite runs against the Next.js DEV server, which compiles
+  // routes on demand; several parallel workers navigating to different routes at once (now one
+  // more with the /capture quick-capture route) contend on that single compiler and produce
+  // intermittent 30s navigation timeouts / chrome-error navigations on unrelated specs
+  // (action-items, command-palette, settings, sidebar). A serial run is deterministically green.
+  // Override with PLAYWRIGHT_WORKERS if you accept the flakiness for a faster local run.
+  workers: process.env.PLAYWRIGHT_WORKERS ? Number(process.env.PLAYWRIGHT_WORKERS) : 1,
   reporter: [['html', { outputFolder: './playwright-report' }], ['list']],
   outputDir: './test-results',
 
@@ -26,6 +32,6 @@ export default defineConfig({
     command: 'pnpm run dev',
     url: 'http://localhost:3118',
     reuseExistingServer: !process.env.CI,
-    timeout: 60_000,
+    timeout: 120_000,
   },
 });
