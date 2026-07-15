@@ -18,6 +18,7 @@ import { Project, createProject } from '@/services/projectService';
 import { rankEventProjectCandidates, type EventProjectCandidate } from '@/services/calendarEventMatcher';
 import { getMatchPool, isDiscoveredStub } from '@/services/clientFolderDiscovery';
 import { setRecordingSeed } from '@/lib/recordingSeed';
+import { setPendingProjectPicker } from '@/lib/pendingProjectPicker';
 
 /** A chooser row: what ProjectPicker's `candidates` prop consumes. */
 export interface ChooserCandidate {
@@ -103,12 +104,16 @@ export async function startRecordingForEvent(
 
   // Ambiguous + not explicitly confirmed: open the chooser seeded with the ranked candidates.
   if (!confirmed && confidence === 'ambiguous') {
+    const chooserCandidates = candidates.map(toChooserCandidate);
+    // Stash FIRST, then dispatch. Off-route (a handover on Settings / meeting-details), the picker is
+    // not mounted so the event below is lost; the home page consumes this stash on mount (after the
+    // handover navigates home), mirroring the autoStartRecording bridge. On-route the mounted handler
+    // fires synchronously during dispatch and CLEARS the stash, so the on-route path never leaves a
+    // stale payload to reopen on a later home mount. (Set before dispatch precisely so that clear wins.)
+    setPendingProjectPicker({ candidates: chooserCandidates, meetingTitle: ev.summary });
     window.dispatchEvent(
       new CustomEvent('tandem:open-project-picker', {
-        detail: {
-          candidates: candidates.map(toChooserCandidate),
-          meetingTitle: ev.summary,
-        },
+        detail: { candidates: chooserCandidates, meetingTitle: ev.summary },
       }),
     );
   }

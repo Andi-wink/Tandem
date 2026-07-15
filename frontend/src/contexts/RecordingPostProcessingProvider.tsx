@@ -1,13 +1,31 @@
 'use client';
 
-import React, { useEffect, useRef } from 'react';
+import React, { createContext, useContext, useCallback, useEffect, useRef } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { listen } from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/core';
-import { appDataDir } from '@tauri-apps/api/path';
 import { useRecordingStop } from '@/hooks/useRecordingStop';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { shouldAcceptToggle } from '@/lib/recordToggle';
+import { stopRecordingViaPipeline } from '@/lib/stopRecordingFlow';
+
+/**
+ * Off-route recording stop, shared beyond this provider. The I5b meeting handover needs to stop the
+ * current recording through the exact same path as the I4 hotkey stop (invoke stop_recording + full
+ * handleRecordingStop post-processing) and AWAIT it before starting the next meeting, so it consumes
+ * this rather than re-implementing the sequence.
+ */
+export interface RecordingStopControls {
+  /** Stop the active recording and run full post-processing; resolves once transcripts are saved. */
+  stopActiveRecording: () => Promise<void>;
+}
+
+const RecordingStopContext = createContext<RecordingStopControls | null>(null);
+
+export function useRecordingStopControls(): RecordingStopControls {
+  const ctx = useContext(RecordingStopContext);
+  if (!ctx) throw new Error('useRecordingStopControls must be used within RecordingPostProcessingProvider');
+  return ctx;
+}
 
 /**
  * RecordingPostProcessingProvider
@@ -38,6 +56,21 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
   const isRecordingRef = useRef(isRecording);
   isRecordingRef.current = isRecording;
   const lastToggleRef = useRef<number | null>(null);
+
+  // True while an I5b handover is stopping the current recording and seeding the next (bracketed by the
+  // 'tandem:recording-transition' event the handover already emits). During that transition isRecording
+  // flips false partway through, so an Alt+Shift+D toggle would otherwise (a) fire a SECOND independent
+  // stop pipeline against the still-live recording, or (b) start an unrelated recording that races the
+  // handover's own seeded start. We make the toggle a no-op in BOTH directions until the transition
+  // ends. Read through a ref because the toggle listener is registered once (empty deps).
+  const handoverActiveRef = useRef(false);
+  useEffect(() => {
+    const onTransition = (e: Event) => {
+      handoverActiveRef.current = !!(e as CustomEvent<{ active?: boolean }>).detail?.active;
+    };
+    window.addEventListener('tandem:recording-transition', onTransition as EventListener);
+    return () => window.removeEventListener('tandem:recording-transition', onTransition as EventListener);
+  }, []);
 
   // The toggle listener is registered once (empty deps) so it never re-attaches. Route, navigation
   // and the stop handler are read through refs so the listener always sees current values without
@@ -101,16 +134,11 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
         window.dispatchEvent(new CustomEvent('tandem:request-stop-recording'));
         return;
       }
-      // Off route: stop the Rust pipeline ourselves, then post-process. The stop command does not
-      // emit 'recording-stop-complete' (only the tray does), so we call the handler directly.
+      // Off route: stop the Rust pipeline ourselves, then post-process, via the shared helper. It is
+      // idempotent (handleRecordingStop is guarded by stopInProgressRef) so this is safe even if
+      // another stop path races us.
       try {
-        const dataDir = await appDataDir();
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const savePath = `${dataDir}/recording-${timestamp}.wav`;
-        await invoke('stop_recording', { args: { save_path: savePath } });
-        // handleRecordingStop is idempotent (guarded by stopInProgressRef) so this is safe even if
-        // another stop path races us.
-        await handleRecordingStopRef.current(true);
+        await stopRecordingViaPipeline(handleRecordingStopRef.current);
       } catch (error) {
         console.error('[RecordingPostProcessing] Off-route hotkey stop failed:', error);
       }
@@ -137,6 +165,12 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
             console.log('[RecordingPostProcessing] Ignoring repeated record toggle within debounce window');
             return;
           }
+          // A handover is mid-flight: swallow the toggle entirely (both start and stop). Acting now
+          // would double-stop the still-live recording or race the handover's seeded start.
+          if (handoverActiveRef.current) {
+            console.log('[RecordingPostProcessing] Ignoring record toggle during handover transition');
+            return;
+          }
           lastToggleRef.current = now;
 
           if (isRecordingRef.current) {
@@ -161,5 +195,16 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
     };
   }, []);
 
-  return <>{children}</>;
+  // Stable, always-current stop entry point for consumers (I5b handover). Reads handleRecordingStop
+  // through its ref so the callback identity never changes yet always runs the latest handler.
+  const stopActiveRecording = useCallback(
+    () => stopRecordingViaPipeline(handleRecordingStopRef.current),
+    [],
+  );
+
+  return (
+    <RecordingStopContext.Provider value={{ stopActiveRecording }}>
+      {children}
+    </RecordingStopContext.Provider>
+  );
 }

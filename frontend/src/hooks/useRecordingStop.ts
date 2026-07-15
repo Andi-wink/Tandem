@@ -22,6 +22,24 @@ import Analytics from '@/lib/analytics';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
+/**
+ * Shared across ALL useRecordingStop instances (page.tsx's on-screen controls AND the
+ * RecordingPostProcessingProvider). A per-instance ref only stops a path from re-entering ITSELF; it
+ * does not stop the sibling instance from racing. During an I5b handover the provider instance runs a
+ * stop while the on-screen Stop button / Alt+Shift+D can drive page.tsx's independent instance, so a
+ * module-level guard is required to keep a single recording from being saved twice. Only one instance
+ * ever handles a given stop in normal flow (UI stop -> page instance; tray 'recording-stop-complete'
+ * -> provider instance), so sharing the guard never blocks a legitimate stop.
+ *
+ * It is a PROMISE, not a boolean: a boolean lets the loser return instantly while the winner's save +
+ * auto-summary still run unawaited in the sibling instance, so the I5b handover's stopActiveRecording()
+ * could resolve and start the next recording while the previous meeting's save (and the shared
+ * sessionStorage last_recording_* keys) is still in flight. By awaiting the SAME in-flight promise,
+ * every stop path — winner or loser, same instance re-entry or sibling race — resolves only once the
+ * actual save has completed.
+ */
+let stopInFlight: Promise<void> | null = null;
+
 interface UseRecordingStopReturn {
   handleRecordingStop: (callApi: boolean) => Promise<void>;
   isStopping: boolean;
@@ -159,8 +177,10 @@ export function useRecordingStop(
     }
   }, [router, startSummaryPolling]);
 
-  // Guard to prevent duplicate/concurrent stop calls (e.g., from UI and tray simultaneously)
-  const stopInProgressRef = useRef(false);
+  // Guard to prevent duplicate/concurrent stop calls (e.g., from UI and tray simultaneously). Shared
+  // at module scope (see `stopInFlight` above) so the on-screen and provider instances cannot both
+  // save the same recording during an I5b handover double-stop; concurrent callers await the same
+  // promise rather than returning early.
 
   // Promise to track recording-stopped event data (fixes race condition with recording-stop-complete)
   const recordingStoppedDataRef = useRef<Promise<void> | null>(null);
@@ -213,11 +233,17 @@ export function useRecordingStop(
       await recordingStoppedDataRef.current;
     }
 
-    // Guard: prevent duplicate/concurrent stop calls
-    if (stopInProgressRef.current) {
+    // Guard: a stop is already running — either this instance re-entering, or the sibling instance
+    // racing us during an I5b handover double-stop. Await the SAME in-flight promise (created below by
+    // the first caller) so every stop path resolves only once the real save/auto-summary has finished,
+    // then return without re-doing the work. The check-and-create is synchronous (no await between),
+    // so two callers can never both create a promise.
+    if (stopInFlight) {
+      await stopInFlight;
       return;
     }
-    stopInProgressRef.current = true;
+    let resolveInFlight!: () => void;
+    stopInFlight = new Promise<void>((res) => { resolveInFlight = res; });
 
     // Set status to STOPPING immediately
     setStatus(RecordingStatus.STOPPING);
@@ -618,8 +644,10 @@ export function useRecordingStop(
       // isRecording already set to false at function start
       setIsRecordingDisabled(false);
     } finally {
-      // Always reset the guard flag when done
-      stopInProgressRef.current = false;
+      // Resolve the in-flight promise (unblocking any awaiting sibling/re-entrant caller) and clear it
+      // so a later, unrelated stop can create a fresh one. Always runs, even on the error paths above.
+      resolveInFlight();
+      stopInFlight = null;
     }
   }, [
     setIsRecording,

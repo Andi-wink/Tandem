@@ -41,6 +41,7 @@ import { useCalendar } from '@/contexts/CalendarContext';
 import { findEventNear, rankEventProjectCandidates } from '@/services/calendarEventMatcher';
 import { getMatchPool } from '@/services/clientFolderDiscovery';
 import type { ChooserCandidate } from '@/lib/startFromEvent';
+import { consumePendingProjectPicker, clearPendingProjectPicker } from '@/lib/pendingProjectPicker';
 
 export default function Home() {
   // Local page state (not moved to contexts)
@@ -143,9 +144,24 @@ export default function Home() {
         setMovePickerTitle(undefined);
       }
       setMovePickerOpen(true);
+      // The live event handled it: drop any off-route stash so a later home mount cannot reopen it.
+      clearPendingProjectPicker();
     };
     window.addEventListener('tandem:open-project-picker', onOpen as EventListener);
     return () => window.removeEventListener('tandem:open-project-picker', onOpen as EventListener);
+  }, []);
+
+  // Off-route ambiguity chooser bridge (I5b): when startRecordingForEvent fired the chooser while the
+  // home controls were unmounted (a handover from Settings / meeting-details), the live event above was
+  // lost but the payload was stashed. Consume it on mount — after the handover has navigated home — so
+  // the picker still appears. Runs once; on-route firings clear the stash via onOpen, so no double-open.
+  useEffect(() => {
+    const pending = consumePendingProjectPicker();
+    if (pending && pending.candidates.length > 0) {
+      setMovePickerCandidates(pending.candidates);
+      setMovePickerTitle('Which folder is this call for?');
+      setMovePickerOpen(true);
+    }
   }, []);
 
   // Post-hoc "Move to project" for the current/last meeting. A registered project files directly;

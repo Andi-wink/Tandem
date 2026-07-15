@@ -80,6 +80,23 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const [isValidatingModel, setIsValidatingModel] = useState(false);
   const [speechDetected, setSpeechDetected] = useState(false);
   const [deviceError, setDeviceError] = useState<{ title: string, message: string } | null>(null);
+  // True while an I5b meeting handover is stopping the current recording and seeding the next. The
+  // global isRecording flag flips false partway through that flow, which would otherwise re-enable
+  // the on-screen Start button and let the user race an unrelated, unseeded recording against the
+  // handover's own seeded start. We disable the physical Start button AND the Stop button (below) for
+  // the whole handover: without the Stop gate a manual click during the brief window where the call is
+  // still recording would fire a SECOND, independent stop pipeline against the same recording. The
+  // handover's own seeded start uses the request-start EVENT, which is intentionally left ungated.
+  const [handoverActive, setHandoverActive] = useState(false);
+
+  useEffect(() => {
+    const onTransition = (e: Event) => {
+      const active = (e as CustomEvent<{ active?: boolean }>).detail?.active;
+      setHandoverActive(!!active);
+    };
+    window.addEventListener('tandem:recording-transition', onTransition as EventListener);
+    return () => window.removeEventListener('tandem:recording-transition', onTransition as EventListener);
+  }, []);
 
   useEffect(() => {
     const checkTauri = async () => {
@@ -421,7 +438,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                                   handleStartRecording();
                                 }
                               }}
-                              disabled={isStarting || isProcessing || isRecordingDisabled || isValidatingModel}
+                              disabled={isStarting || isProcessing || isRecordingDisabled || isValidatingModel || handoverActive}
                               className={`w-12 h-12 flex items-center justify-center ${
                                 isStarting || isProcessing || isValidatingModel
                                   ? 'bg-muted-foreground'
@@ -444,7 +461,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                         <DropdownMenu onOpenChange={open => { if (open) lang.refreshProvider(); }}>
                           <DropdownMenuTrigger asChild>
                             <button
-                              disabled={isStarting || isProcessing || isRecordingDisabled}
+                              disabled={isStarting || isProcessing || isRecordingDisabled || handoverActive}
                               aria-label="Recording mode and transcription language"
                               className={`relative h-12 w-7 flex items-center justify-center ${
                                 isStarting || isProcessing
@@ -551,7 +568,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                               Analytics.trackButtonClick('stop_recording', 'recording_controls');
                               handleStopRecording();
                             }}
-                            disabled={isStopping || isPausing || isResuming}
+                            disabled={isStopping || isPausing || isResuming || handoverActive}
                             className={`w-10 h-10 flex items-center justify-center ${
                               isStopping || isPausing || isResuming
                                 ? 'bg-muted-foreground'
