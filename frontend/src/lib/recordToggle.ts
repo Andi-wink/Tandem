@@ -1,7 +1,7 @@
 /**
  * Global record-toggle debounce (I4).
  *
- * The Alt+Shift+D global shortcut can repeat (OS key-repeat, or an over-eager
+ * The Alt+Shift+E global shortcut can repeat (OS key-repeat, or an over-eager
  * double press). We collapse repeats inside a short window so one intent maps to
  * one start/stop, never a start-then-immediate-stop.
  *

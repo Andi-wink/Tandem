@@ -330,7 +330,7 @@ export function PreferenceSettings() {
         </p>
         <ul className="space-y-2.5">
           {[
-            { keys: 'Alt+Shift+D', label: 'Start or stop recording (toggle)' },
+            { keys: 'Alt+Shift+E', label: 'Start or stop recording (toggle)' },
             { keys: 'Alt+Shift+Q', label: 'Hold to talk to the AI assistant (push-to-talk)' },
             { keys: 'Alt+Shift+A', label: 'Hold to talk to the canvas (push-to-talk)' },
             { keys: 'Alt+Shift+S', label: 'Region screenshot' },

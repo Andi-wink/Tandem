@@ -50,7 +50,7 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
     handleRecordingStop,
   } = useRecordingStop(setIsRecording, setIsRecordingDisabled);
 
-  // Global record hotkey (Alt+Shift+D, I4): read the live recording state through a ref so the
+  // Global record hotkey (Alt+Shift+E, I4): read the live recording state through a ref so the
   // one-time listener never captures a stale value, and collapse OS key-repeat via a 1s debounce.
   const { isRecording } = useRecordingState();
   const isRecordingRef = useRef(isRecording);
@@ -59,7 +59,7 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
 
   // True while an I5b handover is stopping the current recording and seeding the next (bracketed by the
   // 'tandem:recording-transition' event the handover already emits). During that transition isRecording
-  // flips false partway through, so an Alt+Shift+D toggle would otherwise (a) fire a SECOND independent
+  // flips false partway through, so an Alt+Shift+E toggle would otherwise (a) fire a SECOND independent
   // stop pipeline against the still-live recording, or (b) start an unrelated recording that races the
   // handover's own seeded start. We make the toggle a no-op in BOTH directions until the transition
   // ends. Read through a ref because the toggle listener is registered once (empty deps).
@@ -114,7 +114,7 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
     };
   }, [handleRecordingStop]);
 
-  // Global record toggle: on Alt+Shift+D, start or stop recording from ANY page (the shortcut is
+  // Global record toggle: on Alt+Shift+E, start or stop recording from ANY page (the shortcut is
   // OS-level, so it fires even when Tandem is in the background — the Settings card promises this).
   //
   // On the home route the on-screen RecordingControls are mounted, so we reuse the exact DOM events
@@ -174,10 +174,10 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
           lastToggleRef.current = now;
 
           if (isRecordingRef.current) {
-            console.log('[RecordingPostProcessing] Alt+Shift+D — stopping recording');
+            console.log('[RecordingPostProcessing] Alt+Shift+E, stopping recording');
             void stopFromAnywhere();
           } else {
-            console.log('[RecordingPostProcessing] Alt+Shift+D — starting recording');
+            console.log('[RecordingPostProcessing] Alt+Shift+E, starting recording');
             startFromAnywhere();
           }
         });

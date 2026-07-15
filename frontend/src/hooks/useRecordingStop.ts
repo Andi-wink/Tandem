@@ -26,7 +26,7 @@ type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'c
  * Shared across ALL useRecordingStop instances (page.tsx's on-screen controls AND the
  * RecordingPostProcessingProvider). A per-instance ref only stops a path from re-entering ITSELF; it
  * does not stop the sibling instance from racing. During an I5b handover the provider instance runs a
- * stop while the on-screen Stop button / Alt+Shift+D can drive page.tsx's independent instance, so a
+ * stop while the on-screen Stop button / Alt+Shift+E can drive page.tsx's independent instance, so a
  * module-level guard is required to keep a single recording from being saved twice. Only one instance
  * ever handles a given stop in normal flow (UI stop -> page instance; tray 'recording-stop-complete'
  * -> provider instance), so sharing the guard never blocks a legitimate stop.
