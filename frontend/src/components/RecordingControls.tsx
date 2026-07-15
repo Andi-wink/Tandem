@@ -211,8 +211,13 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   }, [onRecordingStop]);
 
   const handleStopRecording = useCallback(async () => {
-    logger.log('handleStopRecording called - isRecording:', isRecording, 'isStarting:', isStarting, 'isStopping:', isStopping);
-    if (!isRecording || isStarting || isStopping) {
+    logger.log('handleStopRecording called - isRecording:', isRecording, 'isStarting:', isStarting, 'isStopping:', isStopping, 'handoverActive:', handoverActive);
+    // Gate on handoverActive here (not just the button's disabled attr) so EVERY entry point into the
+    // stop pipeline is covered: the request-stop-recording listener below drives this same handler, and
+    // the I5b handover already runs its own stop. A second stop during the handover window would fire an
+    // independent stop_recording against the same recording. The handover's seeded start is event-driven
+    // and intentionally ungated, so this only blocks user-triggered stops mid-handover.
+    if (!isRecording || isStarting || isStopping || handoverActive) {
       logger.log('Early return from handleStopRecording due to state check');
       return;
     }
@@ -226,7 +231,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
     // Immediately trigger the stop action
     await stopRecordingAction();
-  }, [isRecording, isStarting, isStopping, stopRecordingAction, onStopInitiated]);
+  }, [isRecording, isStarting, isStopping, handoverActive, stopRecordingAction, onStopInitiated]);
 
   const handlePauseRecording = useCallback(async () => {
     if (!isRecording || isPaused || isPausing) return;

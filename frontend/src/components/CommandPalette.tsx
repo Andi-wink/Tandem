@@ -77,6 +77,21 @@ export function CommandPalette() {
   const [page, setPage] = useState<Page>('root');
   const [projectRows, setProjectRows] = useState<ProjectRow[]>([]);
   const [boards, setBoards] = useState<WhiteboardMeta[]>([]);
+  // Mirrors RecordingControls' handover gate. During an I5b meeting handover, isRecording briefly stays
+  // true while the current recording is being stopped and the next is seeded; dispatching a stop from
+  // the palette in that window would fire a second, independent stop pipeline. We hide the Stop item for
+  // the whole handover (detail.active toggles it), matching RecordingControls' tandem:recording-transition
+  // consumer exactly.
+  const [handoverActive, setHandoverActive] = useState(false);
+
+  useEffect(() => {
+    const onTransition = (e: Event) => {
+      const active = (e as CustomEvent<{ active?: boolean }>).detail?.active;
+      setHandoverActive(!!active);
+    };
+    window.addEventListener('tandem:recording-transition', onTransition as EventListener);
+    return () => window.removeEventListener('tandem:recording-transition', onTransition as EventListener);
+  }, []);
 
   // ── Meeting search (I6) ────────────────────────────────────────────────────
   // Typing >2 chars searches meetings (debounced) and shows them in a "Meetings" group below the
@@ -425,7 +440,7 @@ export function CommandPalette() {
                     </CommandItem>
                   );
                 })()}
-                {isRecording && (
+                {isRecording && !handoverActive && (
                   <CommandItem
                     value="stop recording"
                     onSelect={() => { window.dispatchEvent(new CustomEvent('tandem:request-stop-recording')); setOpen(false); }}

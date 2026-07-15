@@ -181,6 +181,49 @@ test.describe('Mid-recording handover (I5b)', () => {
     const starts = c.filter((x) => x.cmd === 'start_recording_with_devices_and_meeting');
     expect(starts.length).toBe(1);
   });
+
+  test('the palette stop path during an in-flight handover does not fire a second stop_recording, and the handover still completes', async ({ tauriPage }) => {
+    // The handover awaits a full stop (~5s in the mock) before the next start, so give it room.
+    test.setTimeout(90_000);
+    await seedImminentEventWhileRecording(tauriPage);
+    await tauriPage.goto('/');
+    await tauriPage.waitForLoadState('networkidle');
+
+    const action = tauriPage.getByRole('button', { name: 'Wrap up and start next' });
+    await expect(action).toBeVisible({ timeout: 20_000 });
+
+    await resetCalls(tauriPage);
+    await action.click();
+
+    // While the handover is stopping the current call (isRecording flips false partway through), fire
+    // the palette's Stop path directly. Driving the palette UI (Ctrl+K, arrow, Enter) is brittle mid-
+    // handover since the item is hidden precisely when handoverActive is true; dispatching the same
+    // CustomEvent the palette's Stop item dispatches is an equivalent, deterministic exercise. The
+    // handoverActive guard in RecordingControls' handleStopRecording must swallow every one, otherwise
+    // a SECOND, independent stop pipeline would run against the same recording.
+    await tauriPage.evaluate(async () => {
+      for (let i = 0; i < 12; i++) {
+        window.dispatchEvent(new CustomEvent('tandem:request-stop-recording'));
+        await new Promise((r) => setTimeout(r, 150));
+      }
+    });
+
+    // The handover still completes: the next recording starts with the calendar invite title.
+    await expect.poll(async () => {
+      const c = await calls(tauriPage);
+      const start = c.find((x) => x.cmd === 'start_recording_with_devices_and_meeting');
+      if (!start) return null;
+      return (start.args as { meeting_name?: string }).meeting_name ?? null;
+    }, { timeout: 30_000 }).toBe('Acme discovery call');
+
+    // Exactly ONE stop_recording was invoked across the whole handover, despite the palette stop path.
+    const c = await calls(tauriPage);
+    const stops = c.filter((x) => x.cmd === 'stop_recording');
+    expect(stops.length).toBe(1);
+    // And exactly one next-recording start (no duplicate/racing start either).
+    const starts = c.filter((x) => x.cmd === 'start_recording_with_devices_and_meeting');
+    expect(starts.length).toBe(1);
+  });
 });
 
 test.describe('Pre-meeting recording prompt (I5)', () => {
