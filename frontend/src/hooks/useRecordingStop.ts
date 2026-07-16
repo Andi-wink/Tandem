@@ -346,22 +346,10 @@ export function useRecordingStop(
       console.log('Waiting for transcript state updates to complete...');
       await new Promise(resolve => setTimeout(resolve, 500));
 
-      // F020: Auto-trigger handoff generation (runs in parallel with DB save).
-      // The returned promise resolves when the user confirms or cancels the dialog,
-      // so we can await it before navigating away (prevents dialog from being destroyed).
-      let handoffPromise: Promise<void> | undefined;
-      try {
-        const handoffFolderPath = sessionStorage.getItem('last_recording_folder_path');
-        const handoffMeetingName = sessionStorage.getItem('last_recording_meeting_name');
-        if (handoffFolderPath && window.triggerHandoff) {
-          handoffPromise = window.triggerHandoff(
-            handoffFolderPath,
-            handoffMeetingName || meetingTitle || 'New Meeting',
-          );
-        }
-      } catch (handoffError) {
-        console.error('Failed to trigger handoff:', handoffError);
-      }
+      // F020 auto-handoff at recording stop is DISABLED (user 2026-07-16: "at the end of meeting,
+      // don't ask to make handoff doc anymore"). Handoffs are manual-only now, via the Ctrl+K
+      // /handoff command, which still uses window.triggerHandoff and the remembered anonymize
+      // preference.
 
       // Save to SQLite
       // NOTE: enabled to save COMPLETE transcripts after frontend receives all updates
@@ -437,7 +425,6 @@ export function useRecordingStop(
               return idx > 0 ? norm.slice(0, idx) : null;
             })();
             void (async () => {
-              try { if (handoffPromise) await handoffPromise; } catch { /* proceed regardless */ }
               try {
                 await invoke<string>('relocate_meeting_folder', {
                   meetingId,
@@ -491,7 +478,6 @@ export function useRecordingStop(
                 normalizeDir(parentOf(folderPath)) === normalizeDir(seedExp.tandem);
               if (currentToken && seedExp.token === currentToken && !alreadyPlaced) {
                 void (async () => {
-                  try { if (handoffPromise) await handoffPromise; } catch { /* proceed regardless */ }
                   try {
                     await invoke<string>('relocate_meeting_folder', {
                       meetingId,
@@ -559,14 +545,7 @@ export function useRecordingStop(
             setStatus(RecordingStatus.IDLE);
           };
 
-          if (handoffPromise) {
-            // Wait for user to confirm/cancel the handoff dialog, then navigate
-            handoffPromise.then(() => {
-              setTimeout(navigateToMeeting, 500);
-            });
-          } else {
-            setTimeout(navigateToMeeting, 2000);
-          }
+          setTimeout(navigateToMeeting, 2000);
           // Track meeting completion analytics
           try {
             // Calculate meeting duration from transcript timestamps
