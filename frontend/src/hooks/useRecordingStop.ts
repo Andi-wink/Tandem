@@ -18,6 +18,9 @@ import {
   markAutoSummaryStarted,
   resetAutoSummary,
 } from '@/lib/autoSummary';
+import { readJots, clearJots, serializeJots, type Jot } from '@/lib/meetingJots';
+import { rescueJotsToDisk } from '@/lib/jotsRescue';
+import { runEnhanceNotes, hasEnhanceStarted, markEnhanceStarted } from '@/lib/enhanceNotes';
 import Analytics from '@/lib/analytics';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
@@ -73,7 +76,7 @@ export function useRecordingStop(
     setStatus,
     isStopping,
     isProcessing: isProcessingTranscript,
-    isSaving: isSavingTranscript
+    isSaving: isSavingTranscript,
   } = recordingState;
 
   const {
@@ -91,6 +94,7 @@ export function useRecordingStop(
     meetings,
     setIsMeetingActive,
     startSummaryPolling,
+    serverAddress,
   } = useSidebar();
 
   const router = useRouter();
@@ -176,6 +180,63 @@ export function useRecordingStop(
       resetAutoSummary(meetingId);
     }
   }, [router, startSummaryPolling]);
+
+  // Enhance-my-notes: run the jot->notes model pass in parallel with auto-summary and non-blocking.
+  // Only fires when jots exist (activation is jot-gated, per spec). Uses its own toast id so it never
+  // collides with the summary toast, and its own idempotency latch. Writes enhanced-notes.md to the
+  // folder the meeting actually ends up in (resolved at write time so a post-stop relocation is safe).
+  const kickoffEnhanceNotes = useCallback(async (
+    meetingId: string,
+    jots: Jot[],
+    transcripts: Transcript[],
+    fallbackFolderPath: string | null,
+    jotsPersisted: boolean,
+  ) => {
+    if (!jots.length) return;
+    if (hasEnhanceStarted(meetingId)) return;
+
+    let provider: string | null = null;
+    let model: string | null = null;
+    try {
+      const cfg = await invoke('api_get_model_config') as { provider?: string; model?: string } | null;
+      provider = cfg?.provider ?? null;
+      model = cfg?.model ?? null;
+    } catch { /* no config saved yet */ }
+
+    // No provider configured: raw jots.json is already saved, so simply skip the model pass.
+    if (!provider) {
+      console.log('[enhanceNotes] No model configured, skipping the enhance pass (jots.json is saved)');
+      return;
+    }
+
+    markEnhanceStarted(meetingId);
+
+    const resolveFolderPath = async (): Promise<string | null> => {
+      // Resolve the CURRENT folder from the DB (post-relocation), fall back to the save-time path.
+      try {
+        const meta = await invoke('api_get_meeting_metadata', { meetingId }) as { folder_path?: string } | null;
+        if (meta?.folder_path) return meta.folder_path;
+      } catch { /* fall through to the save-time path */ }
+      return fallbackFolderPath;
+    };
+
+    await runEnhanceNotes({
+      meetingId,
+      jots,
+      transcripts,
+      provider,
+      model: model || '',
+      apiKey: null, // backend resolves the provider key from its own store (mirrors /generate-title)
+      serverAddress,
+      resolveFolderPath,
+      onView: (id) => {
+        router.push(`/meeting-details?id=${id}`);
+        Analytics.trackButtonClick('view_notes_from_toast', 'enhance_notes');
+      },
+      source: 'stop',
+      jotsPersisted,
+    });
+  }, [router, serverAddress]);
 
   // Guard to prevent duplicate/concurrent stop calls (e.g., from UI and tray simultaneously). Shared
   // at module scope (see `stopInFlight` above) so the on-screen and provider instances cannot both
@@ -399,6 +460,67 @@ export function useRecordingStop(
           // Clean up IndexedDB meeting ID (redundant with markMeetingAsSaved cleanup, but ensures cleanup)
           sessionStorage.removeItem('indexeddb_current_meeting_id');
 
+          // Enhance-my-notes: persist the user's jots into the meeting folder BEFORE any deferred
+          // relocation runs below, so jots.json travels with the folder when it moves. There is no mode
+          // gate here on purpose: the JotStrip only ever writes to the jot store while it is mounted, and
+          // it mounts only for non-solo recordings. So a genuine pure-solo call leaves the store empty and
+          // readJots() is already []. Reading unconditionally means a Solo -> Meeting mid-call switch (which
+          // mounts the strip and lets the user flag jots) keeps those jots instead of a stale start-time
+          // pin discarding them.
+          const capturedJots: Jot[] = readJots();
+
+          // Resolve a folder to write jots.json into. folderPath from the recording-stopped event can
+          // legitimately be null (event without folder_path, or sessionStorage cleared under us), so we
+          // fall back to the just-saved meeting's folder from the DB before giving up.
+          let jotsFolderPath: string | null = folderPath;
+          let jotsPersisted = false;
+          if (capturedJots.length > 0) {
+            if (!jotsFolderPath && meetingId) {
+              try {
+                const meta = await invoke('api_get_meeting_metadata', { meetingId }) as { folder_path?: string } | null;
+                if (meta?.folder_path) jotsFolderPath = meta.folder_path;
+              } catch { /* fall through to the no-folder error path below */ }
+            }
+            if (jotsFolderPath) {
+              try {
+                const sep = jotsFolderPath.includes('\\') ? '\\' : '/';
+                const jotsPath = `${jotsFolderPath.replace(/[\\/]+$/, '')}${sep}jots.json`;
+                await invoke('save_transcript', { filePath: jotsPath, content: serializeJots(capturedJots) });
+                jotsPersisted = true;
+                console.log('[enhanceNotes] Saved jots.json with', capturedJots.length, 'jots');
+              } catch (jotsErr) {
+                console.error('[enhanceNotes] Failed to write jots.json:', jotsErr);
+              }
+            } else {
+              console.error('[enhanceNotes] No meeting folder resolved for jots.json');
+            }
+
+            // Never-lose invariant: if the primary jots.json write failed (or no folder was resolvable),
+            // drop a rescue copy into the default recordings base dir (a location that always exists),
+            // independent of the missing/failed meeting folder. Crucially the store is NOT cleared below
+            // (jotsPersisted stays false), so useMeetingJots' recording-started clear can only fire after
+            // the rescue exists. Best effort: if even this write fails, keep the session-only behavior.
+            if (!jotsPersisted) {
+              const rescue = await rescueJotsToDisk(capturedJots, savedMeetingName || meetingTitle || 'New Meeting');
+              if (rescue.ok) {
+                toast.error('Could not save your jots to the meeting folder', {
+                  description: `They were rescued to ${rescue.path}. Your jots are kept for this session, so you can retry.`,
+                });
+              } else {
+                toast.error('Could not save your jots', {
+                  description: 'Your jots could not be written to disk and are kept only for this session, so retry before closing the app.',
+                });
+              }
+            }
+          }
+          // Clear the active slot only when there is nothing to lose (no jots, solo) or the jots were
+          // persisted. On a write/resolve failure we keep the store so jots are never silently lost
+          // (the plan's invariant); a genuine new recording still clears it via the recording-started
+          // event, so this can never leak into the next call.
+          if (capturedJots.length === 0 || jotsPersisted) {
+            clearJots();
+          }
+
           // R3: deferred relocation. If the call was filed to a project mid-recording, its folder
           // could NOT be moved while the pipeline was writing. Now that the meeting is saved (audio
           // merged into audio.mp4, transcripts persisted) and the handoff has settled (HANDOFF.md
@@ -522,6 +644,12 @@ export function useRecordingStop(
           // stops that never navigate through the meeting-details page. Idempotent per meeting id.
           void kickoffAutoSummary(meetingId, freshTranscripts);
 
+          // Enhance-my-notes: weave the jots into the transcript. Runs in parallel with auto-summary,
+          // fully non-blocking, and only when jots exist.
+          if (capturedJots.length > 0) {
+            void kickoffEnhanceNotes(meetingId, capturedJots, freshTranscripts, jotsFolderPath, jotsPersisted);
+          }
+
           // Show success toast with navigation option
           toast.success('Recording saved successfully!', {
             description: `${freshTranscripts.length} transcript segments saved.`,
@@ -644,6 +772,7 @@ export function useRecordingStop(
     setIsMeetingActive,
     router,
     kickoffAutoSummary,
+    kickoffEnhanceNotes,
   ]);
 
   // Expose handleRecordingStop function to window for Rust callbacks

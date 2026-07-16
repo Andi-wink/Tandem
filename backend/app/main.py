@@ -116,6 +116,17 @@ class GenerateTitleRequest(BaseModel):
     model_name: str
     api_key: Optional[str] = None
 
+class EnhanceNotesRequest(BaseModel):
+    """Enhance-my-notes request: send a fully built prompt, get back Markdown notes.
+
+    The prompt (rules, jot windows, transcript appendix) is assembled and verified on the frontend so
+    the model call here stays a single synchronous completion, not the chunked summary pipeline.
+    """
+    prompt: str
+    provider: str
+    model_name: str
+    api_key: Optional[str] = None
+
 class SaveTranscriptRequest(BaseModel):
     meeting_title: str
     transcripts: List[Transcript]
@@ -257,7 +268,7 @@ async def generate_title(data: GenerateTitleRequest):
     if not data.text or not data.text.strip():
         raise HTTPException(status_code=400, detail="text is required")
 
-    # Resolve API key — prefer the one passed in, else fall back to DB
+    # Resolve API key: prefer the one passed in, else fall back to DB
     api_key = data.api_key
     if not api_key and data.provider in ("claude", "groq", "openai"):
         api_key = await db.get_api_key(data.provider)
@@ -334,6 +345,86 @@ Title:"""
     except Exception as e:
         logger.error(f"Error generating title: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Title generation failed: {e}")
+
+
+@app.post("/enhance-notes")
+async def enhance_notes(data: EnhanceNotesRequest):
+    """Run one synchronous completion for the "Enhance my notes" pass.
+
+    The frontend sends a fully assembled prompt (rules + jot windows + transcript appendix) and gets
+    back Markdown notes. Quote verification and file writing happen on the frontend; this endpoint is a
+    thin provider bridge, mirroring /generate-title, so it stays off the chunked summary pipeline.
+    """
+    from pydantic_ai import Agent
+    from pydantic_ai.models.anthropic import AnthropicModel
+    from pydantic_ai.models.groq import GroqModel
+    from pydantic_ai.models.openai import OpenAIModel
+    from pydantic_ai.providers.anthropic import AnthropicProvider
+    from pydantic_ai.providers.groq import GroqProvider
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    if not data.prompt or not data.prompt.strip():
+        raise HTTPException(status_code=400, detail="prompt is required")
+
+    # Resolve API key: prefer the one passed in, else fall back to DB (same as /generate-title).
+    api_key = data.api_key
+    if not api_key and data.provider in ("claude", "groq", "openai"):
+        api_key = await db.get_api_key(data.provider)
+
+    try:
+        if data.provider == "claude":
+            if not api_key:
+                raise HTTPException(status_code=400, detail="Anthropic API key not configured")
+            llm = AnthropicModel(data.model_name, provider=AnthropicProvider(api_key=api_key))
+        elif data.provider == "groq":
+            if not api_key:
+                raise HTTPException(status_code=400, detail="Groq API key not configured")
+            llm = GroqModel(data.model_name, provider=GroqProvider(api_key=api_key))
+        elif data.provider == "openai":
+            if not api_key:
+                raise HTTPException(status_code=400, detail="OpenAI API key not configured")
+            llm = OpenAIModel(data.model_name, provider=OpenAIProvider(api_key=api_key))
+        elif data.provider == "ollama":
+            ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+            llm = OpenAIModel(
+                model_name=data.model_name,
+                provider=OpenAIProvider(base_url=f"{ollama_host}/v1"),
+            )
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported provider: {data.provider}")
+
+        agent = Agent(llm)
+        result = await agent.run(data.prompt)
+
+        notes = ""
+        if hasattr(result, "output") and isinstance(result.output, str):
+            notes = result.output
+        elif hasattr(result, "data") and isinstance(result.data, str):
+            notes = result.data
+        else:
+            notes = str(result)
+
+        notes = notes.strip()
+        # Strip a stray code fence if the model wrapped the whole document.
+        if notes.startswith("```"):
+            first_newline = notes.find("\n")
+            if first_newline != -1:
+                notes = notes[first_newline + 1:]
+            if notes.endswith("```"):
+                notes = notes[: -3]
+            notes = notes.strip()
+
+        if not notes:
+            raise HTTPException(status_code=502, detail="LLM returned empty notes")
+
+        logger.info(f"Enhanced notes generated ({len(notes)} chars, provider={data.provider}, model={data.model_name})")
+        return {"notes": notes}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error enhancing notes: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Notes enhancement failed: {e}")
 
 
 @app.post("/delete-meeting")

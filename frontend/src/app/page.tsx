@@ -18,6 +18,7 @@ import { useRecordingStart } from '@/hooks/useRecordingStart';
 import { useRecordingStop } from '@/hooks/useRecordingStop';
 import { useTranscriptRecovery } from '@/hooks/useTranscriptRecovery';
 import { TranscriptRecovery } from '@/components/TranscriptRecovery';
+import { JotStrip } from '@/components/JotStrip';
 import { useHandoffExport } from '@/hooks/useHandoffExport';
 import { useLiveTranscriptWriter } from '@/hooks/useLiveTranscriptWriter';
 import { HandoffDialog } from '@/components/HandoffDialog';
@@ -399,7 +400,7 @@ export default function Home() {
         sessionStorage.setItem('tandem.currentRecordingToken', liveId);
         sessionStorage.removeItem('tandem.seedExpectedRelocation');
         clearPendingRelocation();
-      } catch { /* sessionStorage unavailable — deferred relocation simply won't run */ }
+      } catch { /* sessionStorage unavailable, deferred relocation simply won't run */ }
       openPanel(liveId, meetingTitle || 'Live Recording', preRecordDirRef.current, false);
 
       // ── I3 / R1: auto-file the call under its project ──
@@ -561,6 +562,9 @@ export default function Home() {
               </div>
             </div>
           )}
+
+        {/* Enhance-my-notes: live jot strip (visible only while a meeting recording is active). */}
+        <JotStrip />
 
         {/* Status Overlays - Processing and Saving */}
         <StatusOverlays

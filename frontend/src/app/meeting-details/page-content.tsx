@@ -9,6 +9,7 @@ import { toast } from 'sonner';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
 import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
 import { FiledUnderRow } from '@/components/MeetingDetails/FiledUnderRow';
+import { MeetingNotesSection } from '@/components/MeetingDetails/MeetingNotesSection';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 
 // Custom hooks
@@ -204,6 +205,15 @@ export default function PageContent({
         meetingTitle={meetingData.meetingTitle || meeting.title || 'Meeting'}
         folderPath={meeting.folder_path}
         onRelocated={() => { if (onMeetingUpdated) void onMeetingUpdated(); }}
+      />
+      {/* Enhance-my-notes: renders only when this meeting has jots / enhanced notes. */}
+      <MeetingNotesSection
+        meetingId={meeting.id}
+        folderPath={meeting.folder_path}
+        provider={modelConfig.provider}
+        model={modelConfig.model}
+        apiKey={modelConfig.apiKey ?? null}
+        serverAddress={serverAddress}
       />
       <div className="flex flex-1 overflow-hidden">
         <TranscriptPanel

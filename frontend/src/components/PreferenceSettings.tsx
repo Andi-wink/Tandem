@@ -380,6 +380,10 @@ export function PreferenceSettings() {
             </li>
           ))}
         </ul>
+        <p className="text-sm text-muted-foreground mt-4">
+          During a recording, use the jot box below the transcript to flag moments as you go. After the
+          call, Tandem weaves your jots into the transcript as grounded notes, with verbatim quotes.
+        </p>
       </div>
 
       {/* Data Storage Locations Section */}
