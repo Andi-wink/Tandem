@@ -38,8 +38,121 @@ pub use super::transcription::TranscriptUpdate;
 // GLOBAL STATE
 // ============================================================================
 
-// Simple recording state tracking
+// Simple recording state tracking. IS_RECORDING means "audio streams are open"
+// (capturing). It is reserved atomically at the very top of every start path via
+// compare_exchange so two near-simultaneous starts (on-screen button + hotkey +
+// tray + handover auto-start) cannot both pass the guard and spawn duplicate
+// pipelines. See try_reserve_recording_slot / RecordingStartGuard.
 static IS_RECORDING: AtomicBool = AtomicBool::new(false);
+
+// CLEANUP_IN_PROGRESS means "stop_recording is draining/saving" (streams already
+// stopped, but the transcription task is still flushing and files are still being
+// written). It decouples "capturing" from "draining": IS_RECORDING flips to false
+// as soon as capture stops, while CLEANUP_IN_PROGRESS stays true until the final
+// save completes. A start reservation is rejected while cleanup is in progress so a
+// new recording cannot begin mid-drain, and a second concurrent stop is rejected so
+// the model is not unloaded twice.
+static CLEANUP_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+// The meeting folder currently being drained/saved by stop_recording. Set once the
+// manager is taken out of RECORDING_MANAGER (so get_current_meeting_folder can no
+// longer see it) and cleared when cleanup finishes. is_folder_recording_active reads
+// this so a relocate of the folder is still refused while the final save writes into it.
+static CLEANUP_FOLDER: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+
+/// RAII guard for the IS_RECORDING reservation made by `try_reserve_recording_slot`.
+/// If a start path returns early (model validation, device resolution, or
+/// manager.start_recording failure) the reservation is released on drop so the flag
+/// never gets stuck true. On the success path the caller calls `disarm()` to keep the
+/// reservation. This makes it impossible for an error branch to forget to reset the flag.
+struct RecordingStartGuard {
+    armed: bool,
+}
+
+impl RecordingStartGuard {
+    /// Keep the reservation (recording started successfully): consumes the guard
+    /// so Drop does not release IS_RECORDING.
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RecordingStartGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            IS_RECORDING.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Atomically reserve the recording slot. Returns an armed guard on success, or an
+/// error string if a recording is already in progress or a stop is still draining.
+///
+/// Ordering note: we reserve IS_RECORDING first (false -> true), then check
+/// CLEANUP_IN_PROGRESS and roll back if a stop is mid-drain. Because stop sets
+/// CLEANUP_IN_PROGRESS true before it clears IS_RECORDING, the window where
+/// IS_RECORDING is false but cleanup is still running is fully covered by the rollback.
+fn try_reserve_recording_slot() -> Result<RecordingStartGuard, String> {
+    if IS_RECORDING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("Recording already in progress".to_string());
+    }
+    if CLEANUP_IN_PROGRESS.load(Ordering::SeqCst) {
+        // A stop is still draining/saving the previous recording; release the slot.
+        IS_RECORDING.store(false, Ordering::SeqCst);
+        return Err(
+            "The previous recording is still finishing up. Please wait a moment and try again."
+                .to_string(),
+        );
+    }
+    Ok(RecordingStartGuard { armed: true })
+}
+
+/// What stop_recording should do, decided up front from the recording atomics and whether
+/// the manager has actually been stored in RECORDING_MANAGER yet. Pure so the start-vs-stop
+/// ordering invariant is unit-testable without a live pipeline.
+#[derive(Debug, PartialEq, Eq)]
+enum StopAction {
+    /// Nothing is capturing (IS_RECORDING false): ignore this stop.
+    NotRecording,
+    /// A start reserved IS_RECORDING but has not populated the manager yet. Tearing down here
+    /// would unload the model and clear IS_RECORDING, clobbering the in-flight start, so this
+    /// stop must no-op and let the start finish.
+    PendingStartNoop,
+    /// A live recording exists (IS_RECORDING true and manager populated): proceed with the
+    /// full graceful teardown.
+    Teardown,
+}
+
+/// Decide stop_recording's action. `is_recording` is IS_RECORDING; `manager_populated` is
+/// whether RECORDING_MANAGER currently holds a manager. The pending-start no-op depends on
+/// BOTH being observed together: is_recording true with no manager means a start is still
+/// initializing.
+fn decide_stop_action(is_recording: bool, manager_populated: bool) -> StopAction {
+    if !is_recording {
+        StopAction::NotRecording
+    } else if !manager_populated {
+        StopAction::PendingStartNoop
+    } else {
+        StopAction::Teardown
+    }
+}
+
+/// RAII guard for the CLEANUP_IN_PROGRESS flag reserved at the top of stop_recording.
+/// Clears the flag on drop so every return path (including early error returns) leaves
+/// cleanup state consistent.
+struct CleanupGuard;
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        if let Ok(mut cf) = CLEANUP_FOLDER.lock() {
+            *cf = None;
+        }
+        CLEANUP_IN_PROGRESS.store(false, Ordering::SeqCst);
+    }
+}
 
 // Tracks when recording started (for screenshot elapsed-time calculation)
 static RECORDING_START_TIME: Mutex<Option<std::time::Instant>> = Mutex::new(None);
@@ -181,12 +294,11 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         meeting_name
     );
 
-    // Check if already recording
-    let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
-    info!("🔍 IS_RECORDING state check: {}", current_recording_state);
-    if current_recording_state {
-        return Err("Recording already in progress".to_string());
-    }
+    // Atomically reserve the recording slot BEFORE any awaits. This closes the
+    // TOCTOU window where two near-simultaneous starts both read IS_RECORDING=false
+    // and each spawned a full audio pipeline (B017). The guard releases the slot on
+    // any early-return error path below; it is disarmed only once recording is live.
+    let start_guard = try_reserve_recording_slot()?;
 
     // Validate that transcription models are available before starting recording
     info!("🔍 Validating transcription model availability before starting recording...");
@@ -356,9 +468,9 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         *global_manager = Some(manager);
     }
 
-    // Set recording flag, start time, and reset speech detection flag
-    info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
-    IS_RECORDING.store(true, Ordering::SeqCst);
+    // Set start time and reset speech detection flag. IS_RECORDING was already
+    // reserved at the top via try_reserve_recording_slot (no late store needed).
+    info!("🔍 Recording live, resetting SPEECH_DETECTED_EMITTED");
     if let Ok(mut start_time) = RECORDING_START_TIME.lock() {
         *start_time = Some(std::time::Instant::now());
     }
@@ -406,6 +518,10 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         info!("✅ Transcript-update event listener registered for history persistence");
     }
 
+    // Recording is fully live: keep the IS_RECORDING reservation instead of releasing
+    // it when the guard drops at end of scope.
+    start_guard.disarm();
+
     // Emit success event
     app.emit("recording-started", serde_json::json!({
         "message": "Recording started successfully with parallel processing",
@@ -444,12 +560,10 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         mic_device_name, system_device_name, meeting_name
     );
 
-    // Check if already recording
-    let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
-    info!("🔍 IS_RECORDING state check: {}", current_recording_state);
-    if current_recording_state {
-        return Err("Recording already in progress".to_string());
-    }
+    // Atomically reserve the recording slot BEFORE any awaits (see the default-device
+    // path for the full rationale). Closes the TOCTOU window that let two starts both
+    // spawn a pipeline (B017); guard releases the slot on any early error return.
+    let start_guard = try_reserve_recording_slot()?;
 
     // Validate that transcription models are available before starting recording
     info!("🔍 Validating transcription model availability before starting recording...");
@@ -542,9 +656,9 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         *global_manager = Some(manager);
     }
 
-    // Set recording flag, start time, and reset speech detection flag
-    info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
-    IS_RECORDING.store(true, Ordering::SeqCst);
+    // Set start time and reset speech detection flag. IS_RECORDING was already
+    // reserved at the top via try_reserve_recording_slot (no late store needed).
+    info!("🔍 Recording live, resetting SPEECH_DETECTED_EMITTED");
     if let Ok(mut start_time) = RECORDING_START_TIME.lock() {
         *start_time = Some(std::time::Instant::now());
     }
@@ -592,6 +706,9 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         info!("✅ Transcript-update event listener registered for history persistence");
     }
 
+    // Recording is fully live: keep the IS_RECORDING reservation.
+    start_guard.disarm();
+
     // Emit success event
     app.emit("recording-started", serde_json::json!({
         "message": "Recording started with custom devices and parallel processing",
@@ -619,11 +736,48 @@ pub async fn stop_recording<R: Runtime>(
         "🛑 Starting optimized recording shutdown - ensuring ALL transcript chunks are preserved"
     );
 
-    // Check if recording is active
-    if !IS_RECORDING.load(Ordering::SeqCst) {
-        info!("Recording was not active");
+    // Step 0: decide what this stop should do. IS_RECORDING is reserved (set true) at the
+    // very top of a start path (try_reserve_recording_slot), several .await points BEFORE the
+    // manager is stored in RECORDING_MANAGER (model validation, preference load, flush-profile
+    // resolution, manager.start_recording). A stop landing in that window sees IS_RECORDING
+    // true but no manager to tear down. Tearing down anyway would unload the model and clear
+    // IS_RECORDING, clobbering the in-flight start's reservation: the start would then go live
+    // (streams open, task running, listener registered, manager in the global) while
+    // is_recording() reports false forever, making that recording unstoppable and letting a
+    // later Start spawn a second full pipeline (B017). decide_stop_action encodes this: a
+    // pending start is a no-op, and the manager is read before reserving cleanup so the no-op
+    // path never touches CLEANUP_IN_PROGRESS.
+    let manager_populated = RECORDING_MANAGER.lock().await.is_some();
+    match decide_stop_action(IS_RECORDING.load(Ordering::SeqCst), manager_populated) {
+        StopAction::NotRecording => {
+            info!("Recording was not active");
+            return Ok(());
+        }
+        StopAction::PendingStartNoop => {
+            info!(
+                "🛈 Stop received while a start is still initializing (manager not yet populated) - no-op, leaving the in-flight start's reservation intact"
+            );
+            return Ok(());
+        }
+        StopAction::Teardown => {}
+    }
+
+    // Reserve the cleanup slot. If a stop is already draining/saving, a second
+    // concurrent stop (hotkey/tray toggle during the drain) is rejected here instead
+    // of unloading the transcription model twice. The guard clears CLEANUP_IN_PROGRESS
+    // on every return path below, and start reservations are rejected while it is set.
+    // Any stop that wins this CAS holds cleanup exclusively through the final save, and the
+    // manager is only take()n out of the global after that point, so once Teardown is chosen
+    // the manager stays populated until this same call removes it (a concurrent stop loses
+    // the CAS and returns above).
+    if CLEANUP_IN_PROGRESS
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        info!("Recording stop already in progress - ignoring redundant stop");
         return Ok(());
     }
+    let _cleanup_guard = CleanupGuard;
 
     // Emit shutdown progress to frontend
     let _ = app.emit(
@@ -635,45 +789,50 @@ pub async fn stop_recording<R: Runtime>(
         }),
     );
 
-    // Step 1: Stop audio capture immediately (no more new chunks) with proper error handling
-    let manager_for_cleanup = {
-        let mut global_manager = RECORDING_MANAGER.lock().await;
-        global_manager.take()
-    };
-
-    let stop_result = if let Some(mut manager) = manager_for_cleanup {
-        // Use FORCE FLUSH to immediately process all accumulated audio - eliminates 30s delay!
-        info!("🚀 Using FORCE FLUSH to eliminate pipeline accumulation delays");
-        let result = manager.stop_streams_and_force_flush().await;
-        // Store manager back for later cleanup
-        let manager_for_cleanup = Some(manager);
-        (result, manager_for_cleanup)
-    } else {
-        warn!("No recording manager found to stop");
-        (Ok(()), None)
-    };
-
-    let (stop_result, manager_for_cleanup) = stop_result;
-
-    match stop_result {
-        Ok(_) => {
-            info!("✅ Audio streams stopped successfully - no more chunks will be created");
-        }
-        Err(e) => {
-            error!("❌ Failed to stop audio streams: {}", e);
-            return Err(format!("Failed to stop audio streams: {}", e));
-        }
-    }
-
-    // Step 1.5: Clean up transcript listener to release microphone
-    // Unlisten transcript-update event to prevent lingering references
+    // Step 1: Stop audio capture immediately (no more new chunks).
+    // IMPORTANT: the manager stays in the global RECORDING_MANAGER (we do NOT take() it
+    // here). The transcript-update listener writes tail segments produced during the
+    // post-stop drain via RECORDING_MANAGER.try_lock(); if the manager were removed now,
+    // those final force-flush segments would never reach transcripts.json (B018). The
+    // manager is taken out only after the drain completes, just before the final save.
     {
-        use tauri::Listener;
-        if let Some(listener_id) = TRANSCRIPT_LISTENER_ID.lock().map_err(|e| format!("Failed to lock transcript listener: {e}"))?.take() {
-            app.unlisten(listener_id);
-            info!("✅ Transcript-update listener removed");
+        let mut global_manager = RECORDING_MANAGER.lock().await;
+        if let Some(manager) = global_manager.as_mut() {
+            // Use FORCE FLUSH to immediately process all accumulated audio - eliminates 30s delay!
+            info!("🚀 Using FORCE FLUSH to eliminate pipeline accumulation delays");
+            match manager.stop_streams_and_force_flush().await {
+                Ok(_) => {
+                    info!("✅ Audio streams stopped successfully - no more chunks will be created");
+                }
+                Err(e) => {
+                    error!("❌ Failed to stop audio streams: {}", e);
+                    return Err(format!("Failed to stop audio streams: {}", e));
+                }
+            }
+        } else {
+            // Unreachable in practice: decide_stop_action only returns Teardown when the
+            // manager was populated, and the winning stop holds CLEANUP_IN_PROGRESS through
+            // the take() below so nothing can remove it in between. Defensive: if the manager
+            // is somehow gone, do NOT fall through to unload the model / clear IS_RECORDING
+            // (that is exactly the start-vs-stop clobber we guard against) - bail out.
+            warn!("No recording manager found to stop - aborting teardown to avoid clobbering state");
+            return Ok(());
         }
     }
+
+    // Capture has stopped: flip IS_RECORDING to false immediately so is_recording()/tray
+    // reflect "not capturing". CLEANUP_IN_PROGRESS stays true through the drain/save below,
+    // which continues to reject new starts and is consulted by is_folder_recording_active.
+    info!("🔍 Capture stopped - setting IS_RECORDING to false (cleanup still in progress)");
+    IS_RECORDING.store(false, Ordering::SeqCst);
+    if let Ok(mut start_time) = RECORDING_START_TIME.lock() {
+        *start_time = None;
+    }
+    AUDIO_ELAPSED_MS.store(0, Ordering::Relaxed);
+
+    // NOTE: the transcript-update listener is intentionally NOT removed here. It must stay
+    // registered through the drain below so the final force-flush transcript segments are
+    // still written into the manager (and transcripts.json). It is unlistened after the drain.
 
     // Step 2: Signal transcription workers to finish processing ALL queued chunks
     let _ = app.emit(
@@ -739,6 +898,31 @@ pub async fn stop_recording<R: Runtime>(
         progress_task.abort();
     } else {
         info!("ℹ️ No transcription task found to wait for");
+    }
+
+    // Step 2.5: The drain is complete, so all tail transcript segments have now been
+    // written into the manager (and transcripts.json) by the listener. Remove the
+    // transcript-update listener to release the microphone reference, then take the
+    // manager out of the global for the final analytics + save below.
+    {
+        use tauri::Listener;
+        if let Some(listener_id) = TRANSCRIPT_LISTENER_ID.lock().map_err(|e| format!("Failed to lock transcript listener: {e}"))?.take() {
+            app.unlisten(listener_id);
+            info!("✅ Transcript-update listener removed");
+        }
+    }
+
+    let manager_for_cleanup = {
+        let mut global_manager = RECORDING_MANAGER.lock().await;
+        global_manager.take()
+    };
+
+    // Record the folder being saved so is_folder_recording_active still refuses a
+    // relocate of it now that the manager is no longer in the global slot.
+    if let Some(ref manager) = manager_for_cleanup {
+        if let Ok(mut cf) = CLEANUP_FOLDER.lock() {
+            *cf = manager.get_meeting_folder();
+        }
     }
 
     // Step 3: Now safely unload Whisper model after ALL chunks are processed
@@ -985,13 +1169,9 @@ pub async fn stop_recording<R: Runtime>(
         (None, None)
     };
 
-    // Set recording flag to false and clear start time
-    info!("🔍 Setting IS_RECORDING to false");
-    IS_RECORDING.store(false, Ordering::SeqCst);
-    if let Ok(mut start_time) = RECORDING_START_TIME.lock() {
-        *start_time = None;
-    }
-    AUDIO_ELAPSED_MS.store(0, Ordering::Relaxed);
+    // NOTE: IS_RECORDING / RECORDING_START_TIME / AUDIO_ELAPSED_MS were already reset
+    // right after capture stopped (Step 1). CLEANUP_IN_PROGRESS is cleared by the
+    // _cleanup_guard when this function returns.
 
     // Step 4.5: Prepare metadata for frontend (NO database save)
     // NOTE: We do NOT save to database here. The frontend will save after all transcripts are displayed.
@@ -1392,10 +1572,17 @@ pub fn is_folder_recording_active(path: &str) -> bool {
     fn norm(p: &std::path::Path) -> String {
         p.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_lowercase()
     }
-    if !IS_RECORDING.load(Ordering::SeqCst) {
+    // Refuse a relocate while the pipeline is either capturing (IS_RECORDING) or still
+    // draining/saving the just-finished meeting (CLEANUP_IN_PROGRESS): in both states
+    // the saver may still be writing transcripts.json / the audio file into this folder.
+    if !IS_RECORDING.load(Ordering::SeqCst) && !CLEANUP_IN_PROGRESS.load(Ordering::SeqCst) {
         return false;
     }
-    match get_current_meeting_folder() {
+    // While capturing, the live manager holds the folder; during cleanup the manager has
+    // been taken out of the global, so fall back to the tracked CLEANUP_FOLDER.
+    let active = get_current_meeting_folder()
+        .or_else(|| CLEANUP_FOLDER.lock().ok().and_then(|g| g.clone()));
+    match active {
         Some(active) => norm(&active) == norm(std::path::Path::new(path)),
         None => false,
     }
@@ -1407,4 +1594,86 @@ pub fn is_folder_recording_active(path: &str) -> bool {
 pub async fn get_recordings_base_dir() -> Result<Option<String>, String> {
     let base = super::recording_preferences::get_default_recordings_folder();
     Ok(Some(base.to_string_lossy().to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression for the start_recording TOCTOU (B017) and the stop/start decoupling.
+    /// Both concerns share the module-level IS_RECORDING / CLEANUP_IN_PROGRESS atomics,
+    /// so this is a single serial test to avoid interference from the parallel runner.
+    #[test]
+    fn reservation_is_exclusive_releases_on_drop_and_respects_cleanup() {
+        // Clean baseline.
+        IS_RECORDING.store(false, Ordering::SeqCst);
+        CLEANUP_IN_PROGRESS.store(false, Ordering::SeqCst);
+
+        // First start reserves the slot atomically, up front (no late store).
+        let guard = try_reserve_recording_slot().expect("first reserve should succeed");
+        assert!(IS_RECORDING.load(Ordering::SeqCst));
+
+        // A near-simultaneous second start (button + hotkey + tray + handover) is rejected
+        // instead of spawning a duplicate audio pipeline.
+        assert!(
+            try_reserve_recording_slot().is_err(),
+            "concurrent second start must be rejected"
+        );
+
+        // An early-return error path drops the guard, which releases the reservation so
+        // IS_RECORDING is never left stuck true.
+        drop(guard);
+        assert!(!IS_RECORDING.load(Ordering::SeqCst));
+
+        // A subsequent start reserves again; disarm() (the success path) keeps it held.
+        let guard2 = try_reserve_recording_slot().expect("reserve after release should succeed");
+        guard2.disarm();
+        assert!(IS_RECORDING.load(Ordering::SeqCst));
+        assert!(try_reserve_recording_slot().is_err());
+
+        // Simulate stop: capture ends (IS_RECORDING false) while cleanup drains/saves.
+        IS_RECORDING.store(false, Ordering::SeqCst);
+        CLEANUP_IN_PROGRESS.store(true, Ordering::SeqCst);
+
+        // A start during the drain is rejected even though IS_RECORDING is false, and the
+        // reservation is rolled back so IS_RECORDING is not left stuck true.
+        assert!(
+            try_reserve_recording_slot().is_err(),
+            "start during cleanup must be rejected"
+        );
+        assert!(!IS_RECORDING.load(Ordering::SeqCst));
+
+        // Once cleanup finishes, starting works again.
+        CLEANUP_IN_PROGRESS.store(false, Ordering::SeqCst);
+        let guard3 = try_reserve_recording_slot().expect("reserve after cleanup should succeed");
+        drop(guard3);
+
+        // Restore baseline for any other tests.
+        IS_RECORDING.store(false, Ordering::SeqCst);
+        CLEANUP_IN_PROGRESS.store(false, Ordering::SeqCst);
+    }
+
+    /// Regression for the start-vs-stop manager-population race. IS_RECORDING is reserved at
+    /// the top of a start path, several .await points before the manager is stored in
+    /// RECORDING_MANAGER. A stop landing in that window must NOT tear down (which would unload
+    /// the model and clear IS_RECORDING, clobbering the in-flight start), it must no-op.
+    /// decide_stop_action is the single decision point stop_recording branches on, so covering
+    /// its full truth table here exercises the ordering invariant the fix relies on.
+    #[test]
+    fn stop_action_no_ops_while_a_start_has_not_populated_the_manager() {
+        // is_recording=false -> nothing to stop, regardless of manager state.
+        assert_eq!(decide_stop_action(false, false), StopAction::NotRecording);
+        assert_eq!(decide_stop_action(false, true), StopAction::NotRecording);
+
+        // is_recording=true but manager not yet populated: this is exactly the start-vs-stop
+        // window. Must no-op so the in-flight start's reservation is left intact.
+        assert_eq!(
+            decide_stop_action(true, false),
+            StopAction::PendingStartNoop,
+            "a stop during a pending start (IS_RECORDING reserved, manager not yet stored) must no-op"
+        );
+
+        // is_recording=true and manager populated: a genuine live recording, tear it down.
+        assert_eq!(decide_stop_action(true, true), StopAction::Teardown);
+    }
 }

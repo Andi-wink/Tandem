@@ -148,6 +148,95 @@ export function extractActionItems(summary: any): string[] {
   });
 }
 
+// ─── Display filtering: hide the action-items section from the summary BODY ──────
+// The action items are shown as the interactive checklist, so the editable summary should
+// not repeat them. These strippers produce a DISPLAY-only projection; the caller keeps the
+// original unfiltered summary as the save source (see BlockNoteSummaryView edit affordance).
+
+/**
+ * Removes the action-items heading and the lines beneath it (until the next heading) from a
+ * markdown summary. Everything else is preserved verbatim.
+ */
+export function stripActionItemsFromMarkdown(markdown: string): string {
+  if (!markdown) return markdown;
+  const lines = markdown.split(/\r?\n/);
+  const out: string[] = [];
+  let inSection = false;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (isMarkdownHeading(line)) {
+      const headingText = line.replace(/^#{1,6}\s+/, '');
+      if (ACTION_HEADING_RE.test(headingText)) {
+        inSection = true; // drop this heading + its body
+        continue;
+      }
+      inSection = false; // a different heading ends the action section
+      out.push(rawLine);
+      continue;
+    }
+    if (inSection) continue; // drop the action-section body
+    out.push(rawLine);
+  }
+
+  // Collapse the blank-line run the removed section may leave behind.
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
+}
+
+/**
+ * Removes the action-items heading block and every block that follows it, up to the next
+ * heading block, from a BlockNote `summary_json` array. Other blocks are preserved.
+ */
+export function stripActionItemsFromBlockNote(blocks: any[]): any[] {
+  if (!Array.isArray(blocks)) return blocks;
+  const out: any[] = [];
+  let inSection = false;
+
+  for (const block of blocks) {
+    if (block && typeof block === 'object' && (block.type || '') === 'heading') {
+      const text = blockNoteText(block.content).trim();
+      if (ACTION_HEADING_RE.test(text)) {
+        inSection = true; // drop this heading + following blocks
+        continue;
+      }
+      inSection = false;
+      out.push(block);
+      continue;
+    }
+    if (inSection) continue;
+    out.push(block);
+  }
+
+  return out;
+}
+
+/**
+ * Removes the action-items section (matched by key OR title) from a legacy sectioned summary,
+ * pruning it from `_section_order` as well. Meta keys are preserved.
+ */
+export function stripActionItemsFromLegacy(summary: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [key, section] of Object.entries(summary)) {
+    if (key === 'markdown' || key === 'summary_json' || key === '_section_order' || key === 'MeetingName') {
+      out[key] = section;
+      continue;
+    }
+    if (section && typeof section === 'object') {
+      const title = typeof section.title === 'string' ? section.title : '';
+      if (ACTION_HEADING_RE.test(key) || ACTION_HEADING_RE.test(title)) continue; // drop section
+    }
+    out[key] = section;
+  }
+  if (Array.isArray(out._section_order)) {
+    out._section_order = out._section_order.filter((k: string) => {
+      const sec = summary[k];
+      const title = sec && typeof sec === 'object' && typeof sec.title === 'string' ? sec.title : '';
+      return !(ACTION_HEADING_RE.test(k) || ACTION_HEADING_RE.test(title));
+    });
+  }
+  return out;
+}
+
 /** Stable per-item id: index guards against duplicate item text colliding. */
 export function actionItemId(index: number, text: string): string {
   return `${index}::${text}`;

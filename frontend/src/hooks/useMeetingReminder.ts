@@ -3,7 +3,7 @@
 /**
  * useMeetingReminder: drives the pre-meeting recording prompt and the mid-recording handover (I5/I5b).
  *
- * Every 15s (and immediately, and whenever today's calendar events change) it asks the pure
+ * Every 15s (and immediately, and whenever the calendar events change) it asks the pure
  * MeetingReminderEngine whether a call is about to start, and in which mode:
  *
  *  - IDLE ('dialog' mode): compute the project match, bring the window forward, fire a backup OS
@@ -88,7 +88,12 @@ function startsInLabel(startMs: number): string {
 }
 
 export function useMeetingReminder() {
-  const { todayEvents, configured } = useCalendar();
+  // Peek over the FULL expanded window (yesterday..+7d), not the per-poll todayEvents snapshot. The
+  // engine already scopes eligibility to the lead/grace window around now, so the wider set costs
+  // nothing but fixes the local-midnight rollover: an event on the NEW day is present the instant its
+  // lead window opens, instead of being absent until the next poll re-snapshots todayEvents (by which
+  // point a just-started call is already past PAST_GRACE_MS and lost forever).
+  const { events, configured } = useCalendar();
   const { isRecording } = useRecordingState();
   const { stopActiveRecording } = useRecordingStopControls();
 
@@ -313,7 +318,7 @@ export function useMeetingReminder() {
     // Peek WITHOUT marking fired. Events already shown or queued are already marked, so peek skips
     // them: this lets a second back-to-back call surface even while the first dialog is still open.
     // Recording no longer suppresses (I5b): it only flips the mode to 'handover'.
-    const pick = engine.peek(todayEvents, Date.now(), isRecording);
+    const pick = engine.peek(events, Date.now(), isRecording);
     if (!pick) return;
     const ev = pick.event;
 
@@ -355,9 +360,9 @@ export function useMeetingReminder() {
     } finally {
       pendingRef.current = false;
     }
-  }, [configured, isRecording, todayEvents, persist, showReminder]);
+  }, [configured, isRecording, events, persist, showReminder]);
 
-  // 15s ticker. Re-arming on todayEvents / isRecording change means a freshly loaded calendar or a
+  // 15s ticker. Re-arming on events / isRecording change means a freshly loaded calendar or a
   // changed recording state is evaluated right away rather than up to 15s later.
   useEffect(() => {
     if (!configured) return;

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   parseIcs,
   unfoldIcsLines,
@@ -74,6 +74,19 @@ SUMMARY:Berlin weekly
 DTSTART;TZID=Europe/Berlin:20261019T140000
 DTEND;TZID=Europe/Berlin:20261019T143000
 RRULE:FREQ=WEEKLY;BYDAY=MO
+END:VEVENT
+END:VCALENDAR`;
+
+// (d-FLOAT) Daily recurring 09:00 with a FLOATING datetime (no Z, no TZID). Interpreted as the
+//           host's local wall time; must stay pinned to 09:00 local across the Europe/Berlin
+//           spring-forward on 2026-03-29 (CET->CEST), not freeze a UTC offset.
+const DAILY_FLOATING_DST_ICS = `BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:daily-floating
+SUMMARY:Floating standup
+DTSTART:20260325T090000
+DTEND:20260325T093000
+RRULE:FREQ=DAILY
 END:VEVENT
 END:VCALENDAR`;
 
@@ -283,6 +296,73 @@ describe('expandOccurrences — weekly across a DST boundary', () => {
       '2026-10-26T13:00:00.000Z', // 14:00 CET  (+1) — would be 12:00Z if the offset drifted
       '2026-11-02T13:00:00.000Z', // 14:00 CET  (+1)
     ]);
+  });
+});
+
+describe('expandOccurrences — floating daily across a DST boundary', () => {
+  const savedTz = process.env.TZ;
+  beforeAll(() => {
+    process.env.TZ = 'Europe/Berlin';
+  });
+  afterAll(() => {
+    if (savedTz === undefined) delete process.env.TZ;
+    else process.env.TZ = savedTz;
+  });
+
+  it('keeps a floating 09:00 pinned to 09:00 local as CET->CEST shifts the offset', () => {
+    const events = parseIcs(DAILY_FLOATING_DST_ICS);
+    // Window: Mar 25 (CET, +1) through Mar 31 (CEST, +2). Spring-forward is 2026-03-29.
+    const windowStart = Date.parse('2026-03-25T00:00:00Z');
+    const windowEnd = Date.parse('2026-03-31T12:00:00Z');
+    const occ = expandOccurrences(events, windowStart, windowEnd);
+    // Every occurrence must read 09:00 in Berlin local time, regardless of the UTC offset.
+    const localHours = occ.map((e) =>
+      new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Europe/Berlin',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).format(new Date(e.startMs)),
+    );
+    expect(localHours.every((h) => h === '09:00')).toBe(true);
+    // Concretely: Mar 25 09:00 CET = 08:00Z; Mar 30 09:00 CEST = 07:00Z (would be 08:00Z if drifted).
+    const iso = occ.map((e) => new Date(e.startMs).toISOString());
+    expect(iso).toContain('2026-03-25T08:00:00.000Z');
+    expect(iso).toContain('2026-03-30T07:00:00.000Z');
+  });
+});
+
+describe('unescapeText via parseIcs — escaped backslash before n', () => {
+  it('renders C:\\nightly (escaped backslash) without injecting a newline', () => {
+    // RFC-encoded: literal backslash is \\, so "C:\nightly" encodes as "C:\\\\nightly".
+    const ics = [
+      'BEGIN:VCALENDAR',
+      'BEGIN:VEVENT',
+      'UID:esc',
+      'SUMMARY:C:\\\\nightly build',
+      'DTSTART:20260713T100000Z',
+      'DTEND:20260713T103000Z',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\n');
+    const events = parseIcs(ics);
+    expect(events[0].summary).toBe('C:\\nightly build');
+    expect(events[0].summary).not.toContain('\n');
+  });
+
+  it('still decodes a genuine \\n as a newline', () => {
+    const ics = [
+      'BEGIN:VCALENDAR',
+      'BEGIN:VEVENT',
+      'UID:nl',
+      'SUMMARY:line one\\nline two',
+      'DTSTART:20260713T100000Z',
+      'DTEND:20260713T103000Z',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\n');
+    const events = parseIcs(ics);
+    expect(events[0].summary).toBe('line one\nline two');
   });
 });
 

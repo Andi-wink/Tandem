@@ -315,6 +315,66 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
     Ok(())
 }
 
+/// Normalize a path for case- and separator-insensitive equality (Windows-friendly): unify
+/// separators to `/`, drop any trailing slash, lowercase. Used to detect a same-folder relocate.
+fn normalize_path_for_eq(p: &std::path::Path) -> String {
+    p.to_string_lossy()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_lowercase()
+}
+
+/// True when re-filing to `dest_parent` would land the folder exactly where it already is
+/// (`dest_parent/leaf == src`), making the move a no-op that must not fall through to the
+/// collision-rename loop (which would spuriously rename it to "<leaf> (2)").
+fn is_noop_relocation(
+    dest_parent: &std::path::Path,
+    leaf: &std::ffi::OsStr,
+    src: &std::path::Path,
+) -> bool {
+    let initial = dest_parent.join(leaf);
+    normalize_path_for_eq(&initial) == normalize_path_for_eq(src)
+}
+
+#[cfg(test)]
+mod relocate_tests {
+    use super::is_noop_relocation;
+    use std::path::Path;
+
+    #[test]
+    fn same_folder_is_noop() {
+        let src = Path::new("D:/Clients/Acme/.tandem/Meeting_11_07_2026");
+        let dest_parent = Path::new("D:/Clients/Acme/.tandem");
+        let leaf = src.file_name().unwrap();
+        assert!(is_noop_relocation(dest_parent, leaf, src));
+    }
+
+    #[test]
+    fn same_folder_is_noop_across_separators_and_casing() {
+        // Windows: DB stores one casing/separator, caller rebuilds with another — still a no-op.
+        let src = Path::new(r"D:\Clients\Acme\.tandem\Meeting_11_07_2026");
+        let dest_parent = Path::new("d:/clients/acme/.tandem");
+        let leaf = Path::new("meeting_11_07_2026").file_name().unwrap();
+        assert!(is_noop_relocation(dest_parent, leaf, src));
+    }
+
+    #[test]
+    fn different_project_is_not_noop() {
+        let src = Path::new("D:/Clients/Acme/.tandem/Meeting_11_07_2026");
+        let dest_parent = Path::new("D:/Clients/Globex/.tandem");
+        let leaf = src.file_name().unwrap();
+        assert!(!is_noop_relocation(dest_parent, leaf, src));
+    }
+
+    #[test]
+    fn recordings_base_is_not_noop() {
+        let src = Path::new("D:/Clients/Acme/.tandem/Meeting_11_07_2026");
+        let dest_parent = Path::new("C:/Users/andre/AppData/Roaming/Tandem/recordings");
+        let leaf = src.file_name().unwrap();
+        assert!(!is_noop_relocation(dest_parent, leaf, src));
+    }
+}
+
 /// Relocate a saved meeting's folder into `dest_parent_dir`, preserving its leaf name, and update
 /// the SQLite `folder_path` row (R3 deferred filing). Plain Rust command because the plugin-fs ACL
 /// is $APPDATA-scoped. Refuses to move a folder the live recording is still writing.
@@ -360,6 +420,16 @@ async fn relocate_meeting_folder(
         .ok_or_else(|| "Could not determine the recording folder name.".to_string())?;
 
     let dest_parent = std::path::Path::new(&dest_parent_dir);
+
+    // Same-folder no-op guard, BEFORE the collision loop. Re-filing a meeting into the folder it
+    // already lives in (`dest_parent/leaf == src`) must return the source untouched. Otherwise the
+    // collision loop below sees the leaf "already exists" (it IS src) and renames the folder to
+    // "<leaf> (2)", turning a pure no-op into a destructive rename. Compared case/separator-
+    // insensitively so a Windows casing-only difference is also treated as a no-op.
+    if is_noop_relocation(dest_parent, leaf, src) {
+        return Ok(src_str);
+    }
+
     std::fs::create_dir_all(dest_parent)
         .map_err(|e| format!("Could not create the destination folder ({}): {}. The files stay where they are.", dest_parent_dir, e))?;
 
@@ -378,11 +448,6 @@ async fn relocate_meeting_folder(
         }
     }
 
-    // Same-folder no-op guard.
-    if dest == src {
-        return Ok(src_str);
-    }
-
     // Fast path: rename. Falls back to recursive copy + delete for cross-drive moves.
     if std::fs::rename(src, &dest).is_err() {
         copy_dir_recursive(src, &dest).map_err(|e| {
@@ -398,9 +463,32 @@ async fn relocate_meeting_folder(
     }
 
     let dest_str = dest.to_string_lossy().to_string();
-    MeetingsRepository::update_meeting_folder_path(pool, &meeting_id, &dest_str)
-        .await
-        .map_err(|e| format!("Files moved to {} but the database update failed: {}. Reopen the meeting to refresh.", dest_str, e))?;
+    if let Err(e) = MeetingsRepository::update_meeting_folder_path(pool, &meeting_id, &dest_str).await {
+        // The files already moved but the DB row could not be repointed (e.g. a transient SQLite
+        // lock). Roll the filesystem move back so the DB (still src) and disk agree, leaving a
+        // retry clean instead of stranding the row pointing at an empty/absent folder. Try the
+        // rename fast-path first; fall back to copy+delete for the cross-drive case.
+        let rolled_back = std::fs::rename(&dest, src).is_ok()
+            || match copy_dir_recursive(&dest, src) {
+                Ok(()) => {
+                    let _ = std::fs::remove_dir_all(&dest);
+                    true
+                }
+                Err(_) => false,
+            };
+        if rolled_back {
+            return Err(format!(
+                "Filing did not complete: the database update failed ({}). The files were moved back to their original folder, so nothing changed. Please try again.",
+                e
+            ));
+        }
+        // Rollback also failed: this is the genuine unavoidable divergence (disk at dest, DB at
+        // src). Keep the reopen guidance.
+        return Err(format!(
+            "Files moved to {} but the database update failed: {}. Reopen the meeting to refresh.",
+            dest_str, e
+        ));
+    }
 
     log_info!("Relocated meeting {} folder -> {}", meeting_id, dest_str);
     Ok(dest_str)

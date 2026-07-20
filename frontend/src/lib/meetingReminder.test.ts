@@ -73,6 +73,21 @@ describe('pickReminderEvent: window boundaries (recording-agnostic)', () => {
     expect(pickReminderEvent([e], now, { leadMs: 60_000, suppressedUntil: noSuppress })).toBeNull();
     expect(pickReminderEvent([e], now, { leadMs: 5 * 60_000, suppressedUntil: noSuppress })).toBe(e);
   });
+
+  // Regression: the hook now peeks over the FULL yesterday..+7d window instead of a per-poll
+  // "today" snapshot, so an event on the NEW local day is eligible the instant its lead window
+  // opens (no dependence on a poll re-snapshotting after local midnight). Feeding the whole window
+  // must still pick exactly the imminent event and ignore both the stale past day and future days.
+  it('picks a just-past-midnight event from the full multi-day window, ignoring past/future days', () => {
+    const midnight = Date.parse('2026-07-15T00:00:00Z');
+    const now = midnight + 4 * 60_000; // 00:04 the new day; lead 60s
+    const firstOfNewDay = ev({ uid: 'new-day', startMs: midnight + 5 * 60_000 }); // 00:05, imminent
+    const yesterday = ev({ uid: 'yesterday', startMs: midnight - 2 * 60 * 60_000 }); // long past
+    const laterToday = ev({ uid: 'later', startMs: midnight + 6 * 60 * 60_000 }); // hours out
+    const window = [yesterday, firstOfNewDay, laterToday];
+    const picked = pickReminderEvent(window, now, { leadMs: DEFAULT_LEAD_MS, suppressedUntil: noSuppress });
+    expect(picked?.uid).toBe('new-day');
+  });
 });
 
 describe('reminderModeFor: presentation mode selection (I5b)', () => {

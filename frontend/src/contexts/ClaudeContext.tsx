@@ -15,6 +15,7 @@ import { toast } from 'sonner';
 import { listen } from '@tauri-apps/api/event';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useContextBasket } from '@/contexts/ContextBasketContext';
+import { assignToolResult } from '@/lib/toolResultMatch';
 
 // R009: Re-export basket types so existing imports from ClaudeContext still work
 export type { ContextBasketItemType, ContextBasketItem } from '@/contexts/ContextBasketContext';
@@ -242,6 +243,10 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
   // Track the current streaming message being assembled
   const streamingTextRef = useRef('');
   const streamingToolCallsRef = useRef<ClaudeToolCall[]>([]);
+  // Id of the assistant message currently receiving the stream. Stream handlers target
+  // THIS message by id rather than conv[last], so a message injected mid-stream
+  // (canvas reply / backend notification) does not capture the delta stream.
+  const streamingMsgIdRef = useRef<string | null>(null);
   // AbortController for the current SSE stream
   const abortRef = useRef<AbortController | null>(null);
   // RAF batching for text_delta updates (stores RAF handle for cancellation)
@@ -259,6 +264,18 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     meetingIdRef.current = state.meetingId;
   }, [state.meetingId]);
 
+  // Locate the assistant message currently receiving the stream. Prefer the tracked id
+  // (robust to messages injected mid-stream); fall back to the last message only if the
+  // id is unknown or no longer present.
+  const findStreamingIndex = (conv: ClaudeMessage[]): number => {
+    const id = streamingMsgIdRef.current;
+    if (id) {
+      const idx = conv.findIndex(m => m.id === id);
+      if (idx !== -1) return idx;
+    }
+    return conv.length - 1;
+  };
+
   // Cancel any pending RAF and flush the latest streamed text into state
   const flushPendingRaf = () => {
     if (rafIdRef.current !== null) {
@@ -269,9 +286,10 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       if (finalText) {
         setState(prev => {
           const conv = [...prev.conversation];
-          const lastMsg = conv[conv.length - 1];
+          const idx = findStreamingIndex(conv);
+          const lastMsg = conv[idx];
           if (lastMsg && lastMsg.role === 'assistant') {
-            conv[conv.length - 1] = { ...lastMsg, text: finalText };
+            conv[idx] = { ...lastMsg, text: finalText };
           }
           return { ...prev, conversation: conv };
         });
@@ -300,9 +318,10 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
               rafIdRef.current = null;
               setState(prev => {
                 const conv = [...prev.conversation];
-                const lastMsg = conv[conv.length - 1];
+                const idx = findStreamingIndex(conv);
+                const lastMsg = conv[idx];
                 if (lastMsg && lastMsg.role === 'assistant') {
-                  conv[conv.length - 1] = { ...lastMsg, text: streamingTextRef.current };
+                  conv[idx] = { ...lastMsg, text: streamingTextRef.current };
                 }
                 return { ...prev, conversation: conv };
               });
@@ -318,9 +337,10 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         });
         setState(prev => {
           const conv = [...prev.conversation];
-          const lastMsg = conv[conv.length - 1];
+          const idx = findStreamingIndex(conv);
+          const lastMsg = conv[idx];
           if (lastMsg && lastMsg.role === 'assistant') {
-            conv[conv.length - 1] = {
+            conv[idx] = {
               ...lastMsg,
               toolCalls: [...streamingToolCallsRef.current],
             };
@@ -332,16 +352,13 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
       case 'tool_result':
         setState(prev => {
           const conv = [...prev.conversation];
-          const lastMsg = conv[conv.length - 1];
+          const idx = findStreamingIndex(conv);
+          const lastMsg = conv[idx];
           if (lastMsg && lastMsg.role === 'assistant' && lastMsg.toolCalls) {
-            const calls = [...lastMsg.toolCalls];
-            for (let i = calls.length - 1; i >= 0; i--) {
-              if (calls[i].name === event.tool_name && !calls[i].output) {
-                calls[i] = { ...calls[i], output: event.tool_output || '' };
-                break;
-              }
-            }
-            conv[conv.length - 1] = { ...lastMsg, toolCalls: calls };
+            // Results arrive in call order (FIFO): fill the EARLIEST still-unfilled call
+            // with a matching name, so repeated same-name calls keep input/output paired.
+            const calls = assignToolResult(lastMsg.toolCalls, event.tool_name, event.tool_output || '');
+            conv[idx] = { ...lastMsg, toolCalls: calls };
           }
           return { ...prev, conversation: conv };
         });
@@ -352,9 +369,10 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         isStreamingRef.current = false;
         setState(prev => {
           const conv = [...prev.conversation];
-          const lastMsg = conv[conv.length - 1];
+          const idx = findStreamingIndex(conv);
+          const lastMsg = conv[idx];
           if (lastMsg && lastMsg.role === 'assistant') {
-            conv[conv.length - 1] = {
+            conv[idx] = {
               ...lastMsg,
               costUsd: event.cost_usd ?? undefined,
             };
@@ -368,6 +386,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         });
         streamingTextRef.current = '';
         streamingToolCallsRef.current = [];
+        streamingMsgIdRef.current = null;
         abortRef.current = null;
         break;
 
@@ -376,9 +395,10 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         isStreamingRef.current = false;
         setState(prev => {
           const conv = [...prev.conversation];
-          const lastMsg = conv[conv.length - 1];
+          const idx = findStreamingIndex(conv);
+          const lastMsg = conv[idx];
           if (lastMsg && lastMsg.role === 'assistant') {
-            conv[conv.length - 1] = {
+            conv[idx] = {
               ...lastMsg,
               text: streamingTextRef.current + (event.text ? `\n\n**Error:** ${event.text}` : ''),
             };
@@ -387,6 +407,7 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
         });
         streamingTextRef.current = '';
         streamingToolCallsRef.current = [];
+        streamingMsgIdRef.current = null;
         abortRef.current = null;
         break;
     }
@@ -415,7 +436,9 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
     try {
       const existing = await getClaudeSession(meetingId);
       if (existing?.session_id) {
-        setState(prev => ({ ...prev, sessionId: existing.session_id }));
+        // Guard against a fast meeting switch: only apply this session if the panel is
+        // still on the meeting this call was for (mirrors the loadConversation guard below).
+        setState(prev => (prev.meetingId === meetingId ? { ...prev, sessionId: existing.session_id } : prev));
       }
     } catch {
       // 404 (no session) returns null above; other errors land here — not critical
@@ -588,6 +611,8 @@ export function ClaudeProvider({ children }: { children: React.ReactNode }) {
 
     streamingTextRef.current = '';
     streamingToolCallsRef.current = [];
+    // Track this assistant message as the stream target (robust to mid-stream injections)
+    streamingMsgIdRef.current = assistantMsg.id;
 
     // R009: Clear basket via context, update conversation in local state
     clearBasket();

@@ -88,6 +88,24 @@ export function recordProjectDirUse(dir: string, name: string, meetingTitle?: st
 }
 
 /**
+ * Undo one recorded use of a directory. Decrements the frecency count and removes the entry when
+ * it reaches zero, so a mis-routed auto-file the user Undoes does not leave a permanent +1 boost on
+ * the wrong folder (which would then out-rank the correct folder in the picker recents). A plain
+ * decrement-by-one is correct even when other real uses contributed: their counts remain. No-op
+ * when the dir is not tracked. Dedupes by normalized path, matching recordProjectDirUse.
+ */
+export function forgetProjectDirUse(dir: string): void {
+  if (!dir || !dir.trim()) return;
+  const key = normalizeDir(dir);
+  const entries = readRaw();
+  const idx = entries.findIndex(e => normalizeDir(e.dir) === key);
+  if (idx === -1) return;
+  entries[idx].count -= 1;
+  if (entries[idx].count <= 0) entries.splice(idx, 1);
+  writeRaw(entries);
+}
+
+/**
  * Generic meeting words that carry no client identity. Two unrelated clients
  * routinely share these ("Weekly Sync — Acme" vs "Weekly Sync — Globex"), so a
  * bare overlap on them must NOT be treated as a match — that would silently

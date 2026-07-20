@@ -20,7 +20,7 @@ import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { listProjects, Project } from '@/services/projectService';
 import { matchProjectByName } from '@/services/soloRoutingService';
-import { recordProjectDirUse, normalizeDir } from '@/lib/projectDirHistory';
+import { recordProjectDirUse, forgetProjectDirUse, normalizeDir } from '@/lib/projectDirHistory';
 import { ensureTandemClaudeMd } from '@/services/handoffService';
 import {
   setPendingRelocation,
@@ -39,6 +39,14 @@ export interface FileUnderOpts {
 function tandemPathFor(projectPath: string): string {
   const sep = projectPath.includes('\\') ? '\\' : '/';
   return `${projectPath}${sep}.tandem`;
+}
+
+/** Parent directory of a folder path (used to move a folder back to where it actually was on undo).
+ *  Mirrors FiledUnderRow.parentOf so both undo paths reverse to the true previous parent. */
+function parentOf(p: string): string {
+  const trimmed = p.replace(/[\\/]+$/, '');
+  const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+  return idx > 0 ? trimmed.slice(0, idx) : trimmed;
 }
 
 export function useProjectRouteActions() {
@@ -88,7 +96,7 @@ export function useProjectRouteActions() {
       //  (a) skipRelocation — the folder was created inside .tandem at recording-start (seed path).
       //  (b) recording active — DEFER: never move under the live writer. Queue for useRecordingStop.
       //  (c) not recording (post-call) — relocate now via the saved meeting's folder_path.
-      let relocationRan: { newPath: string } | null = null;
+      let relocationRan: { newPath: string; prevParent: string | null } | null = null;
       let deferred = false;
       if (!opts?.skipRelocation) {
         if (isRecordingRef.current) {
@@ -101,13 +109,25 @@ export function useProjectRouteActions() {
           }
         } else if (mId && !mId.startsWith('live-')) {
           try {
+            // Capture the TRUE previous parent before the move so Undo returns the folder to where
+            // it actually was, which may be another project's .tandem (e.g. re-filing an already
+            // filed meeting), not the default recordings base.
+            let prevParent: string | null = null;
+            try {
+              const meta = (await invoke('api_get_meeting_metadata', { meetingId: mId })) as
+                | { folder_path?: string }
+                | null;
+              if (meta?.folder_path) prevParent = parentOf(meta.folder_path);
+            } catch {
+              // Metadata read failed — Undo falls back to the recordings base below.
+            }
             const newPath = await invoke<string>('relocate_meeting_folder', {
               meetingId: mId,
               destParentDir: projectTandem,
             });
             // Only treat as a real move when the folder actually landed under the project.
             if (normalizeDir(newPath).startsWith(normalizeDir(projectTandem))) {
-              relocationRan = { newPath };
+              relocationRan = { newPath, prevParent };
             }
           } catch (e) {
             toast.error(`Filed under ${project.name}, but moving the files failed`, {
@@ -129,13 +149,22 @@ export function useProjectRouteActions() {
         if (mId && mTitle) openPanel(mId, mTitle, prev.dir || '', false);
         // Cancel a queued relocation so a dismissed filing never moves anything.
         clearPendingRelocation();
-        // If the relocation already ran (post-call), move the folder back to the default recordings
-        // base so undo truly reverses the filing.
+        // Unlearn the frecency bump this filing recorded (recordProjectDirUse ran unconditionally
+        // above), so a mis-route the user Undoes does not leave a permanent boost on the wrong
+        // folder that would out-rank the correct one in the picker recents.
+        forgetProjectDirUse(project.path);
+        // If the relocation already ran (post-call), move the folder back to where it actually was
+        // (its true previous parent, captured before the move), not blindly to the recordings base,
+        // and refetch so the sidebar's "By project" grouping reflects the undo immediately.
         if (relocationRan && mId) {
+          const back = relocationRan.prevParent;
           void (async () => {
             try {
-              const base = await invoke<string | null>('get_recordings_base_dir');
-              if (base) await invoke('relocate_meeting_folder', { meetingId: mId, destParentDir: base });
+              const dest = back ?? (await invoke<string | null>('get_recordings_base_dir'));
+              if (dest) {
+                await invoke('relocate_meeting_folder', { meetingId: mId, destParentDir: dest });
+                void refetchMeetings();
+              }
             } catch { /* best-effort */ }
           })();
         }

@@ -4,6 +4,9 @@ import {
   extractActionItemsFromMarkdown,
   extractActionItemsFromLegacy,
   extractActionItemsFromBlockNote,
+  stripActionItemsFromMarkdown,
+  stripActionItemsFromBlockNote,
+  stripActionItemsFromLegacy,
   actionItemsToMarkdown,
   actionItemId,
   loadCheckedState,
@@ -93,6 +96,101 @@ describe('extractActionItems (top-level dispatch + dedup)', () => {
   it('returns [] for null / non-object', () => {
     expect(extractActionItems(null)).toEqual([]);
     expect(extractActionItems(undefined)).toEqual([]);
+  });
+});
+
+describe('stripActionItemsFromMarkdown (display projection)', () => {
+  it('removes the action-items heading and its list, keeping other sections', () => {
+    const md = [
+      '## Session Summary',
+      'We talked about the roadmap.',
+      '',
+      '## Action Items',
+      '- Send the proposal to Acme',
+      '- Schedule the follow-up call',
+      '',
+      '## Next Steps',
+      '- Keep this one',
+    ].join('\n');
+    const stripped = stripActionItemsFromMarkdown(md);
+    expect(stripped).toContain('## Session Summary');
+    expect(stripped).toContain('We talked about the roadmap.');
+    expect(stripped).toContain('## Next Steps');
+    expect(stripped).toContain('Keep this one');
+    // The action items themselves are gone.
+    expect(stripped).not.toContain('## Action Items');
+    expect(stripped).not.toContain('Send the proposal to Acme');
+    expect(stripped).not.toContain('Schedule the follow-up call');
+  });
+
+  it('returns the summary unchanged when there is no action-items heading', () => {
+    const md = '## Summary\n- a point\n- another point';
+    expect(stripActionItemsFromMarkdown(md)).toBe(md);
+  });
+
+  it('drops a trailing action-items section entirely', () => {
+    const md = '## Notes\nkeep me\n\n## Immediate Action Items\n- gone\n- also gone';
+    const stripped = stripActionItemsFromMarkdown(md);
+    expect(stripped).toContain('keep me');
+    expect(stripped).not.toContain('gone');
+    expect(stripped).not.toMatch(/Immediate Action Items/);
+  });
+});
+
+describe('stripActionItemsFromBlockNote (display projection)', () => {
+  it('removes the action-items heading + following blocks until the next heading', () => {
+    const blocks = [
+      { type: 'heading', content: [{ type: 'text', text: 'Summary' }] },
+      { type: 'paragraph', content: [{ type: 'text', text: 'keep this' }] },
+      { type: 'heading', content: [{ type: 'text', text: 'Action Items' }] },
+      { type: 'bulletListItem', content: [{ type: 'text', text: 'drop me' }] },
+      { type: 'checkListItem', content: 'drop me too' },
+      { type: 'heading', content: [{ type: 'text', text: 'Notes' }] },
+      { type: 'bulletListItem', content: [{ type: 'text', text: 'keep this note' }] },
+    ];
+    const out = stripActionItemsFromBlockNote(blocks);
+    const texts = out.map((b) =>
+      typeof b.content === 'string'
+        ? b.content
+        : Array.isArray(b.content)
+          ? b.content.map((c: any) => c.text).join('')
+          : '',
+    );
+    expect(texts).toEqual(['Summary', 'keep this', 'Notes', 'keep this note']);
+  });
+
+  it('is a no-op when there is no action-items heading', () => {
+    const blocks = [
+      { type: 'heading', content: [{ type: 'text', text: 'Summary' }] },
+      { type: 'bulletListItem', content: [{ type: 'text', text: 'a' }] },
+    ];
+    expect(stripActionItemsFromBlockNote(blocks)).toHaveLength(2);
+  });
+});
+
+describe('stripActionItemsFromLegacy (display projection)', () => {
+  it('removes the action-items section by title and prunes _section_order', () => {
+    const summary = {
+      MeetingName: 'Acme call',
+      _section_order: ['SessionSummary', 'ImmediateActionItems'],
+      SessionSummary: { title: 'Session Summary', blocks: [{ content: 'x' }] },
+      ImmediateActionItems: { title: 'Immediate Action Items', blocks: [{ content: 'Email the SOW' }] },
+    };
+    const out = stripActionItemsFromLegacy(summary);
+    expect(out.SessionSummary).toBeDefined();
+    expect(out.ImmediateActionItems).toBeUndefined();
+    expect(out.MeetingName).toBe('Acme call');
+    expect(out._section_order).toEqual(['SessionSummary']);
+  });
+});
+
+describe('strip/extract are complementary (checklist + hidden body cover the same items)', () => {
+  it('markdown: items that extract pulls out are exactly the ones strip removes', () => {
+    const md = '## Summary\n- point\n\n## Action Items\n- do A\n- do B';
+    const extracted = extractActionItemsFromMarkdown(md);
+    const stripped = stripActionItemsFromMarkdown(md);
+    for (const item of extracted) expect(stripped).not.toContain(item);
+    expect(stripped).toContain('point');
   });
 });
 

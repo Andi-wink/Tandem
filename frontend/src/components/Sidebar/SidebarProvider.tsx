@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
@@ -76,7 +76,11 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const [isSearching, setIsSearching] = useState(false);
   const [serverAddress, setServerAddress] = useState('');
   const [transcriptServerAddress, setTranscriptServerAddress] = useState('');
-  const [activeSummaryPolls, setActiveSummaryPolls] = useState<Map<string, NodeJS.Timeout>>(new Map());
+  // The live poll intervals are the single source of truth for clearInterval, so they live in
+  // a ref, NOT state. Driving them off state made the unmount-cleanup effect (deps
+  // [activeSummaryPolls]) run its stale-closure cleanup on every map mutation, mass-clearing
+  // unrelated live intervals and silently killing overlapping polls.
+  const pollsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
 
   // Use recording state from RecordingStateContext (single source of truth)
   const { isRecording } = useRecordingState();
@@ -194,8 +198,9 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     onUpdate: (result: any) => void
   ) => {
     // Stop existing poll for this meeting if any
-    if (activeSummaryPolls.has(meetingId)) {
-      clearInterval(activeSummaryPolls.get(meetingId)!);
+    if (pollsRef.current.has(meetingId)) {
+      clearInterval(pollsRef.current.get(meetingId)!);
+      pollsRef.current.delete(meetingId);
     }
 
     console.log(`📊 Starting polling for meeting ${meetingId}, process ${processId}`);
@@ -210,11 +215,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       if (pollCount >= MAX_POLLS) {
         console.warn(`⏱️ Polling timeout for ${meetingId} after ${MAX_POLLS} iterations`);
         clearInterval(pollInterval);
-        setActiveSummaryPolls(prev => {
-          const next = new Map(prev);
-          next.delete(meetingId);
-          return next;
-        });
+        pollsRef.current.delete(meetingId);
         onUpdate({
           status: 'error',
           error: 'Summary generation timed out after 15 minutes. Please try again or check your model configuration.'
@@ -235,20 +236,12 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
         if (result.status === 'completed' || result.status === 'error' || result.status === 'failed' || result.status === 'cancelled') {
           console.log(`Polling completed for ${meetingId}, status: ${result.status}`);
           clearInterval(pollInterval);
-          setActiveSummaryPolls(prev => {
-            const next = new Map(prev);
-            next.delete(meetingId);
-            return next;
-          });
+          pollsRef.current.delete(meetingId);
         } else if (result.status === 'idle' && pollCount > 1) {
           // If we get 'idle' after polling started, process completed/disappeared
           console.log(`Process completed or not found for ${meetingId}, stopping poll`);
           clearInterval(pollInterval);
-          setActiveSummaryPolls(prev => {
-            const next = new Map(prev);
-            next.delete(meetingId);
-            return next;
-          });
+          pollsRef.current.delete(meetingId);
         }
       } catch (error) {
         console.error(`Polling error for ${meetingId}:`, error);
@@ -258,37 +251,32 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
           error: error instanceof Error ? error.message : 'Unknown error'
         });
         clearInterval(pollInterval);
-        setActiveSummaryPolls(prev => {
-          const next = new Map(prev);
-          next.delete(meetingId);
-          return next;
-        });
+        pollsRef.current.delete(meetingId);
       }
     }, 5000); // Poll every 5 seconds
 
-    setActiveSummaryPolls(prev => new Map(prev).set(meetingId, pollInterval));
-  }, [activeSummaryPolls]);
+    pollsRef.current.set(meetingId, pollInterval);
+    // Stable identity: reads/writes go through pollsRef, never the render-time map.
+  }, []);
 
   const stopSummaryPolling = React.useCallback((meetingId: string) => {
-    const pollInterval = activeSummaryPolls.get(meetingId);
+    const pollInterval = pollsRef.current.get(meetingId);
     if (pollInterval) {
       console.log(`⏹️ Stopping polling for meeting ${meetingId}`);
       clearInterval(pollInterval);
-      setActiveSummaryPolls(prev => {
-        const next = new Map(prev);
-        next.delete(meetingId);
-        return next;
-      });
+      pollsRef.current.delete(meetingId);
     }
-  }, [activeSummaryPolls]);
+  }, []);
 
-  // Cleanup all polling intervals on unmount
+  // Cleanup all polling intervals on unmount. Deps [] so this runs ONLY on unmount and never
+  // tears down live intervals on a map mutation; pollsRef.current is the live set.
   useEffect(() => {
+    const polls = pollsRef.current;
     return () => {
       console.log('🧹 Cleaning up all summary polling intervals');
-      activeSummaryPolls.forEach(interval => clearInterval(interval));
+      polls.forEach(interval => clearInterval(interval));
     };
-  }, [activeSummaryPolls]);
+  }, []);
 
 
 
@@ -311,7 +299,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       serverAddress,
       transcriptServerAddress,
       setTranscriptServerAddress,
-      activeSummaryPolls,
+      activeSummaryPolls: pollsRef.current,
       startSummaryPolling,
       stopSummaryPolling,
       refetchMeetings: fetchMeetings,

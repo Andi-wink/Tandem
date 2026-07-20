@@ -21,6 +21,11 @@ import {
 import { readJots, clearJots, serializeJots, type Jot } from '@/lib/meetingJots';
 import { rescueJotsToDisk } from '@/lib/jotsRescue';
 import { runEnhanceNotes, hasEnhanceStarted, markEnhanceStarted } from '@/lib/enhanceNotes';
+import {
+  shouldPersistOnStop,
+  shouldNavigateAfterStop,
+  clearLastRecordingKeys,
+} from '@/lib/recordingStopFlow';
 import Analytics from '@/lib/analytics';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
@@ -75,9 +80,20 @@ export function useRecordingStop(
     status,
     setStatus,
     isStopping,
+    isRecording,
     isProcessing: isProcessingTranscript,
     isSaving: isSavingTranscript,
   } = recordingState;
+
+  // Live recording flag read through a ref so the deferred post-save navigation (+2s) can see whether
+  // a NEW recording (e.g. an I5b handover's next meeting) has started since it was scheduled. Both
+  // recordings share the app-global transcript store, so navigating/clearing then would wipe the live
+  // meeting's early segments. Ref (not the captured value) so the check reflects state at fire time.
+  const isRecordingRef = useRef(isRecording);
+  isRecordingRef.current = isRecording;
+
+  // Pending deferred-navigation timeout id, so an unmount can cancel it before it fires.
+  const navTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const {
     transcriptsRef,
@@ -286,7 +302,10 @@ export function useRecordingStop(
         unlistenFn();
       }
     };
-  }, [router]);
+    // Registered once (empty deps): the listener body only writes sessionStorage from the event
+    // payload and never reads `router`, so re-registering on router identity changes (B014) only
+    // opened a teardown gap where a `recording-stopped` event could be dropped and folder_path lost.
+  }, []);
 
   // Main recording stop handler
   const handleRecordingStop = useCallback(async (isCallApi: boolean) => {
@@ -376,7 +395,8 @@ export function useRecordingStop(
       console.log('🧹 CLEANUP: Cleaning up transcription-complete listener');
       unlistenComplete();
 
-      if (!transcriptionComplete && elapsedTime >= MAX_WAIT_TIME) {
+      const transcriptionTimedOut = !transcriptionComplete && elapsedTime >= MAX_WAIT_TIME;
+      if (transcriptionTimedOut) {
         console.warn('⏰ Transcription wait timeout reached after', elapsedTime, 'ms');
       } else {
         console.log('✅ Transcription completed after', elapsedTime, 'ms');
@@ -412,15 +432,22 @@ export function useRecordingStop(
       // /handoff command, which still uses window.triggerHandoff and the remembered anonymize
       // preference.
 
+      // Snapshot the final transcript set (ALL transcripts including late ones) BEFORE the save gate so
+      // the gate can decide on real content rather than on the transcription-wait outcome alone.
+      const freshTranscripts = [...transcriptsRef.current];
+
       // Save to SQLite
       // NOTE: enabled to save COMPLETE transcripts after frontend receives all updates
       // This ensures user sees all transcripts streaming in before database save
-      if (isCallApi && transcriptionComplete == true) {
+      //
+      // Root fix (timeout-discard bug): persistence must NOT be gated solely on transcriptionComplete.
+      // A wait timeout with chunks still queued used to fall through to the no-save else branch, which
+      // just set IDLE — the whole recording was silently dropped, no save, no error. shouldPersistOnStop
+      // now saves whatever transcripts arrived (a strict superset of the old gate), and on a timeout we
+      // warn the user that late audio may be missing.
+      if (shouldPersistOnStop(isCallApi, transcriptionComplete, freshTranscripts.length)) {
 
         setStatus(RecordingStatus.SAVING, 'Saving meeting to database...');
-
-        // Get fresh transcript state (ALL transcripts including late ones)
-        const freshTranscripts = [...transcriptsRef.current];
 
         // Get folder_path and meeting_name from recording-stopped event
         const folderPath = sessionStorage.getItem('last_recording_folder_path');
@@ -454,11 +481,9 @@ export function useRecordingStop(
           // Mark meeting as saved in IndexedDB (for recovery system)
           await markMeetingAsSaved();
 
-          // Clean up session storage
-          sessionStorage.removeItem('last_recording_folder_path');
-          sessionStorage.removeItem('last_recording_meeting_name');
-          // Clean up IndexedDB meeting ID (redundant with markMeetingAsSaved cleanup, but ensures cleanup)
-          sessionStorage.removeItem('indexeddb_current_meeting_id');
+          // Clean up session storage (folder path, meeting name, and IndexedDB recovery id) so no
+          // stale last_recording_* value can leak into the next recording's save.
+          clearLastRecordingKeys(sessionStorage);
 
           // Enhance-my-notes: persist the user's jots into the meeting folder BEFORE any deferred
           // relocation runs below, so jots.json travels with the folder when it moves. There is no mode
@@ -650,21 +675,38 @@ export function useRecordingStop(
             void kickoffEnhanceNotes(meetingId, capturedJots, freshTranscripts, jotsFolderPath, jotsPersisted);
           }
 
-          // Show success toast with navigation option
-          toast.success('Recording saved successfully!', {
-            description: `${freshTranscripts.length} transcript segments saved.`,
-            action: {
-              label: 'View Meeting',
-              onClick: () => {
-                router.push(`/meeting-details?id=${meetingId}`);
-                Analytics.trackButtonClick('view_meeting_from_toast', 'recording_complete');
-              }
+          // Show a toast with navigation option. On a transcription-wait timeout we saved partial
+          // transcripts, so warn (rather than a plain success) that late audio may be missing.
+          const toastAction = {
+            label: 'View Meeting',
+            onClick: () => {
+              router.push(`/meeting-details?id=${meetingId}`);
+              Analytics.trackButtonClick('view_meeting_from_toast', 'recording_complete');
             },
-            duration: 10000,
-          });
+          };
+          if (transcriptionTimedOut) {
+            toast.warning('Saved, but transcription was still processing', {
+              description: `Saved ${freshTranscripts.length} transcript segments captured so far. Some late audio may be missing.`,
+              action: toastAction,
+              duration: 10000,
+            });
+          } else {
+            toast.success('Recording saved successfully!', {
+              description: `${freshTranscripts.length} transcript segments saved.`,
+              action: toastAction,
+              duration: 10000,
+            });
+          }
 
           // Auto-navigate after handoff dialog is dismissed (or immediately if no handoff)
           const navigateToMeeting = () => {
+            // A NEW recording (e.g. an I5b handover's next meeting) may have started in the ~2s since
+            // this was scheduled. It shares the app-global transcript store and recording status, so
+            // navigating away + clearTranscripts() now would wipe the live meeting's early segments and
+            // yank the user off it. Skip entirely when a recording is live (shouldNavigateAfterStop).
+            if (!shouldNavigateAfterStop(isRecordingRef.current)) {
+              return;
+            }
             router.push(`/meeting-details?id=${meetingId}&source=recording`);
             clearTranscripts()
             Analytics.trackPageView('meeting_details');
@@ -673,7 +715,9 @@ export function useRecordingStop(
             setStatus(RecordingStatus.IDLE);
           };
 
-          setTimeout(navigateToMeeting, 2000);
+          // Cancelable so an unmount (or a superseding stop) doesn't fire a stale navigation.
+          if (navTimeoutRef.current) clearTimeout(navTimeoutRef.current);
+          navTimeoutRef.current = setTimeout(navigateToMeeting, 2000);
           // Track meeting completion analytics
           try {
             // Calculate meeting duration from transcript timestamps
@@ -731,6 +775,10 @@ export function useRecordingStop(
           // recording could inherit and silently file into the wrong folder.
           clearPendingRelocation();
           try { sessionStorage.removeItem('tandem.seedExpectedRelocation'); } catch { /* ignore */ }
+          // Bug 5: a save that THROWS (network/backend/disk error) is also a "stop that does not
+          // save". Clear the last_recording_* / recovery keys so a stale folder path can never be
+          // inherited by the next recording (whose recording-stopped event may omit folder_path).
+          clearLastRecordingKeys(sessionStorage);
           setStatus(RecordingStatus.ERROR, saveError instanceof Error ? saveError.message : 'Unknown error');
           toast.error('Failed to save meeting', {
             description: saveError instanceof Error ? saveError.message : 'Unknown error'
@@ -738,7 +786,11 @@ export function useRecordingStop(
           throw saveError;
         }
       } else {
-        // No save needed, go back to IDLE
+        // No save happened (a discard stop, or a timeout with zero transcripts). Clear the
+        // last_recording_* / recovery keys here too, so a stop that does NOT save can never leave a
+        // stale folder path that the guarded recording-stopped write (if the next event omits
+        // folder_path) would let the next meeting inherit and file into the wrong folder.
+        clearLastRecordingKeys(sessionStorage);
         setStatus(RecordingStatus.IDLE);
       }
 
@@ -789,6 +841,8 @@ export function useRecordingStop(
     // Cleanup on unmount
     return () => {
       delete (window as any).handleRecordingStop;
+      // Cancel any pending deferred navigation so it can't fire against an unmounted tree.
+      if (navTimeoutRef.current) clearTimeout(navTimeoutRef.current);
     };
   }, []);
 

@@ -16,6 +16,17 @@ use log::{error as log_error, info as log_info};
 /// Max ICS body we will read (5 MB). A published calendar feed is well under this.
 const MAX_ICS_BYTES: usize = 5 * 1024 * 1024;
 
+/// Append `chunk` to `buf`, returning false (and leaving `buf` unchanged) if doing so
+/// would push the total past `cap`. Extracted from the streaming download loop so the
+/// incremental size cap is unit-testable without a network server.
+fn accumulate_within_cap(buf: &mut Vec<u8>, chunk: &[u8], cap: usize) -> bool {
+    if buf.len() + chunk.len() > cap {
+        return false;
+    }
+    buf.extend_from_slice(chunk);
+    true
+}
+
 /// Redact a URL down to its host for safe logging (never leak the token path/query).
 fn safe_host(url: &str) -> String {
     match reqwest::Url::parse(url) {
@@ -89,7 +100,7 @@ pub async fn fetch_calendar_ics(
             "Internal error building the network client".to_string()
         })?;
 
-    let resp = client.get(&fetch_url).send().await.map_err(|e| {
+    let mut resp = client.get(&fetch_url).send().await.map_err(|e| {
         // Never echo the URL (token). Log host only; give the user a clean message.
         log_error!(
             "Calendar fetch failed for host {}: {}",
@@ -118,17 +129,52 @@ pub async fn fetch_calendar_ics(
         ));
     }
 
-    let bytes = resp.bytes().await.map_err(|e| {
-        log_error!(
-            "Failed reading calendar body from host {}: {}",
-            safe_host(&fetch_url),
-            e
-        );
-        "The calendar response could not be read.".to_string()
-    })?;
+    // Reject early when the server already advertises a body larger than the cap, so we
+    // never even begin downloading a multi-GB feed.
+    if let Some(declared_len) = resp.content_length() {
+        if declared_len > MAX_ICS_BYTES as u64 {
+            log_error!(
+                "Calendar feed from host {} advertises {} bytes, over the {} byte cap",
+                safe_host(&fetch_url),
+                declared_len,
+                MAX_ICS_BYTES
+            );
+            return Err(
+                "The calendar feed is unexpectedly large and was not loaded.".to_string(),
+            );
+        }
+    }
 
-    if bytes.len() > MAX_ICS_BYTES {
-        return Err("The calendar feed is unexpectedly large and was not loaded.".to_string());
+    // Stream the body chunk by chunk with a running cap. resp.bytes() would buffer the
+    // ENTIRE body into memory before any length check, so a host that ignores/omits
+    // Content-Length and streams gigabytes could OOM the desktop process before the cap
+    // ever triggered. Bailing as soon as the accumulated length exceeds MAX_ICS_BYTES
+    // bounds the allocation to ~5 MB regardless of what the server sends.
+    let mut bytes: Vec<u8> = Vec::new();
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                if !accumulate_within_cap(&mut bytes, &chunk, MAX_ICS_BYTES) {
+                    log_error!(
+                        "Calendar feed from host {} exceeded the {} byte cap while streaming",
+                        safe_host(&fetch_url),
+                        MAX_ICS_BYTES
+                    );
+                    return Err(
+                        "The calendar feed is unexpectedly large and was not loaded.".to_string(),
+                    );
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                log_error!(
+                    "Failed reading calendar body from host {}: {}",
+                    safe_host(&fetch_url),
+                    e
+                );
+                return Err("The calendar response could not be read.".to_string());
+            }
+        }
     }
 
     // ICS is UTF-8 (RFC 5545). Be lenient about invalid bytes rather than failing.
@@ -178,6 +224,24 @@ mod tests {
         assert!(normalize_ics_url("http://example.com/cal.ics").is_err());
         assert!(normalize_ics_url("file:///etc/passwd").is_err());
         assert!(normalize_ics_url("").is_err());
+    }
+
+    #[test]
+    fn test_accumulate_within_cap_enforces_incrementally() {
+        let mut buf = Vec::new();
+        // Under cap: accepted.
+        assert!(accumulate_within_cap(&mut buf, &[0u8; 3], 5));
+        assert_eq!(buf.len(), 3);
+        // Would exceed cap (3 + 3 = 6 > 5): rejected, buffer left untouched so we never
+        // buffer the oversized body.
+        assert!(!accumulate_within_cap(&mut buf, &[0u8; 3], 5));
+        assert_eq!(buf.len(), 3);
+        // A chunk that exactly reaches the cap boundary is still accepted.
+        assert!(accumulate_within_cap(&mut buf, &[0u8; 2], 5));
+        assert_eq!(buf.len(), 5);
+        // Any further byte over the boundary is rejected.
+        assert!(!accumulate_within_cap(&mut buf, &[0u8; 1], 5));
+        assert_eq!(buf.len(), 5);
     }
 
     #[test]

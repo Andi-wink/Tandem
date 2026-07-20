@@ -93,9 +93,14 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
         unlistenFn = await listen<boolean>('recording-stop-complete', (event) => {
           console.log('[RecordingPostProcessing] Received recording-stop-complete event:', event.payload);
 
-          // Call the post-processing handler
+          // Call the post-processing handler through the ref so this, the most critical stop listener,
+          // never re-registers on handleRecordingStop's volatile identity (its useCallback deps include
+          // the meetings array, meetingTitle, serverAddress-derived callbacks). Re-registering tore the
+          // listener down and re-listened, leaving a teardown gap where a tray/hotkey stop event could
+          // be dropped and the recording never saved. Registered once (empty deps), mirroring the toggle
+          // listener; the ref (updated every render at line 85) always holds the latest handler.
           // event.payload is the callApi boolean (true for normal stops)
-          handleRecordingStop(event.payload);
+          handleRecordingStopRef.current(event.payload);
         });
 
         console.log('[RecordingPostProcessing] Event listener set up successfully');
@@ -112,7 +117,9 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
         unlistenFn();
       }
     };
-  }, [handleRecordingStop]);
+    // Empty deps: register the recording-stop-complete listener exactly once and invoke through
+    // handleRecordingStopRef, so it is never torn down/rebuilt (and never drops an event in the gap).
+  }, []);
 
   // Global record toggle: on Alt+Shift+E, start or stop recording from ANY page (the shortcut is
   // OS-level, so it fires even when Tandem is in the background — the Settings card promises this).

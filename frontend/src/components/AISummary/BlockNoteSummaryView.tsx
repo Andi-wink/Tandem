@@ -4,6 +4,11 @@ import { useState, useEffect, useCallback, useRef, forwardRef, useImperativeHand
 import dynamic from 'next/dynamic';
 import { useTheme } from 'next-themes';
 import { Summary, SummaryDataResponse, SummaryFormat, BlockNoteBlock } from '@/types';
+import {
+  stripActionItemsFromMarkdown,
+  stripActionItemsFromBlockNote,
+  stripActionItemsFromLegacy,
+} from '@/lib/actionItems';
 import { AISummary } from './index';
 import { Block } from '@blocknote/core';
 import { useCreateBlockNote } from '@blocknote/react';
@@ -26,6 +31,13 @@ interface BlockNoteSummaryViewProps {
     created_at: string;
   };
   onDirtyChange?: (isDirty: boolean) => void;
+  /**
+   * When true, the action-items section is hidden from the rendered summary body (it is shown
+   * as the interactive checklist above). The full unfiltered summary stays the save source: the
+   * body renders read-only until the explicit "Edit summary" affordance is used, which reveals
+   * the complete editable document (action items included).
+   */
+  hideActionItems?: boolean;
 }
 
 export interface BlockNoteSummaryViewRef {
@@ -73,7 +85,8 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
   error = null,
   onRegenerateSummary,
   meeting,
-  onDirtyChange
+  onDirtyChange,
+  hideActionItems = false
 }, ref) => {
   const { resolvedTheme } = useTheme();
   const { format, data } = detectSummaryFormat(summaryData);
@@ -81,6 +94,10 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
   const [currentBlocks, setCurrentBlocks] = useState<Block[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const isContentLoaded = useRef(false);
+  // Explicit edit affordance: while hiding action items, the body renders read-only until the
+  // user opts in to edit (which shows the full unfiltered document).
+  const [isEditing, setIsEditing] = useState(false);
+  const showFiltered = hideActionItems && !isEditing;
 
   // Create BlockNote editor for markdown parsing
   const editor = useCreateBlockNote({
@@ -93,7 +110,12 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
       const loadMarkdown = async () => {
         try {
           console.log('📝 Parsing markdown to BlockNote blocks...');
-          const blocks = await editor.tryParseMarkdownToBlocks(data.markdown);
+          // Guard against the replaceBlocks below being counted as a user edit.
+          isContentLoaded.current = false;
+          // Read-only projection parses the action-items-stripped markdown; editing (or no
+          // hiding) parses the full document so the save source keeps action items.
+          const source = showFiltered ? stripActionItemsFromMarkdown(data.markdown) : data.markdown;
+          const blocks = await editor.tryParseMarkdownToBlocks(source);
           editor.replaceBlocks(editor.document, blocks);
           console.log('✅ Markdown parsed successfully');
 
@@ -107,7 +129,7 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
       };
       loadMarkdown();
     }
-  }, [format, data?.markdown, editor]);
+  }, [format, data?.markdown, editor, showFiltered]);
 
   // Set content loaded flag for blocknote format
   useEffect(() => {
@@ -168,6 +190,18 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
         console.log('🔍 currentBlocks length:', currentBlocks.length);
         console.log('🔍 data:', data);
 
+        // Read-only projection: the visible editor holds an action-items-stripped document, so
+        // copy/export must come from the ORIGINAL unfiltered data, not the filtered editor.
+        if (showFiltered) {
+          if (format === 'markdown' && data?.markdown) return data.markdown;
+          if (format === 'blocknote') {
+            if (data?.markdown) return data.markdown;
+            if (Array.isArray(data?.summary_json) && editor) {
+              return await editor.blocksToMarkdownLossy(data.summary_json as unknown as Block[]);
+            }
+          }
+        }
+
         // For markdown format - use the main editor
         if (format === 'markdown' && editor) {
           console.log('📝 Using markdown editor, blocks:', editor.document.length);
@@ -200,36 +234,63 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
       }
     },
     isDirty
-  }), [handleSave, isDirty, editor, format, currentBlocks, data]);
+  }), [handleSave, isDirty, editor, format, currentBlocks, data, showFiltered]);
+
+  // "Edit summary" affordance: only shown while the body is a read-only, action-items-hidden
+  // projection. Clicking it reveals the full editable document (action items included).
+  const editAffordance = showFiltered ? (
+    <div className="flex justify-end mb-2">
+      <button
+        type="button"
+        onClick={() => setIsEditing(true)}
+        data-testid="edit-summary"
+        className="text-sm text-muted-foreground hover:text-foreground underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+      >
+        Edit summary
+      </button>
+    </div>
+  ) : null;
 
   // Render legacy format
   if (format === 'legacy') {
     console.log('🎨 Rendering LEGACY format');
+    const legacySummary = showFiltered
+      ? (stripActionItemsFromLegacy(summaryData as Record<string, any>) as Summary)
+      : (summaryData as Summary);
     return (
-      <AISummary
-        summary={summaryData as Summary}
-        status={status}
-        error={error}
-        onSummaryChange={onSummaryChange || (() => { })}
-        onRegenerateSummary={onRegenerateSummary || (() => { })}
-        meeting={meeting}
-      />
+      <div className="flex flex-col w-full">
+        {editAffordance}
+        <div className={showFiltered ? 'pointer-events-none' : undefined}>
+          <AISummary
+            summary={legacySummary}
+            status={status}
+            error={error}
+            onSummaryChange={onSummaryChange || (() => { })}
+            onRegenerateSummary={onRegenerateSummary || (() => { })}
+            meeting={meeting}
+          />
+        </div>
+      </div>
     );
   }
 
   // Render BlockNote format (has summary_json)
   if (format === 'blocknote') {
     console.log('🎨 Rendering BLOCKNOTE format (direct)');
+    const blocks = showFiltered ? stripActionItemsFromBlockNote(data.summary_json) : data.summary_json;
     return (
       <div className="flex flex-col w-full">
+        {editAffordance}
         <div className="w-full">
           <Editor
-            initialContent={data.summary_json}
-            onChange={(blocks) => {
-              console.log('📝 Editor blocks changed:', blocks.length);
-              handleEditorChange(blocks);
+            // Remount when toggling read-only<->edit so the new initialContent takes effect.
+            key={showFiltered ? 'summary-ro' : 'summary-edit'}
+            initialContent={blocks}
+            onChange={showFiltered ? undefined : (b) => {
+              console.log('📝 Editor blocks changed:', b.length);
+              handleEditorChange(b);
             }}
-            editable={true}
+            editable={!showFiltered}
           />
         </div>
       </div>
@@ -241,10 +302,11 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
     console.log('🎨 Rendering MARKDOWN format (parsed to BlockNote)');
     return (
       <div className="flex flex-col w-full">
+        {editAffordance}
         <div className="w-full">
           <BlockNoteView
             editor={editor}
-            editable={true}
+            editable={!showFiltered}
             onChange={() => {
               if (isContentLoaded.current) {
                 handleEditorChange(editor.document);

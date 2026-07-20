@@ -101,13 +101,32 @@ export function unfoldIcsLines(text: string): string[] {
   return out;
 }
 
-/** Unescape ICS TEXT values (\\n \\, \\; \\\\). */
+/**
+ * Unescape ICS TEXT values (\\n \\N \\, \\; \\\\). Single left-to-right pass per RFC 5545 so each
+ * escape is resolved exactly once: an escaped backslash (\\\\) followed by a literal n stays
+ * "\\n" instead of the chained-.replace() hazard where \\n matched the injected backslash.
+ */
 function unescapeText(value: string): string {
-  return value
-    .replace(/\\n/gi, '\n')
-    .replace(/\\,/g, ',')
-    .replace(/\\;/g, ';')
-    .replace(/\\\\/g, '\\');
+  let out = '';
+  for (let i = 0; i < value.length; i++) {
+    const c = value[i];
+    if (c === '\\' && i + 1 < value.length) {
+      const next = value[i + 1];
+      if (next === 'n' || next === 'N') {
+        out += '\n';
+        i++;
+      } else if (next === ',' || next === ';' || next === '\\') {
+        out += next;
+        i++;
+      } else {
+        // Unknown escape: keep the backslash literally and reprocess the next char.
+        out += '\\';
+      }
+    } else {
+      out += c;
+    }
+  }
+  return out;
 }
 
 /** Offset (zone minus UTC) in ms at a given instant for an IANA zone. */
@@ -218,8 +237,25 @@ function parseIcsDate(value: string, params: Record<string, string>): ParsedDate
     }
   }
 
-  // Floating time: interpret as local.
-  return { ms: new Date(y, mo - 1, d, h, mi, s).getTime(), dateOnly: false };
+  // Floating time: interpret as the host's local wall time. Anchor the base instant locally AND
+  // tag it with the host's IANA zone so recurrence re-resolves each occurrence in that zone. This
+  // keeps a floating 09:00 pinned to 09:00 local across a DST transition instead of freezing a UTC
+  // offset (which would drift the wall time by an hour for occurrences past the boundary). A true
+  // UTC ("Z") value keeps tzid undefined above and legitimately holds a fixed offset (no DST).
+  return {
+    ms: new Date(y, mo - 1, d, h, mi, s).getTime(),
+    dateOnly: false,
+    tzid: hostLocalZone(),
+  };
+}
+
+/** Host's IANA time zone (e.g. "Europe/Berlin"), or undefined if it can't be resolved. */
+function hostLocalZone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Split a content line into { name, params, value }. */

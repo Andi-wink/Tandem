@@ -255,6 +255,9 @@ export function SummaryPanel({
             <BlockNoteSummaryView
               ref={summaryRef}
               summaryData={aiSummary}
+              // Hide the action-items section from the editable body only when it exists (it is
+              // shown as the interactive checklist above); otherwise keep the body fully editable.
+              hideActionItems={extractActionItems(aiSummary).length > 0}
               onSave={onSaveSummary}
               onSummaryChange={onSummaryChange}
               onDirtyChange={onDirtyChange}

@@ -20,7 +20,7 @@ import { ProjectPickerDialog } from '@/components/ProjectPickerDialog';
 import { ProjectPickerSelection } from '@/components/ProjectPicker';
 import { createProject, listProjects, Project } from '@/services/projectService';
 import { getMatchPool, isDiscoveredStub } from '@/services/clientFolderDiscovery';
-import { recordProjectDirUse, normalizeDir } from '@/lib/projectDirHistory';
+import { recordProjectDirUse, forgetProjectDirUse, normalizeDir } from '@/lib/projectDirHistory';
 import { resolveFiledUnder } from '@/lib/filedUnder';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 
@@ -132,7 +132,7 @@ export function FiledUnderRow({ meetingId, meetingTitle, folderPath, onRelocated
         duration: 15000,
         action: {
           label: 'Undo',
-          onClick: () => { void undoRelocate(prevParent); },
+          onClick: () => { void undoRelocate(prevParent, opts.learn); },
         },
       });
     } catch (e) {
@@ -144,7 +144,10 @@ export function FiledUnderRow({ meetingId, meetingTitle, folderPath, onRelocated
     }
   }
 
-  async function undoRelocate(prevParent: string): Promise<void> {
+  async function undoRelocate(
+    prevParent: string,
+    learn?: { path: string; name: string },
+  ): Promise<void> {
     setBusy(true);
     try {
       const back = await invoke<string>('relocate_meeting_folder', {
@@ -153,6 +156,9 @@ export function FiledUnderRow({ meetingId, meetingTitle, folderPath, onRelocated
       });
       setFolder(back);
       onRelocated?.(back);
+      // Unlearn the frecency bump the forward move recorded, so undoing a mistaken Move does not
+      // leave a permanent boost on the wrong folder.
+      if (learn) forgetProjectDirUse(learn.path);
       toast.success('Move undone');
     } catch (e) {
       toast.error('Could not undo the move', {
