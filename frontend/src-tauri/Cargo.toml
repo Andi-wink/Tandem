@@ -148,6 +148,10 @@ ffmpeg-sidecar = { git = "https://github.com/nathanbabcock/ffmpeg-sidecar", bran
 
 sqlx = { version = "0.8", features = [ "runtime-tokio", "sqlite", "chrono"] }
 
+# OS-level secret storage (Windows Credential Manager / macOS Keychain) for API keys.
+# Native backends only; they are cfg-gated by the crate to the matching platform.
+keyring = { version = "3", features = ["windows-native", "apple-native"] }
+
 # Screenshot capture
 xcap = "0.8"                                       # Cross-platform screen capture (DXGI on Windows)
 image = { version = "0.25", features = ["png", "jpeg"] }   # Image processing for thumbnails + JPEG preview

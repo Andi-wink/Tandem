@@ -53,9 +53,6 @@ The local gate is done ([wer_gate.py](audio_testing/wer_gate.py), [README](audio
 - [ ] #8 Evaluate the installed Canary models (canary-qwen-2.5b, canary-1b) through the same harness for an accuracy comparison.
 - [ ] #9 Optional second-pass LLM transcript cleanup (Ollama/Claude already configured).
 
-### Security
-- [ ] Anthropic API key is stored in plaintext in the Rust `settings` table (meeting_minutes.sqlite), contradicting CLAUDE.md's "localStorage only / never stored server-side" claim. Decide on encryption-at-rest or removal.
-
 ### Channel-based speaker labels (you / Client) — shipped on feature/speaker-diarization
 The simple 1:1-call approach: mic channel = your name (default "Andrew", set in Preferences), system channel = "Client". Surfaced as transcript badges + in summaries + AI/@code context, reusing the `source` label already on every segment. Pyannote stays optional (takes precedence when present). Commit 9733d49; `tsc` + `cargo check` clean. Adversarial QA done (3 skeptics). Follow-ups / known limits:
 - [ ] Echo bleed (the #1 real-world accuracy risk): on open speakers the client's voice re-enters your mic and can be labelled as you. AEC runs but is undercut by ring-buffer drift + no `set_stream_delay_ms` hint. Options: feed AEC a delay hint / align channels before AEC; detect headphones and nudge the user; add a "use headphones for best speaker accuracy" note near recording. Headphones eliminate it today.
@@ -74,6 +71,7 @@ Recovered the orphaned F022 work onto `feature/speaker-diarization` (rebased off
 - [ ] Cleanup: once recovery is confirmed good, delete the stale `D:/Dev-projects/Tandem-f022-orphan` directory (kept as the recovery source).
 
 ## Done
+- Security: the Anthropic/Claude API key no longer sits in plaintext in the `settings` table. It now lives in the OS credential store (Windows Credential Manager / macOS Keychain via the `keyring` crate); `save`/`get`/`delete` for the `claude` provider delegate to [secure_store.rs](frontend/src-tauri/src/database/secure_store.rs). On startup, any pre-existing plaintext `anthropicApiKey` is migrated into the secure store and the column is blanked ([manager.rs](frontend/src-tauri/src/database/manager.rs)). `cargo check --lib` clean; secure_store + settings repository tests pass. Other provider keys (Groq, OpenAI, etc.) remain in SQLite, matching CLAUDE.md.
 - Established transcription WER baseline for the current engine (Parakeet TDT v3 int8) vs ElevenLabs ground truth: 31.4% pooled (exact meeting pipeline).
 - Implemented engine improvements #1 (de-stutter), #3 (domain correction), #4 (sensitive VAD, ~99.5% word coverage), #5 (12s context window): pooled WER 31.4% -> 26.0%. `cargo check` passes.
 - Built the WER measurement harness (real Silero VAD + buffer assembly + Parakeet replica) and the local regression gate.
