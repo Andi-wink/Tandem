@@ -3,9 +3,11 @@
 /**
  * F055: Poll live Claude Code session candidates for the Solo HUD picker.
  *
- * Polls `list_claude_session_candidates` every 15s while `enabled`. Fails
- * silent-to-manual: invoke errors resolve to [] (handled in the service), so
- * the picker just shows no live sessions rather than erroring.
+ * Refreshes immediately when `enabled` flips true (picker opens), then polls
+ * `list_claude_session_candidates` every `pollIntervalMs` (default 3s) while
+ * enabled. Does not poll while collapsed. Fails silent-to-manual: invoke errors
+ * resolve to [] (handled in the service), so the picker just shows no live
+ * sessions rather than erroring.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -14,7 +16,7 @@ import {
   type ClaudeSessionCandidate,
 } from '@/services/claudeSessionService';
 
-const POLL_INTERVAL_MS = 15_000;
+const DEFAULT_POLL_INTERVAL_MS = 3_000;
 
 export interface UseClaudeSessionCandidates {
   candidates: ClaudeSessionCandidate[];
@@ -22,7 +24,10 @@ export interface UseClaudeSessionCandidates {
   loading: boolean;
 }
 
-export function useClaudeSessionCandidates(enabled: boolean): UseClaudeSessionCandidates {
+export function useClaudeSessionCandidates(
+  enabled: boolean,
+  pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS,
+): UseClaudeSessionCandidates {
   const [candidates, setCandidates] = useState<ClaudeSessionCandidate[]>([]);
   const [loading, setLoading] = useState(false);
   const inFlightRef = useRef(false);
@@ -48,13 +53,14 @@ export function useClaudeSessionCandidates(enabled: boolean): UseClaudeSessionCa
       return;
     }
 
+    // Fire immediately on enable, then poll while enabled.
     refresh();
-    const timer = setInterval(refresh, POLL_INTERVAL_MS);
+    const timer = setInterval(refresh, pollIntervalMs);
     return () => {
       cancelledRef.current = true;
       clearInterval(timer);
     };
-  }, [enabled, refresh]);
+  }, [enabled, pollIntervalMs, refresh]);
 
   return { candidates, refresh, loading };
 }

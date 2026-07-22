@@ -56,12 +56,9 @@ function relativeTime(ms: number | null): string {
 }
 
 const COLLAPSED_SIZE = { width: 240, height: 56 };
-// Header row (~56) + a few rows of projects, capped so the picker never grows
-// off-screen. Each project row is ~36px tall.
-const EXPANDED_SIZE = { width: 280, height: 380 };
-
-/** Max live sessions shown in the picker. */
-const MAX_SESSION_CANDIDATES = 6;
+// Header row (~56) + rows of projects/sessions, capped so the picker never grows
+// off-screen. Wider so full Claude session names are readable; the list scrolls.
+const EXPANDED_SIZE = { width: 340, height: 480 };
 
 function prefersReducedMotion(): boolean {
   if (typeof window === 'undefined') return false;
@@ -256,7 +253,9 @@ export default function SoloHudPage() {
     [collapse],
   );
 
-  const sessionCandidates = candidates.slice(0, MAX_SESSION_CANDIDATES);
+  // Show ALL live sessions (sort order preserved by the service); the list
+  // container scrolls, so a large fleet just scrolls within the picker.
+  const sessionCandidates = candidates;
 
   const isListening = active.name === null;
 
@@ -336,7 +335,7 @@ export default function SoloHudPage() {
           {sessionCandidates.length > 0 && (
             <div className="mb-1">
               <p className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-                Live sessions
+                Live sessions ({sessionCandidates.length})
               </p>
               <ul className="flex flex-col">
                 {sessionCandidates.map(c => {
@@ -350,12 +349,12 @@ export default function SoloHudPage() {
                                    hover:bg-muted transition-colors focus-visible:outline-none
                                    focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
                       >
-                        <span className="flex w-full items-center gap-2">
-                          <span className="flex-1 truncate text-sm text-foreground">
+                        <span className="flex w-full items-start gap-2">
+                          <span className="flex-1 min-w-0 break-words line-clamp-2 text-sm text-foreground">
                             {c.name}
                           </span>
                           {when && (
-                            <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
+                            <span className="shrink-0 pt-0.5 text-[11px] text-muted-foreground tabular-nums">
                               {when}
                             </span>
                           )}
