@@ -97,6 +97,15 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
 
   const saveTimeoutRef = useRef<NodeJS.Timeout>();
 
+  // Guards the mount-time debounced auto-save against a slow async load clobbering disk state.
+  // On cold start, state defaults to completed:false and the debounced save is scheduled ~1s
+  // after mount, while loadOnboardingStatus() awaits several slow Rust invokes (parakeet_init,
+  // parakeet_has_available_models, builtin_ai_get_available_summary_model) that can take longer
+  // than the debounce. Without this gate the mount-time save fires first and persists
+  // completed:false over a store that said completed:true, re-showing onboarding to a finished user.
+  // We only allow saves once the initial load attempt has resolved into a known state.
+  const initialLoadDoneRef = useRef(false);
+
   // Load status on mount and initialize database
   useEffect(() => {
     loadOnboardingStatus();
@@ -182,6 +191,10 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   // Auto-save on state change (debounced)
   useEffect(() => {
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+
+    // Don't auto-save until the initial load attempt has resolved: saving mount-time defaults
+    // before the load returns would clobber completed:true on disk (see initialLoadDoneRef).
+    if (!initialLoadDoneRef.current) return;
 
     // Don't auto-save if completed (to avoid overwriting completion status)
     // Also don't auto-save if we are currently in the process of completing
@@ -313,10 +326,19 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
 
         console.log('[OnboardingContext] Verified status:', verifiedStatus);
 
+        // A non-null status was applied: saves may now run safely.
+        initialLoadDoneRef.current = true;
+
         // Check if any downloads are active to restore isBackgroundDownloading state
         await checkActiveDownloads();
+      } else {
+        // status === null means a fresh install with nothing on disk: persisting defaults is
+        // harmless, so unblock saves.
+        initialLoadDoneRef.current = true;
       }
     } catch (error) {
+      // The invoke itself threw (Rust not ready / unknown disk state): do NOT unblock saves,
+      // so we never persist defaults over a store we could not read.
       console.error('[OnboardingContext] Failed to load onboarding status:', error);
     }
   };
