@@ -18,7 +18,8 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useSoloMode } from '@/contexts/SoloModeContext';
-import { listProjects, Project } from '@/services/projectService';
+import { listProjects, ensureProjectForPath, normalizeProjectPath, Project } from '@/services/projectService';
+import { getGitBranch } from '@/services/claudeSessionService';
 import { analyzeTranscript, matchProjectByName, warmupModel, detectProjectSwitchFastPath } from '@/services/soloRoutingService';
 import {
   writeLiveTranscript,
@@ -46,6 +47,28 @@ const INTENT_DEDUP_WINDOW_MS = 5 * 60_000; // 5 min
 
 function normalizeIntent(s: string): string {
   return s.trim().toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').slice(0, 120);
+}
+
+/** F055: branch context carried through a switch originating from a live Claude
+ *  session candidate, used for feed stamping + the mismatch warning toast. */
+interface SwitchBranchInfo {
+  /** The branch the Claude session saw (candidate.git_branch). */
+  sessionBranch?: string | null;
+  /** The branch the checkout is actually on (candidate.head_branch). */
+  headBranch?: string | null;
+  branchMismatch?: boolean;
+}
+
+/** F055: payload the HUD relays for a manual route pick. `projectId` is set for
+ *  a registered project; `cwd`+`name` are set for an unregistered session that
+ *  should be auto-registered before switching. */
+interface HudSwitchPayload {
+  projectId?: string;
+  cwd?: string;
+  name?: string;
+  sessionBranch?: string | null;
+  headBranch?: string | null;
+  branchMismatch?: boolean;
 }
 
 export function useSoloModeRouter() {
@@ -132,9 +155,27 @@ export function useSoloModeRouter() {
   // Returns the resolved session folder (so the caller's current cycle can keep
   // appending to the freshly-switched project in the same folder).
   const performProjectSwitch = useCallback(
-    async (matched: Project, transcriptIndex: number): Promise<string> => {
+    async (
+      matched: Project,
+      transcriptIndex: number,
+      branchInfo?: SwitchBranchInfo,
+    ): Promise<string> => {
       const previousProject = activeProjectRef.current;
-      switchProject(matched, transcriptIndex);
+
+      // Resolve the branch of the target checkout up front so it lands in the
+      // history entry and feed meta. Best-effort and time-bounded: a wedged IPC
+      // call must never stall the switch, so give it 400ms then proceed null.
+      const branch = await Promise.race<string | null>([
+        getGitBranch(matched.path),
+        new Promise<null>(resolve => setTimeout(() => resolve(null), 400)),
+      ]);
+
+      // A mismatch is meaningful only when the switch came from a live session
+      // whose git_branch differs from the checkout's head_branch.
+      const sessionBranch = branchInfo?.sessionBranch ?? null;
+      const branchMismatch = branchInfo?.branchMismatch === true;
+
+      switchProject(matched, transcriptIndex, branch);
 
       let activeSessionFolder = sessionFolderRef.current;
       if (!activeSessionFolder) {
@@ -145,15 +186,32 @@ export function useSoloModeRouter() {
       }
 
       toast.success(`Switched to ${matched.name}`);
+
+      if (branchMismatch) {
+        const head = branchInfo?.headBranch ?? branch ?? 'unknown';
+        toast.warning(
+          `Heads up: ${matched.name} checkout is on ${head}, session expected ${sessionBranch ?? 'unknown'}`,
+          { duration: 8000 },
+        );
+      }
+
       await ensureTandemClaudeMd(matched.path, activeSessionFolder);
       await ensureLoopState(matched.path, activeSessionFolder);
 
       try {
+        const meta: Record<string, string | number | boolean> = {
+          branch: branch ?? 'unknown',
+        };
+        if (previousProject) meta.switched_from = previousProject.name;
+        if (branchMismatch) {
+          meta.session_branch = sessionBranch ?? 'unknown';
+          meta.branch_mismatch = true;
+        }
         await appendFeedEntry(matched.path, {
           type: 'session_start',
           timestamp: new Date(),
           body: `Solo session active on ${matched.name}`,
-          meta: previousProject ? { switched_from: previousProject.name } : {},
+          meta,
         }, activeSessionFolder);
       } catch (err) {
         console.warn('[SoloRouter] Failed to append session_start entry:', err);
@@ -346,31 +404,60 @@ export function useSoloModeRouter() {
     let unlisten: UnlistenFn | null = null;
     let cancelled = false;
 
-    listen<{ projectId: string }>('solo-hud-switch', async event => {
-      const projectId = event.payload?.projectId;
-      if (!projectId) return;
-      console.log('[SoloRouter] HUD switch requested:', projectId);
+    listen<HudSwitchPayload>('solo-hud-switch', async event => {
+      const payload = event.payload ?? {};
+      const { projectId, cwd, name } = payload;
+      const branchInfo: SwitchBranchInfo = {
+        sessionBranch: payload.sessionBranch ?? null,
+        headBranch: payload.headBranch ?? null,
+        branchMismatch: payload.branchMismatch === true,
+      };
+      console.log('[SoloRouter] HUD switch requested:', payload);
 
-      let matched = projectsRef.current.find(p => p.id === projectId);
-      if (!matched) {
-        // The project cache may not have loaded yet (or is stale) — re-fetch
-        // once and retry before giving up, so a manual pick never silently no-ops.
-        try {
-          const fresh = await listProjects();
-          projectsRef.current = fresh;
-          matched = fresh.find(p => p.id === projectId);
-        } catch (err) {
-          console.warn('[SoloRouter] HUD switch: project re-fetch failed', err);
+      let matched: Project | undefined;
+
+      if (projectId) {
+        matched = projectsRef.current.find(p => p.id === projectId);
+        if (!matched) {
+          // The project cache may not have loaded yet (or is stale) — re-fetch
+          // once and retry before giving up, so a manual pick never silently no-ops.
+          try {
+            const fresh = await listProjects();
+            projectsRef.current = fresh;
+            matched = fresh.find(p => p.id === projectId);
+          } catch (err) {
+            console.warn('[SoloRouter] HUD switch: project re-fetch failed', err);
+          }
+        }
+      } else if (cwd) {
+        // Unregistered live session — match by path if we already know it,
+        // otherwise auto-register it (auto_discovered) then use the new row.
+        // Normalized compare: session cwds use forward slashes, registered
+        // paths often backslashes.
+        const wanted = normalizeProjectPath(cwd);
+        matched = projectsRef.current.find(p => normalizeProjectPath(p.path) === wanted);
+        if (!matched) {
+          const registered = await ensureProjectForPath(name || cwd, cwd);
+          if (registered) {
+            matched = registered;
+            try {
+              projectsRef.current = await listProjects();
+            } catch {
+              // Keep the freshly-registered project even if the re-list fails.
+              projectsRef.current = [...projectsRef.current, registered];
+            }
+          }
         }
       }
+
       if (!matched) {
-        console.warn('[SoloRouter] HUD switch: unknown project id', projectId);
+        console.warn('[SoloRouter] HUD switch: could not resolve target', payload);
         return;
       }
       if (matched.id === activeProjectRef.current?.id) return; // already active
 
       try {
-        await performProjectSwitch(matched, transcriptsRef.current.length);
+        await performProjectSwitch(matched, transcriptsRef.current.length, branchInfo);
       } catch (err) {
         console.error('[SoloRouter] HUD switch failed:', err);
       }

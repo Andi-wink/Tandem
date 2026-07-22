@@ -10,6 +10,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Transcript, ScreenshotData, ClipboardData } from '@/types';
 import { ContextBasketItem } from '@/contexts/ContextBasketContext';
 import { resolveSpeaker, getLocalSpeakerName } from '@/lib/speakerNames';
+import { getGitBranch } from '@/services/claudeSessionService';
 
 /** Prefix a transcript line's body with its resolved speaker ("Andrew: ..." / "Client: ..."). */
 function withSpeaker(t: Transcript, localName: string): string {
@@ -97,6 +98,8 @@ export interface TaskHandoffData {
   transcripts: Transcript[];
   contextItems: ContextBasketItem[];
   timestamp: Date;
+  /** F055: git branch of the target project checkout ("unknown" when null). */
+  branch?: string | null;
 }
 
 export function generateTaskMarkdown(data: TaskHandoffData): string {
@@ -105,6 +108,7 @@ export function generateTaskMarkdown(data: TaskHandoffData): string {
   // Header
   lines.push(`# Task: ${data.taskDescription.slice(0, 80)}`);
   lines.push(`Meeting: ${data.meetingTitle} | ${data.timestamp.toLocaleString()}`);
+  lines.push(`**Branch:** ${data.branch ?? 'unknown'}`);
   lines.push('');
 
   // Instructions
@@ -156,7 +160,12 @@ export async function writeTaskHandoff(
   const tasksDir = `${tandemDir}${sep}tasks`;
   const filename = `task-${Date.now()}.md`;
   const filePath = `${tasksDir}${sep}${filename}`;
-  const content = generateTaskMarkdown(data);
+
+  // Stamp the target checkout's branch. Best-effort: a branch lookup must never
+  // block or delay the handoff, so a caller-supplied branch wins and a failed
+  // lookup falls back to null (rendered as "unknown").
+  const branch = data.branch !== undefined ? data.branch : await getGitBranch(projectDir);
+  const content = generateTaskMarkdown({ ...data, branch });
 
   await invoke('save_transcript', { filePath, content });
   return filePath;

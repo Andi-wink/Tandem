@@ -62,7 +62,7 @@ interface SoloModeState {
 interface SoloModeContextType extends SoloModeState {
   startSoloSession: () => void;
   stopSoloSession: () => void;
-  switchProject: (project: Project, transcriptIndex: number) => void;
+  switchProject: (project: Project, transcriptIndex: number, branch?: string | null) => void;
   addTask: (task: SoloTask) => void;
   setRoutingModel: (model: string) => void;
   setSessionFolder: (folder: string) => void;
@@ -199,7 +199,7 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     setHudWindowVisible(false);
   }, []);
 
-  const switchProject = useCallback((project: Project, transcriptIndex: number) => {
+  const switchProject = useCallback((project: Project, transcriptIndex: number, branch?: string | null) => {
     console.log(`[SoloMode] Switching to project: ${project.name} at index ${transcriptIndex}`);
 
     // Close previous entry
@@ -217,6 +217,7 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
       startIndex: transcriptIndex,
       endIndex: null,
       startTime: Date.now(),
+      branch: branch ?? null,
     };
     history.push(newEntry);
     historyRef.current = history;

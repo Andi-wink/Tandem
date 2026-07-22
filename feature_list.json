@@ -3,7 +3,7 @@
   "description": "AI co-pilot for every call — work in tandem with AI to capture, collaborate, and act. Fork of Meetily (Zackriya-Solutions/meeting-minutes) with screenshots, clipboard integration, PII sanitization, and real-time AI collaboration",
   "base_branch": "main",
   "working_branch": "main",
-  "last_updated": "2026-03-11",
+  "last_updated": "2026-07-22",
   "features": [
     {
       "id": "F001",
@@ -2211,6 +2211,36 @@
         "F007"
       ],
       "passes": false
+    },
+    {
+      "id": "F061",
+      "category": "functional",
+      "name": "Session-Aware HUD + Branch Stamping",
+      "description": "Lower-friction project routing in solo mode. The solo HUD picker shows live Claude Code sessions (from the local ~/.claude/sessions registry) with project folder, current branch, and last-activity time; clicking one switches to that project, auto-registering unknown paths. Every project switch, session_start feed entry, and task handoff is stamped with the git branch (resolved from .git/HEAD incl. worktree indirection, no git spawn), and a calm warning fires when the checkout branch differs from the branch the Claude session sees. Privacy: only the last 64KB of a transcript is read and only gitBranch/cwd/type/timestamp keys are extracted; never auto-switches without a click.",
+      "priority": "high",
+      "status": "complete",
+      "branch": "feature/f061-session-aware-hud",
+      "commit": null,
+      "steps": [
+        "Rust module claude_sessions (registry reader, PID liveness, 64KB tail parse, branch resolver) + commands get_git_branch / list_claude_session_candidates",
+        "Frontend claudeSessionService + useClaudeSessionCandidates polling hook (15s, fail-silent)",
+        "Solo HUD Live sessions section with branch chips and mismatch indicator",
+        "Branch stamping in performProjectSwitch, session_start feed meta, ProjectHistoryEntry, and task handoff markdown",
+        "Auto-register unknown session cwds via ensureProjectForPath with normalized path dedupe",
+        "Adversarial QA: 2 skeptic passes incl. live-data run over 25 real sessions and real dead-worktree checks"
+      ],
+      "files": [
+        "frontend/src-tauri/src/claude_sessions/mod.rs",
+        "frontend/src-tauri/src/lib.rs",
+        "frontend/src/services/claudeSessionService.ts",
+        "frontend/src/hooks/useClaudeSessionCandidates.ts",
+        "frontend/src/app/solo-hud/page.tsx",
+        "frontend/src/hooks/useSoloModeRouter.ts",
+        "frontend/src/contexts/SoloModeContext.tsx",
+        "frontend/src/services/projectService.ts",
+        "frontend/src/services/handoffService.ts",
+        "frontend/src/types/solo.ts"
+      ]
     }
   ]
 }

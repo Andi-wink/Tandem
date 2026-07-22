@@ -38,6 +38,7 @@ pub mod analytics;
 pub mod api;
 pub mod audio;
 pub mod canvas;
+pub mod claude_sessions;
 pub mod clipboard;
 pub mod console_utils;
 pub mod database;
@@ -964,6 +965,9 @@ pub fn run() {
             api::project_import_scanned,
             api::project_scan_directory,
             api::project_pick_directory,
+            // F055: session-aware HUD + branch stamping
+            claude_sessions::get_git_branch,
+            claude_sessions::list_claude_session_candidates,
             // Summary commands
             summary::api_process_transcript,
             summary::api_get_summary,

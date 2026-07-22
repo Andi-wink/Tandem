@@ -12,8 +12,9 @@
  *   IN  solo-active-project   { id: string | null, name: string | null }
  *       → updates the pill; pulse + chime on change.
  *   IN  solo-session-stopped  (no payload) → self-reset to listening.
- *   OUT solo-hud-switch       { projectId: string }
- *       → main window (useSoloModeRouter) applies a manual project correction.
+ *   OUT solo-hud-switch       { projectId?, cwd?, name?, sessionBranch?, headBranch?, branchMismatch? }
+ *       → main window (useSoloModeRouter) applies a manual project correction;
+ *         payloads without projectId carry a cwd to auto-register first.
  *
  * The window is shown/hidden by the main window via
  * WebviewWindow.getByLabel('solo-hud').show()/.hide().
@@ -31,16 +32,36 @@ function relay(event: string, payload: unknown = {}): Promise<void> {
 }
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { listProjects, type Project } from '@/services/projectService';
+import { useClaudeSessionCandidates } from '@/hooks/useClaudeSessionCandidates';
+import { folderName, type ClaudeSessionCandidate } from '@/services/claudeSessionService';
 
 interface ActiveProjectPayload {
   id: string | null;
   name: string | null;
 }
 
+/** Compact relative time ("just now", "2m ago", "3h ago", "5d ago"). */
+function relativeTime(ms: number | null): string {
+  if (ms == null) return '';
+  const delta = Date.now() - ms;
+  if (delta < 0) return 'just now';
+  const s = Math.floor(delta / 1000);
+  if (s < 45) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
+}
+
 const COLLAPSED_SIZE = { width: 240, height: 56 };
 // Header row (~56) + a few rows of projects, capped so the picker never grows
 // off-screen. Each project row is ~36px tall.
-const EXPANDED_SIZE = { width: 260, height: 320 };
+const EXPANDED_SIZE = { width: 280, height: 380 };
+
+/** Max live sessions shown in the picker. */
+const MAX_SESSION_CANDIDATES = 6;
 
 function prefersReducedMotion(): boolean {
   if (typeof window === 'undefined') return false;
@@ -80,8 +101,14 @@ export default function SoloHudPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(false);
 
+  // Live Claude session candidates — polled only while the picker is open.
+  const { candidates } = useClaudeSessionCandidates(expanded);
+
   const activeIdRef = useRef<string | null>(null);
   activeIdRef.current = active.id;
+
+  const projectsRef = useRef<Project[]>([]);
+  projectsRef.current = projects;
   const pulseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Resize window to fit collapsed / expanded states ──────────────────
@@ -199,6 +226,38 @@ export default function SoloHudPage() {
     [collapse],
   );
 
+  const handlePickCandidate = useCallback(
+    (c: ClaudeSessionCandidate) => {
+      const branchMeta = {
+        sessionBranch: c.git_branch,
+        headBranch: c.head_branch,
+        branchMismatch: c.branch_mismatch,
+      };
+      // Registered → route by project id (identical flow to the rows below).
+      // Unregistered → hand the main window the cwd so it can auto-register.
+      // Trust registered_project_id as-is: the Rust side matched it against the
+      // live projects table with path normalization, whereas our local project
+      // snapshot can be stale (loaded when the picker expanded).
+      const known = Boolean(c.registered_project_id);
+      const payload = known
+        ? { projectId: c.registered_project_id, ...branchMeta }
+        : { cwd: c.cwd, name: folderName(c.cwd), ...branchMeta };
+
+      // Avoid a no-op switch to the already-active registered project.
+      if (known && c.registered_project_id === activeIdRef.current) {
+        collapse();
+        return;
+      }
+      relay('solo-hud-switch', payload).catch(err =>
+        console.warn('[SoloHUD] emit session switch failed:', err),
+      );
+      collapse();
+    },
+    [collapse],
+  );
+
+  const sessionCandidates = candidates.slice(0, MAX_SESSION_CANDIDATES);
+
   const isListening = active.name === null;
 
   return (
@@ -274,6 +333,83 @@ export default function SoloHudPage() {
           className="mt-1.5 flex-1 min-h-0 overflow-y-auto rounded-xl border border-border
                      bg-card/95 backdrop-blur-md shadow-lg p-1 custom-scrollbar"
         >
+          {sessionCandidates.length > 0 && (
+            <div className="mb-1">
+              <p className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+                Live sessions
+              </p>
+              <ul className="flex flex-col">
+                {sessionCandidates.map(c => {
+                  const branch = c.git_branch;
+                  const when = relativeTime(c.last_user_activity_ms ?? c.last_activity_ms);
+                  return (
+                    <li key={c.session_id}>
+                      <button
+                        onClick={() => handlePickCandidate(c)}
+                        className="flex w-full flex-col gap-0.5 px-2 py-1.5 rounded-lg text-left
+                                   hover:bg-muted transition-colors focus-visible:outline-none
+                                   focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                      >
+                        <span className="flex w-full items-center gap-2">
+                          <span className="flex-1 truncate text-sm text-foreground">
+                            {c.name}
+                          </span>
+                          {when && (
+                            <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
+                              {when}
+                            </span>
+                          )}
+                        </span>
+                        <span className="flex w-full items-center gap-1.5 text-[11px] text-muted-foreground">
+                          <span className="truncate">{folderName(c.cwd)}</span>
+                          {branch && (
+                            <span
+                              title={
+                                c.branch_mismatch
+                                  ? `Session expected ${branch}; checkout is on ${c.head_branch ?? 'unknown'}`
+                                  : `Branch ${branch}`
+                              }
+                              className={`shrink-0 inline-flex items-center gap-1 rounded px-1 py-px
+                                          font-mono text-[10px] ${
+                                            c.branch_mismatch
+                                              ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                                              : 'bg-muted text-muted-foreground'
+                                          }`}
+                            >
+                              {c.branch_mismatch && (
+                                <svg
+                                  width="9"
+                                  height="9"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2.5"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  aria-hidden
+                                >
+                                  <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+                                  <line x1="12" y1="9" x2="12" y2="13" />
+                                  <line x1="12" y1="17" x2="12.01" y2="17" />
+                                </svg>
+                              )}
+                              <span className="truncate max-w-[110px]">{branch}</span>
+                            </span>
+                          )}
+                        </span>
+                        {c.branch_mismatch && (
+                          <span className="text-[10px] text-amber-600 dark:text-amber-400">
+                            checkout on {c.head_branch ?? 'unknown'}
+                          </span>
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="mx-2 my-1 border-t border-border/60" />
+            </div>
+          )}
           <p className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
             Route to project
           </p>

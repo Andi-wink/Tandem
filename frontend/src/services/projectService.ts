@@ -93,3 +93,50 @@ export async function scanDirectory(parentDir: string): Promise<ScannedProject[]
 export async function pickDirectory(startingDir?: string): Promise<string | null> {
   return invoke<string | null>('project_pick_directory', { startingDir: startingDir ?? null });
 }
+
+/**
+ * F055: Normalize a filesystem path for identity comparison, mirroring the Rust
+ * side's normalize_path (case-insensitive on Windows, `/` vs `\` insensitive,
+ * trailing-separator insensitive). Claude session cwds use forward slashes while
+ * dir-picker registrations use backslashes; exact string compares create
+ * duplicate project rows.
+ */
+export function normalizeProjectPath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+/**
+ * F055: Ensure a project exists for a Claude session's cwd, registering it as
+ * auto-discovered if it isn't already, then return it.
+ *
+ * Checks the existing project list with normalized path comparison first (the
+ * Rust `project_import_scanned` dedupe is an exact SQL match, so a separator or
+ * case variant of an already-registered path would otherwise create a duplicate
+ * row). Only imports when no normalized match exists, then re-lists and resolves
+ * by normalized path. Returns null if it can't be found.
+ */
+export async function ensureProjectForPath(
+  name: string,
+  path: string,
+): Promise<Project | null> {
+  const wanted = normalizeProjectPath(path);
+  try {
+    const existing = await listProjects();
+    const match = existing.find(p => normalizeProjectPath(p.path) === wanted);
+    if (match) return match;
+  } catch (err) {
+    console.warn('[projectService] auto-register pre-list failed:', err);
+  }
+  try {
+    await importScannedProjects([{ name, path }]);
+  } catch (err) {
+    console.warn('[projectService] auto-register import failed:', err);
+  }
+  try {
+    const all = await listProjects();
+    return all.find(p => normalizeProjectPath(p.path) === wanted) ?? null;
+  } catch (err) {
+    console.warn('[projectService] auto-register re-list failed:', err);
+    return null;
+  }
+}
