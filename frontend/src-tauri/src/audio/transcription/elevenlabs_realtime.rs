@@ -1077,6 +1077,16 @@ async fn duplex_loop(
 ) -> DuplexOutcome {
     let mut slicer = FrameSlicer::new(FRAME_SAMPLES);
     let mut last_audio = tokio::time::Instant::now();
+    // Whether a SPEECH audio frame has actually been SENT on the socket since the
+    // last commit frame was sent. Gates every commit so a back-to-back commit with
+    // no audio in between is never sent — the server answers that with
+    // `commit_throttled` and can DROP the previously committed event (Phase 3 live
+    // bug: spiked a run to 18.3% WER / 150 deletions). Set only on a real send
+    // (not on enqueue), so a frame evicted from the FeedRing under backpressure
+    // can never leave this flag stale. Keepalive silence deliberately does NOT set
+    // it (it is liveness, not uncommitted speech). Local to the connection so it
+    // resets cleanly on reconnect.
+    let mut sent_audio_since_commit = false;
     let keepalive_period = Duration::from_secs_f64(KEEPALIVE_IDLE_SECS / 2.0);
     let mut ka_tick = tokio::time::interval(keepalive_period);
     ka_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1095,23 +1105,35 @@ async fn duplex_loop(
                             if pair.outgoing.send(msg).await.is_err() {
                                 return DuplexOutcome::Disconnected;
                             }
+                            sent_audio_since_commit = true;
                             last_audio = tokio::time::Instant::now();
                         }
                     }
                     FeedCmd::Commit => {
-                        // Flush any partial frame, then an explicit commit frame.
+                        // Flush any partial frame first (counts as fed audio).
                         let tail = slicer.drain();
                         if !tail.is_empty() {
                             let msg = encode_audio_chunk_message(&tail, FEED_SAMPLE_RATE, false);
                             if pair.outgoing.send(msg).await.is_err() {
                                 return DuplexOutcome::Disconnected;
                             }
+                            sent_audio_since_commit = true;
+                            last_audio = tokio::time::Instant::now();
                         }
-                        let commit_msg = encode_audio_chunk_message(&[], FEED_SAMPLE_RATE, true);
-                        if pair.outgoing.send(commit_msg).await.is_err() {
-                            return DuplexOutcome::Disconnected;
+                        // Only send the commit if audio was fed since the last one.
+                        // close_all enqueues a Commit unconditionally at stop; when
+                        // the last segment already committed at its end (recording
+                        // stopped during silence) this skips the redundant second
+                        // commit that would otherwise throttle-drop the last event.
+                        if sent_audio_since_commit {
+                            let commit_msg =
+                                encode_audio_chunk_message(&[], FEED_SAMPLE_RATE, true);
+                            if pair.outgoing.send(commit_msg).await.is_err() {
+                                return DuplexOutcome::Disconnected;
+                            }
+                            sent_audio_since_commit = false;
+                            last_audio = tokio::time::Instant::now();
                         }
-                        last_audio = tokio::time::Instant::now();
                     }
                 }
             }
@@ -1854,6 +1876,133 @@ mod tests {
         assert!(
             saw_empty_after,
             "expected an empty-text partial after disconnect to clear the tail"
+        );
+    }
+
+    /// Transport that records every outgoing frame into a shared Vec so tests can
+    /// assert exactly which commit/audio messages hit the socket.
+    struct CapturingTransport {
+        sent: Arc<Mutex<Vec<String>>>,
+        incoming: Vec<String>,
+    }
+
+    #[async_trait]
+    impl RealtimeTransport for CapturingTransport {
+        async fn connect(&self, _url: &str, _api_key: &str) -> Result<TransportPair, String> {
+            let (out_tx, mut out_rx) = mpsc::channel::<String>(64);
+            let (in_tx, in_rx) = mpsc::channel::<String>(64);
+            let sent = self.sent.clone();
+            tokio::spawn(async move {
+                while let Some(m) = out_rx.recv().await {
+                    sent.lock().unwrap().push(m);
+                }
+            });
+            let incoming = self.incoming.clone();
+            tokio::spawn(async move {
+                for m in incoming {
+                    if in_tx.send(m).await.is_err() {
+                        return;
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                drop(in_tx);
+            });
+            Ok(TransportPair {
+                outgoing: out_tx,
+                incoming: in_rx,
+            })
+        }
+    }
+
+    fn count_commits(sent: &Arc<Mutex<Vec<String>>>) -> usize {
+        sent.lock()
+            .unwrap()
+            .iter()
+            .filter(|m| m.contains("\"commit\":true"))
+            .count()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn close_after_segment_commit_sends_no_second_commit() {
+        // Phase 3 bug: recording stops during silence after the last segment
+        // already committed at its end. close_all enqueues a final Commit, but no
+        // audio was fed since -> the gate must skip it (a back-to-back commit is
+        // commit_throttled and drops the last event). Expect exactly ONE commit.
+        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
+        let transport = Arc::new(CapturingTransport {
+            sent: sent.clone(),
+            incoming: vec![],
+        });
+        let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
+        let session =
+            ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
+
+        tokio::time::advance(Duration::from_millis(10)).await;
+        tokio::task::yield_now().await;
+
+        // One segment fed, then committed at segment end.
+        session.mark_onset(&DeviceType::Microphone, 1.0);
+        session.feed(&DeviceType::Microphone, &vec![0.1f32; FRAME_SAMPLES]);
+        session.commit(&DeviceType::Microphone);
+        for _ in 0..10 {
+            tokio::time::advance(Duration::from_millis(20)).await;
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(count_commits(&sent), 1, "segment-end commit should be sent");
+
+        // Stop: close_all enqueues a Commit, but nothing was fed since -> skipped.
+        let close = tokio::spawn(session.clone().close_all());
+        for _ in 0..40 {
+            tokio::time::advance(Duration::from_millis(100)).await;
+            tokio::task::yield_now().await;
+        }
+        let _ = close.await;
+
+        assert_eq!(
+            count_commits(&sent),
+            1,
+            "close must NOT add a second commit: {:?}",
+            *sent.lock().unwrap()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn close_mid_open_segment_sends_exactly_one_final_commit() {
+        // Recording stops mid-utterance: audio fed, no commit yet. close_all's
+        // final Commit MUST fire (exactly once) to transcribe the closing segment.
+        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
+        let transport = Arc::new(CapturingTransport {
+            sent: sent.clone(),
+            incoming: vec![],
+        });
+        let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
+        let session =
+            ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
+
+        tokio::time::advance(Duration::from_millis(10)).await;
+        tokio::task::yield_now().await;
+
+        // Audio fed, NO commit (open segment).
+        session.mark_onset(&DeviceType::Microphone, 1.0);
+        session.feed(&DeviceType::Microphone, &vec![0.1f32; FRAME_SAMPLES]);
+        for _ in 0..10 {
+            tokio::time::advance(Duration::from_millis(20)).await;
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(count_commits(&sent), 0, "no commit before close");
+
+        let close = tokio::spawn(session.clone().close_all());
+        for _ in 0..40 {
+            tokio::time::advance(Duration::from_millis(100)).await;
+            tokio::task::yield_now().await;
+        }
+        let _ = close.await;
+
+        assert_eq!(
+            count_commits(&sent),
+            1,
+            "exactly one final commit for the open segment: {:?}",
+            *sent.lock().unwrap()
         );
     }
 }
