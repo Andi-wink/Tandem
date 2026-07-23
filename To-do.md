@@ -5,6 +5,11 @@
 ### Solo mode: typed note added INTO the transcript (requested, never implemented, 2026-07-23)
 Andrew's intent: while in solo mode, take a quick note and have it appear in the transcript itself (as a transcript entry alongside the spoken text). Verified missing across all 11 worktrees (committed + uncommitted) on 2026-07-23. Closest existing features, neither of which does this: the in-call jot strip (notes stay separate, enhanced FROM the transcript, [meetingJots.ts](frontend/src/lib/meetingJots.ts)) and Alt+Shift+N quick capture (files a note to a project as markdown, [quickCapture.ts](frontend/src/lib/quickCapture.ts)). Likely shape: a note input in solo mode / solo HUD that appends a typed segment into TranscriptContext + the saved transcript with a "note" marker.
 
+### Session-aware HUD merged to main + readable session folders (DONE 2026-07-23)
+`feature/f061-session-aware-hud` is fully merged into main (merges 8689719 + e613fcd, pushed). Session folders now use `sessions/HH.MM, DD.MM - <Session name>` (commit fb5aab8, timestamp from the project row's stable `created_at`, Windows-safe sanitization, empty-name fallback to short id) and screenshots are copied into the per-session `screenshots/` subfolder with a relative index. Gates on merged main: tsc clean, vitest 132/132. The two spoken intents from the 2026-07-23 solo sessions (per-session screenshots subfolder, session name instead of UUID) are both delivered.
+- [ ] Rebuild/restart the Tandem app so the running build picks this up; the folders created today still used the old UUID naming.
+- [ ] Tandem-main env note: pnpm skips the optional `@rolldown/binding-win32-x64-msvc` there (lockfile-level pnpm optional-deps issue), which breaks vitest startup until it is added manually; binding is installed on disk now but a future clean reinstall will hit it again.
+
 ### Voxtral worktree is stale, do not merge (verified 2026-07-23)
 All uncommitted work in `D:\Dev-projects\Tandem-voxtral` (Mistral/Voxtral provider, solo HUD, notification system, Lightbox/Mermaid, LanguagePicker) was already recovered onto main (55fa649, 9a42d80, ed63952) and has evolved further there; the worktree copies are older versions (emit-based HUD, outdated CSP, test bundle identifier `com.tandem.ai.voxtral`). Merging would regress main. Safe to discard the worktree's local changes / remove the worktree once confirmed nothing personal is in it.
 
@@ -232,25 +237,10 @@ Iteration 1 done (phrase-level "n a n" -> n8n fix, pooled WER 22.03% -> 21.54%, 
 - [ ] #8 Evaluate the installed Canary models (canary-qwen-2.5b, canary-1b) through the same harness for an accuracy comparison.
 - [ ] #9 Optional second-pass LLM transcript cleanup (Ollama/Claude already configured).
 
-### Channel-based speaker labels (you / Client) — shipped on feature/speaker-diarization
-The simple 1:1-call approach: mic channel = your name (default "Andrew", set in Preferences), system channel = "Client". Surfaced as transcript badges + in summaries + AI/@code context, reusing the `source` label already on every segment. Pyannote stays optional (takes precedence when present). Commit 9733d49; `tsc` + `cargo check` clean. Adversarial QA done (3 skeptics). Follow-ups / known limits:
-- [ ] Echo bleed (the #1 real-world accuracy risk): on open speakers the client's voice re-enters your mic and can be labelled as you. AEC runs but is undercut by ring-buffer drift + no `set_stream_delay_ms` hint. Options: feed AEC a delay hint / align channels before AEC; detect headphones and nudge the user; add a "use headphones for best speaker accuracy" note near recording. Headphones eliminate it today.
-- [ ] Device-role validation: if the mic slot is a loopback / "Stereo Mix" / virtual cable / the same device as system, "your" channel is poisoned with client audio. Warn when the mic device looks like a loopback or duplicates the system device.
-- [ ] Multiple remote speakers all show as "Client" (inherent). Layer pyannote-on-system (the eval harness already supports `--mode channels`) if per-remote-speaker splitting is ever needed.
-- [ ] pyannote `speaker_label` is not persisted (no column), so its precedence only applies to a freshly-diarized, still-open meeting. Add a column + model/API field if pyannote labels should survive a reload.
-- [ ] "Client" label is fixed (not per-meeting editable). Add a remote-name setting if desired.
-
-### Speaker Diarization (F022) — recovered onto main, harness built
-Recovered the orphaned F022 work onto `feature/speaker-diarization` (rebased off main) and built an eval harness in [audio_testing/diarization/](audio_testing/diarization/). Approach chosen: **channel split + pyannote on the system channel** (mic = local speaker, trusted). Remaining:
-- [ ] Phase 5.5 runtime: `pip install pyannote.audio torchaudio scipy requests`, accept the `pyannote/speaker-diarization-community-1` terms on HuggingFace, set `HF_TOKEN`. (torch already installed; pyannote is NOT.)
-- [ ] Bootstrap ground truth: `ELEVENLABS_API_KEY` set, run [fetch_elevenlabs_refs.py](audio_testing/diarization/fetch_elevenlabs_refs.py), then hand-correct `refs/<clip>.diar.json` into the perfect examples.
-- [ ] Run the loop ([run_diarization.py](audio_testing/diarization/run_diarization.py)) in `--mode mixed`, iterate `CONFIGS`, push pooled WSA toward ~100%.
-- [ ] Channel-split (`--mode channels`) needs split-track clips `clips/<clip>_mic.wav` + `clips/<clip>_system.wav`. Record a few short calls with `TANDEM_SAVE_RAW_TRACKS=1` (the audio-aec worktree saves raw tracks) to unlock the production-target evaluation.
-- [ ] End-to-end product test: install deps, download model via Settings, diarize a real recording, verify speaker badges render (recovered UI compiles; not yet runtime-tested).
-- [ ] Cleanup: once recovery is confirmed good, delete the stale `D:/Dev-projects/Tandem-f022-orphan` directory (kept as the recovery source).
+### Security
+- [ ] Anthropic API key is stored in plaintext in the Rust `settings` table (meeting_minutes.sqlite), contradicting CLAUDE.md's "localStorage only / never stored server-side" claim. Decide on encryption-at-rest or removal.
 
 ## Done
-- Security: the Anthropic/Claude API key no longer sits in plaintext in the `settings` table. It now lives in the OS credential store (Windows Credential Manager / macOS Keychain via the `keyring` crate); `save`/`get`/`delete` for the `claude` provider delegate to [secure_store.rs](frontend/src-tauri/src/database/secure_store.rs). On startup, any pre-existing plaintext `anthropicApiKey` is migrated into the secure store and the column is blanked ([manager.rs](frontend/src-tauri/src/database/manager.rs)). `cargo check --lib` clean; secure_store + settings repository tests pass. Other provider keys (Groq, OpenAI, etc.) remain in SQLite, matching CLAUDE.md.
 - Established transcription WER baseline for the current engine (Parakeet TDT v3 int8) vs ElevenLabs ground truth: 31.4% pooled (exact meeting pipeline).
 - Implemented engine improvements #1 (de-stutter), #3 (domain correction), #4 (sensitive VAD, ~99.5% word coverage), #5 (12s context window): pooled WER 31.4% -> 26.0%. `cargo check` passes.
 - Built the WER measurement harness (real Silero VAD + buffer assembly + Parakeet replica) and the local regression gate.
