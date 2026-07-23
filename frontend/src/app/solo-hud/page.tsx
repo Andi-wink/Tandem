@@ -37,7 +37,11 @@ function relay(event: string, payload: unknown = {}): Promise<void> {
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { listProjects, type Project } from '@/services/projectService';
 import { useClaudeSessionCandidates } from '@/hooks/useClaudeSessionCandidates';
-import { folderName, type ClaudeSessionCandidate } from '@/services/claudeSessionService';
+import {
+  folderName,
+  sessionDisplayName,
+  type ClaudeSessionCandidate,
+} from '@/services/claudeSessionService';
 
 interface ActiveProjectPayload {
   id: string | null;
@@ -241,10 +245,11 @@ export default function SoloHudPage() {
       // snapshot can be stale (loaded when the picker expanded).
       const known = Boolean(c.registered_project_id);
       // sessionName travels alongside so the pill can show the Claude session
-      // name (not the project name) when the switch came from a live session.
+      // title (not the project name) when the switch came from a live session.
+      const sessionName = sessionDisplayName(c);
       const payload = known
-        ? { projectId: c.registered_project_id, sessionName: c.name, ...branchMeta }
-        : { cwd: c.cwd, name: folderName(c.cwd), sessionName: c.name, ...branchMeta };
+        ? { projectId: c.registered_project_id, sessionName, ...branchMeta }
+        : { cwd: c.cwd, name: folderName(c.cwd), sessionName, ...branchMeta };
 
       // Avoid a no-op switch to the already-active registered project.
       if (known && c.registered_project_id === activeIdRef.current) {
@@ -357,7 +362,7 @@ export default function SoloHudPage() {
                       >
                         <span className="flex w-full items-start gap-2">
                           <span className="flex-1 min-w-0 break-words line-clamp-2 text-sm text-foreground">
-                            {c.name}
+                            {sessionDisplayName(c)}
                           </span>
                           {when && (
                             <span className="shrink-0 pt-0.5 text-[11px] text-muted-foreground tabular-nums">
@@ -376,7 +381,7 @@ export default function SoloHudPage() {
                                   ? `Session expected ${branch}; checkout is on ${c.head_branch ?? 'unknown'}`
                                   : `Branch ${branch}`
                               }
-                              className={`shrink-0 inline-flex items-center gap-1 rounded px-1 py-px
+                              className={`shrink-0 inline-flex min-w-0 max-w-[45%] items-center gap-1 rounded px-1 py-px
                                           font-mono text-[10px] ${
                                             c.branch_mismatch
                                               ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
@@ -400,7 +405,7 @@ export default function SoloHudPage() {
                                   <line x1="12" y1="17" x2="12.01" y2="17" />
                                 </svg>
                               )}
-                              <span className="truncate max-w-[110px]">{branch}</span>
+                              <span className="truncate max-w-[80px]">{branch}</span>
                             </span>
                           )}
                         </span>

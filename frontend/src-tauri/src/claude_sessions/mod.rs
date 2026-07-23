@@ -8,12 +8,18 @@
 //!      currently checked out in its working directory.
 //!
 //! PRIVACY: transcript tails are read only for the `gitBranch`, `cwd`, `type` and
-//! `timestamp` keys. Message content is never logged, stored, or returned.
+//! `timestamp` keys, and the very FIRST qualifying user prompt is read solely to
+//! derive a human-readable display title (`title`) shown to the user in their own
+//! HUD picker (the same text Claude Code's resume picker shows). That title is
+//! never logged, persisted to disk, or sent anywhere off the machine; no other
+//! message content is ever read out.
 
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
 use crate::database::repositories::project::ProjectRepository;
@@ -29,6 +35,10 @@ pub struct ClaudeSessionCandidate {
     pub session_id: String,
     pub pid: u32,
     pub name: String,
+    /// Human-readable display title: the session's first real user prompt (what
+    /// Claude Code's resume picker shows). `None` when no qualifying prompt has
+    /// been written yet. Preferred over `name` (an internal slug) for display.
+    pub title: Option<String>,
     pub cwd: String,
     pub git_branch: Option<String>,
     pub head_branch: Option<String>,
@@ -235,6 +245,191 @@ fn parse_tail(bytes: &[u8]) -> TailInfo {
 }
 
 // ---------------------------------------------------------------------------
+// Display title extraction (privacy-critical)
+// ---------------------------------------------------------------------------
+//
+// The display title is the session's FIRST real user prompt — the same text
+// Claude Code's own resume picker surfaces. It is read from the head of the
+// transcript, formatted for a single row, and cached forever (a found title is
+// immutable). It is never logged, persisted, or sent off the machine.
+
+/// Read at most the first `max` bytes of a file (the transcript HEAD).
+fn read_head(path: &Path, max: u64) -> Option<Vec<u8>> {
+    let f = std::fs::File::open(path).ok()?;
+    let mut buf = Vec::new();
+    f.take(max).read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
+/// How much of the transcript head to scan for the first user prompt.
+const TITLE_HEAD_BYTES: u64 = 128 * 1024;
+
+/// Prefixes that mark a synthetic / injected user entry (not a real prompt).
+const TITLE_SKIP_PREFIXES: [&str; 4] = [
+    "Caveat:",
+    "<command-name>",
+    "<local-command",
+    "<system-reminder",
+];
+
+/// Pull the plain text out of a `message.content` value.
+///
+/// - a bare string -> that string.
+/// - an array of blocks -> the concatenation of every `{"type":"text","text":…}`
+///   block's text. Arrays with no text blocks (e.g. tool_result-only) -> `None`.
+fn extract_user_text(content: &serde_json::Value) -> Option<String> {
+    if let Some(s) = content.as_str() {
+        return Some(s.to_string());
+    }
+    if let Some(arr) = content.as_array() {
+        let mut combined = String::new();
+        for block in arr {
+            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                if let Some(t) = block.get("text").and_then(|x| x.as_str()) {
+                    combined.push_str(t);
+                }
+            }
+        }
+        if combined.is_empty() {
+            return None;
+        }
+        return Some(combined);
+    }
+    None
+}
+
+/// Truncate a string to at most `max` characters (never splitting a UTF-8 char),
+/// appending '…' when truncation actually happened.
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let truncated: String = s.chars().take(max).collect();
+    format!("{truncated}…")
+}
+
+/// Format a raw prompt into a single row: first line only, whitespace collapsed,
+/// truncated to 80 chars.
+fn format_title(text: &str) -> String {
+    let first_line = text.lines().next().unwrap_or("");
+    let collapsed = first_line.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_chars(&collapsed, 80)
+}
+
+/// Strip any leading IDE-context / system wrapper blocks (e.g. `<ide_selection>…
+/// </ide_selection>`, `<ide_opened_file>…`, `<system-reminder>…`) that Claude
+/// Code injects BEFORE the user's real prompt in the same message. The actual
+/// prompt follows those blocks.
+///
+/// Repeatedly, while the (left-trimmed) text opens with a `<ide_…` or
+/// `<system-reminder…` tag: find that tag's matching close (`</ide_selection>`,
+/// etc.) and drop everything through it, then re-trim. Returns the remaining text
+/// once it no longer opens with a wrapper, or `None` if a wrapper is unterminated
+/// (no closing tag) — in which case the caller skips the line.
+fn strip_leading_wrapper_blocks(text: &str) -> Option<String> {
+    let mut rest = text.trim_start();
+    loop {
+        let is_wrapper = rest.starts_with("<ide_") || rest.starts_with("<system-reminder");
+        if !is_wrapper {
+            return Some(rest.to_string());
+        }
+        // Tag name = chars after '<' up to the first '>', '/', or whitespace.
+        let after = &rest[1..];
+        let name_end = after
+            .find(|c: char| c == '>' || c == '/' || c.is_whitespace())
+            .unwrap_or(after.len());
+        let name = &after[..name_end];
+        if name.is_empty() {
+            return Some(rest.to_string());
+        }
+        let close = format!("</{name}>");
+        match rest.find(&close) {
+            Some(idx) => {
+                rest = rest[idx + close.len()..].trim_start();
+            }
+            None => return None, // unterminated wrapper -> skip the line
+        }
+    }
+}
+
+/// Given one transcript line, return a display title if the line is a real,
+/// qualifying user prompt; otherwise `None`.
+///
+/// Skips: non-`user` lines, `isMeta:true` entries, tool_result-only content,
+/// empty/whitespace text, and synthetic prefixes (Caveat / command / reminder).
+/// Leading IDE/system wrapper blocks are stripped first so the prompt text that
+/// follows them becomes the title.
+fn title_from_line(line: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("type").and_then(|t| t.as_str()) != Some("user") {
+        return None;
+    }
+    if v.get("isMeta").and_then(|m| m.as_bool()) == Some(true) {
+        return None;
+    }
+    let content = v.get("message").and_then(|m| m.get("content"))?;
+    let text = extract_user_text(content)?;
+    // Peel off any leading IDE-selection / system-reminder wrapper blocks; an
+    // unterminated wrapper means we cannot find the real prompt -> skip.
+    let stripped = strip_leading_wrapper_blocks(&text)?;
+    let trimmed = stripped.trim_start();
+    if trimmed.is_empty() {
+        return None;
+    }
+    for p in TITLE_SKIP_PREFIXES {
+        if trimmed.starts_with(p) {
+            return None;
+        }
+    }
+    let title = format_title(trimmed);
+    if title.is_empty() {
+        return None;
+    }
+    Some(title)
+}
+
+/// Scan the transcript head for the first qualifying user prompt. A trailing
+/// truncated line (the byte window may cut mid-line) simply fails to parse and is
+/// skipped.
+fn extract_title(path: &Path) -> Option<String> {
+    let bytes = read_head(path, TITLE_HEAD_BYTES)?;
+    let text = String::from_utf8_lossy(&bytes);
+    for line in text.lines() {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        if let Some(title) = title_from_line(l) {
+            return Some(title);
+        }
+    }
+    None
+}
+
+/// Process-wide title cache keyed by session id. A found title is immutable, so
+/// it is cached forever; sessions with no title yet are simply not inserted and
+/// re-scanned (bounded 128KB head read) on the next poll.
+fn title_cache() -> &'static Mutex<HashMap<String, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Cached title lookup: returns the cached title if present, otherwise scans the
+/// transcript head, caches any hit, and returns it.
+fn cached_title(session_id: &str, path: &Path) -> Option<String> {
+    if let Ok(cache) = title_cache().lock() {
+        if let Some(t) = cache.get(session_id) {
+            return Some(t.clone());
+        }
+    }
+    let title = extract_title(path)?;
+    if let Ok(mut cache) = title_cache().lock() {
+        cache.insert(session_id.to_string(), title.clone());
+    }
+    Some(title)
+}
+
+// ---------------------------------------------------------------------------
 // Transcript / registry file location
 // ---------------------------------------------------------------------------
 
@@ -378,15 +573,17 @@ where
             continue; // dedupe
         }
 
-        // Locate + tail-parse the transcript (best effort).
-        let (tail, last_activity_ms) = match find_transcript(home, &session_id) {
+        // Locate + tail-parse the transcript (best effort), and derive the
+        // display title from its head.
+        let (tail, last_activity_ms, title) = match find_transcript(home, &session_id) {
             Some(jsonl) => {
                 let tail = read_tail(&jsonl, TAIL_BYTES)
                     .map(|b| parse_tail(&b))
                     .unwrap_or_default();
-                (tail, file_mtime_ms(&jsonl))
+                let title = cached_title(&session_id, &jsonl);
+                (tail, file_mtime_ms(&jsonl), title)
             }
-            None => (TailInfo::default(), None),
+            None => (TailInfo::default(), None, None),
         };
 
         // cwd: registry first, else the cwd seen on the transcript's gitBranch line.
@@ -409,6 +606,7 @@ where
             session_id,
             pid,
             name: reg.name.unwrap_or_default(),
+            title,
             cwd,
             git_branch,
             head_branch,
@@ -595,6 +793,145 @@ mod tests {
         assert_eq!(info.git_branch, None);
         assert_eq!(info.cwd, None);
         assert_eq!(info.last_user_activity_ms, None);
+    }
+
+    // ---- display title extraction ----
+
+    #[test]
+    fn title_from_string_content() {
+        let line = r#"{"type":"user","message":{"role":"user","content":"Fix the login bug"}}"#;
+        assert_eq!(title_from_line(line), Some("Fix the login bug".to_string()));
+    }
+
+    #[test]
+    fn title_from_array_content_uses_text_blocks() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Refactor the parser"}]}}"#;
+        assert_eq!(
+            title_from_line(line),
+            Some("Refactor the parser".to_string())
+        );
+    }
+
+    #[test]
+    fn title_skips_is_meta() {
+        let line = r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"meta stuff"}}"#;
+        assert_eq!(title_from_line(line), None);
+    }
+
+    #[test]
+    fn title_skips_caveat_command_and_reminder() {
+        let caveat = r#"{"type":"user","message":{"role":"user","content":"Caveat: The following..."}}"#;
+        assert_eq!(title_from_line(caveat), None);
+        let command = r#"{"type":"user","message":{"role":"user","content":"<command-name>/loop</command-name>"}}"#;
+        assert_eq!(title_from_line(command), None);
+        let local = r#"{"type":"user","message":{"role":"user","content":"<local-command-stdout>x</local-command-stdout>"}}"#;
+        assert_eq!(title_from_line(local), None);
+        let reminder = r#"{"type":"user","message":{"role":"user","content":"<system-reminder>hi</system-reminder>"}}"#;
+        assert_eq!(title_from_line(reminder), None);
+    }
+
+    #[test]
+    fn title_skips_tool_result_only_array() {
+        // No text blocks (tool_result-only) -> no title.
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"output"}]}}"#;
+        assert_eq!(title_from_line(line), None);
+    }
+
+    #[test]
+    fn title_skips_empty_and_whitespace() {
+        let empty = r#"{"type":"user","message":{"role":"user","content":""}}"#;
+        assert_eq!(title_from_line(empty), None);
+        let ws = r#"{"type":"user","message":{"role":"user","content":"   \n\t  "}}"#;
+        assert_eq!(title_from_line(ws), None);
+    }
+
+    #[test]
+    fn title_skips_non_user_line() {
+        let line = r#"{"type":"assistant","message":{"role":"assistant","content":"hello"}}"#;
+        assert_eq!(title_from_line(line), None);
+        // Unparseable line -> None.
+        assert_eq!(title_from_line("{ truncated json"), None);
+    }
+
+    #[test]
+    fn title_first_line_only_and_collapses_whitespace() {
+        let line =
+            r#"{"type":"user","message":{"role":"user","content":"First   line here\nsecond line"}}"#;
+        assert_eq!(title_from_line(line), Some("First line here".to_string()));
+    }
+
+    #[test]
+    fn title_truncates_at_80_chars_multibyte_safe() {
+        // 90 ASCII chars -> truncated to 80 + ellipsis.
+        let long = "a".repeat(90);
+        let out = format_title(&long);
+        assert_eq!(out.chars().count(), 81); // 80 + '…'
+        assert!(out.ends_with('…'));
+        assert_eq!(out.chars().take(80).collect::<String>(), "a".repeat(80));
+
+        // Multibyte: 85 'é' chars must truncate on a char boundary (no panic).
+        let multibyte = "é".repeat(85);
+        let out = format_title(&multibyte);
+        assert_eq!(out.chars().count(), 81);
+        assert!(out.ends_with('…'));
+
+        // Exactly 80 chars -> unchanged, no ellipsis.
+        let exact = "b".repeat(80);
+        assert_eq!(format_title(&exact), exact);
+    }
+
+    #[test]
+    fn title_strips_leading_ide_selection_block() {
+        // <ide_selection>…</ide_selection> then the real prompt in the SAME msg
+        // (the fiona-97 leak). serde_json::json! keeps the escaping honest.
+        let content =
+            "<ide_selection>The user selected lines 1 to 51 from d:\\proj\\x.py</ide_selection>\nActually fix the parser";
+        let v = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": content }
+        });
+        assert_eq!(
+            title_from_line(&v.to_string()),
+            Some("Actually fix the parser".to_string())
+        );
+    }
+
+    #[test]
+    fn title_unterminated_wrapper_is_skipped() {
+        let content = "<ide_selection>selection with no closing tag and a prompt after";
+        let v = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": content }
+        });
+        assert_eq!(title_from_line(&v.to_string()), None);
+    }
+
+    #[test]
+    fn title_strips_two_stacked_wrapper_blocks() {
+        let content = "<ide_opened_file>d:\\proj\\a.py</ide_opened_file><system-reminder>be careful</system-reminder>  Real request here";
+        let v = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": content }
+        });
+        assert_eq!(
+            title_from_line(&v.to_string()),
+            Some("Real request here".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_title_returns_first_qualifying_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jsonl = tmp.path().join("t.jsonl");
+        // Leading skippable lines, then the first real prompt, then more.
+        let body = concat!(
+            "{\"type\":\"user\",\"isMeta\":true,\"message\":{\"role\":\"user\",\"content\":\"boot\"}}\n",
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/init</command-name>\"}}\n",
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Build the feature\"}}\n",
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"a later prompt\"}}\n",
+        );
+        fs::write(&jsonl, body).unwrap();
+        assert_eq!(extract_title(&jsonl), Some("Build the feature".to_string()));
     }
 
     // ---- defensive registry parsing ----

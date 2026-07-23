@@ -17,8 +17,12 @@ import { invoke } from '@tauri-apps/api/core';
 export interface ClaudeSessionCandidate {
   session_id: string;
   pid: number;
-  /** Session display name. */
+  /** Session display name (internal slug, e.g. "research-85"). */
   name: string;
+  /** Human-readable title: the session's first real user prompt (what Claude
+   *  Code's resume picker shows). Null until a qualifying prompt exists. Prefer
+   *  this over `name` for display. */
+  title: string | null;
   /** Absolute project path the session is running in. */
   cwd: string;
   /** Branch as seen by that Claude session (may be stale). */
@@ -61,6 +65,15 @@ export async function getGitBranch(path: string): Promise<string | null> {
     console.warn('[claudeSessionService] get_git_branch failed:', err);
     return null;
   }
+}
+
+/**
+ * The label to show for a session: its human-readable title (first user prompt)
+ * when available, else the internal slug name. A blank title falls back too.
+ */
+export function sessionDisplayName(c: Pick<ClaudeSessionCandidate, 'title' | 'name'>): string {
+  const title = c.title?.trim();
+  return title ? title : c.name;
 }
 
 /** Last path segment of an absolute cwd (handles both `/` and `\` separators). */
