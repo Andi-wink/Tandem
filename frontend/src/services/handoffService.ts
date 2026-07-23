@@ -84,20 +84,78 @@ export function slugify(input: string, maxLen = 40): string {
 }
 
 /**
+ * Sanitize a display name for direct use as a Windows folder segment: replace
+ * the filesystem-illegal characters (`\ / : * ? " < > |`) and control chars with
+ * a hyphen, collapse whitespace, trim, cap at `maxLen` chars, and drop any
+ * trailing dot/space (Windows silently strips those from folder names). Unlike
+ * `slugify`, this KEEPS spaces and letter case so the result stays human
+ * readable. May return '' (empty / all-stripped input) — callers must guard.
+ */
+export function sanitizeSessionName(input: string, maxLen = 60): string {
+  return (input ?? '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLen)
+    .replace(/[.\s]+$/g, '')
+    .trim();
+}
+
+/**
+ * Parse a stable per-session timestamp source into a Date, or null if absent /
+ * unparseable. Accepts a `Date` or a string. SQLite's `datetime('now')` yields a
+ * UTC wall-clock string with no zone marker ("YYYY-MM-DD HH:MM:SS"); that shape
+ * is normalized to an explicit-UTC ISO string so the instant is interpreted
+ * correctly (and then rendered in the machine's local time).
+ */
+function parseCreatedAt(value?: string | Date | null): Date | null {
+  if (!value) return null;
+  if (value instanceof Date) return isNaN(value.getTime()) ? null : value;
+  let s = value.trim();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s)) {
+    s = `${s.replace(' ', 'T')}Z`;
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/** Render a session-start Date as the folder timestamp `HH.MM, DD.MM` in LOCAL
+ *  time. `.` stands in for the user-facing `:` / `/` (both illegal on Windows);
+ *  the `", "` separator is kept literally. */
+function formatSessionStamp(when: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(when.getHours())}.${pad(when.getMinutes())}, ` +
+    `${pad(when.getDate())}.${pad(when.getMonth() + 1)}`;
+}
+
+/**
  * F061: the `.tandem`-relative filing subfolder for a virtual sub-project keyed
- * by a chat session: `sessions/<slug>-<shortid>`, where `slug` is the project's
- * display name (the chat title captured at creation) slugified and `shortid` is
- * the first 8 chars of the session id. Deterministic from the project row, so no
- * DB column is needed. Falls back to `sessions/<shortid>` when the slug is empty.
+ * by a chat session, in a human-readable form:
+ *   `sessions/HH.MM, DD.MM - <Session name>`
+ * (the user's requested `HH:MM, DD/MM - Session name`, with `.` substituted for
+ * the Windows-illegal `:` and `/`). The timestamp is the session's start time,
+ * taken from the STABLE project-row `created_at` (not `new Date()`), so every
+ * call site reconstructs the exact same folder path — no DB column beyond the
+ * one that already exists is needed. The name is sanitized and capped; it falls
+ * back to the 8-char short session id when empty. When no `createdAt` is
+ * available (should not happen for a DB-backed row), the timestamp prefix is
+ * omitted so the result stays deterministic.
  * Passed as the `sessionFolder` argument to any handoff writer so all artifacts
  * are scoped to that chat.
  */
-export function sessionScopeFolder(sessionId: string, displayName?: string | null): string {
+export function sessionScopeFolder(
+  sessionId: string,
+  displayName?: string | null,
+  createdAt?: string | Date | null,
+): string {
   const shortId = sessionId.slice(0, 8);
-  const slug = slugify(displayName ?? '');
-  return slug
-    ? `${SESSION_SCOPE_PREFIX}${slug}-${shortId}`
-    : `${SESSION_SCOPE_PREFIX}${shortId}`;
+  const name = sanitizeSessionName(displayName ?? '') || shortId;
+  const when = parseCreatedAt(createdAt);
+  return when
+    ? `${SESSION_SCOPE_PREFIX}${formatSessionStamp(when)} - ${name}`
+    : `${SESSION_SCOPE_PREFIX}${name}`;
 }
 
 /**

@@ -137,7 +137,7 @@ export function useSoloModeRouter() {
   // F061: the lazily-computed per-meeting folder name (`{title}_{stamp}`) used by
   // PLAIN folder projects. Computed once per Solo session and reused across
   // plain-project switches so their `.tandem/{folder}/` mirrors one name. Virtual
-  // sub-projects ignore this and file under `.tandem/sessions/<session_id>/`.
+  // sub-projects ignore this and file under `.tandem/sessions/<HH.MM, DD.MM - name>/`.
   const meetingFolderRef = useRef<string | null>(null);
 
   // ── Load projects on session start + periodic refresh ───────────────
@@ -198,16 +198,16 @@ export function useSoloModeRouter() {
       const branchMismatch = branchInfo?.branchMismatch === true;
 
       // F061: choose the filing folder PER active project. A virtual sub-project
-      // (session_id set) files under `.tandem/sessions/<slug>-<shortid>/` (slug
-      // from the project's display name, shortid from the session id); a plain
-      // folder project uses the shared per-meeting folder (computed once). This
-      // is the single derivation point: every downstream writer just reads
-      // sessionFolderRef, so switching projects re-scopes all filing. Computed
-      // BEFORE switchProject so the screenshot-routing subfolder can be handed
-      // to setActiveSoloProject in the same call.
+      // (session_id set) files under `.tandem/sessions/<HH.MM, DD.MM - name>/`
+      // (the human-readable session start time from the row's created_at plus the
+      // display name); a plain folder project uses the shared per-meeting folder
+      // (computed once). This is the single derivation point: every downstream
+      // writer just reads sessionFolderRef, so switching projects re-scopes all
+      // filing. Computed BEFORE switchProject so the screenshot-routing subfolder
+      // can be handed to setActiveSoloProject in the same call.
       let activeSessionFolder: string;
       if (matched.session_id) {
-        activeSessionFolder = sessionScopeFolder(matched.session_id, matched.name);
+        activeSessionFolder = sessionScopeFolder(matched.session_id, matched.name, matched.created_at);
       } else {
         if (!meetingFolderRef.current) {
           meetingFolderRef.current = buildSessionFolderName(meetingTitleRef.current || 'Solo');
@@ -277,7 +277,7 @@ export function useSoloModeRouter() {
       ) {
         maybeArchiveSessionFolder(
           previousProject.path,
-          sessionScopeFolder(previousProject.session_id, previousProject.name),
+          sessionScopeFolder(previousProject.session_id, previousProject.name, previousProject.created_at),
         ).catch(err => console.warn('[SoloRouter] switch-away archive failed:', err));
       }
 
@@ -702,10 +702,10 @@ export function useSoloModeRouter() {
       for (const entry of projectHistory) {
         const sep = entry.project.path.includes('\\') ? '\\' : '/';
         // F061: a virtual sub-project's Claude Code writes response.md under
-        // `.tandem/sessions/<session_id>/`; a plain project uses the `.tandem`
-        // root (unchanged). tandemDirFor(null) collapses to the root.
+        // `.tandem/sessions/<HH.MM, DD.MM - name>/`; a plain project uses the
+        // `.tandem` root (unchanged). tandemDirFor(null) collapses to the root.
         const folder = entry.project.session_id
-          ? sessionScopeFolder(entry.project.session_id, entry.project.name)
+          ? sessionScopeFolder(entry.project.session_id, entry.project.name, entry.project.created_at)
           : null;
         const responsePath = `${tandemDirFor(entry.project.path, folder)}${sep}response.md`;
 
