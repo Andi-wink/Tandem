@@ -18,6 +18,7 @@ import { TimelineFilter, ScreenshotData } from '@/types';
 import { ScreenshotLightbox } from '@/components/ScreenshotLightbox';
 import { TranscriptChunks } from '@/components/TranscriptChunks';
 import { RegionSelectOverlay } from '@/components/RegionSelectOverlay';
+import { TranscriptNoteInput } from '@/components/TranscriptNoteInput';
 
 /**
  * TranscriptPanel Component
@@ -162,6 +163,14 @@ export function TranscriptPanel({
                 </Button>
               </ButtonGroup>
             </div>
+            {/* Typed-note input — drop a note or link straight into the transcript */}
+            {isRecording && (
+              <div className="flex justify-center">
+                <div className="w-full max-w-[500px]">
+                  <TranscriptNoteInput />
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

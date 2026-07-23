@@ -10,10 +10,14 @@ import { invoke } from '@tauri-apps/api/core';
 import { Transcript, ScreenshotData, ClipboardData } from '@/types';
 import { ContextBasketItem } from '@/contexts/ContextBasketContext';
 import { resolveSpeaker, getLocalSpeakerName } from '@/lib/speakerNames';
+import { isNoteSegment } from '@/lib/transcriptNotes';
 import { getGitBranch } from '@/services/claudeSessionService';
 
-/** Prefix a transcript line's body with its resolved speaker ("Andrew: ..." / "Client: ..."). */
+/** Prefix a transcript line's body with its resolved speaker ("Andrew: ..." /
+ *  "Client: ..."), or "Note: ..." for a typed note, so a downstream reader can
+ *  tell a user-typed note apart from spoken words. */
 function withSpeaker(t: Transcript, localName: string): string {
+  if (isNoteSegment(t)) return `Note: ${t.text.trim()}`;
   const speaker = resolveSpeaker({ speaker_label: t.speaker_label, source: t.source ?? t.speaker }, localName);
   return speaker ? `${speaker}: ${t.text.trim()}` : t.text.trim();
 }
