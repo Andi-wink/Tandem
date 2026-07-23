@@ -7,12 +7,13 @@
 //!      registry, cross-referencing each session's transcript tail and the branch
 //!      currently checked out in its working directory.
 //!
-//! PRIVACY: transcript tails are read only for the `gitBranch`, `cwd`, `type` and
-//! `timestamp` keys, and the very FIRST qualifying user prompt is read solely to
-//! derive a human-readable display title (`title`) shown to the user in their own
-//! HUD picker (the same text Claude Code's resume picker shows). That title is
-//! never logged, persisted to disk, or sent anywhere off the machine; no other
-//! message content is ever read out.
+//! PRIVACY: transcript tails are read only for the `gitBranch`, `cwd`, `type`,
+//! `timestamp` keys and the session's own display-title records (`customTitle`
+//! from `custom-title` lines, `aiTitle` from `ai-title` lines). As a fallback the
+//! very FIRST qualifying user prompt is read to derive a display title (`title`)
+//! shown to the user in their own HUD picker (the same text Claude Code's resume
+//! picker shows). That title is never logged, persisted to disk, or sent anywhere
+//! off the machine; no other message content is ever read out.
 
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -167,6 +168,12 @@ struct TailInfo {
     /// `cwd` from the same line that carried `gitBranch` (registry fallback only).
     cwd: Option<String>,
     last_user_activity_ms: Option<i64>,
+    /// Last `custom-title` record's `customTitle` in the tail (user-renamed chat).
+    /// Highest-priority display title. Not cached — it can change over the session.
+    custom_title: Option<String>,
+    /// Last `ai-title` record's `aiTitle` in the tail (auto-generated title).
+    /// Second-priority display title. Not cached — regeneration can change it.
+    ai_title: Option<String>,
 }
 
 /// Read at most the last `TAIL_BYTES` of a file.
@@ -192,7 +199,9 @@ fn iso_to_unix_ms(s: &str) -> Option<i64> {
 /// The very last lines may be meta records (e.g. `type: "last-prompt"` /
 /// `"ai-title"`) that lack `cwd`/`gitBranch`, so we scan backwards for the last
 /// line that both parses and carries a non-empty `gitBranch`. Separately we scan
-/// backwards for the last `type == "user"` line to recover its `timestamp`.
+/// backwards for the last `type == "user"` line to recover its `timestamp`, and
+/// for the last `custom-title` / `ai-title` records to recover the current
+/// display title (these records repeat and can change; the LAST wins).
 ///
 /// Only these keys are extracted; message content is never read out.
 fn parse_tail(bytes: &[u8]) -> TailInfo {
@@ -235,6 +244,44 @@ fn parse_tail(bytes: &[u8]) -> TailInfo {
             if v.get("type").and_then(|x| x.as_str()) == Some("user") {
                 if let Some(ts) = v.get("timestamp").and_then(|x| x.as_str()) {
                     info.last_user_activity_ms = iso_to_unix_ms(ts);
+                }
+                break;
+            }
+        }
+    }
+
+    // Last `custom-title` record -> its `customTitle` (user-renamed chat).
+    for line in lines.iter().rev() {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(l) {
+            if v.get("type").and_then(|x| x.as_str()) == Some("custom-title") {
+                if let Some(t) = v.get("customTitle").and_then(|x| x.as_str()) {
+                    let t = t.trim();
+                    if !t.is_empty() {
+                        info.custom_title = Some(format_title(t));
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    // Last `ai-title` record -> its `aiTitle` (auto-generated title).
+    for line in lines.iter().rev() {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(l) {
+            if v.get("type").and_then(|x| x.as_str()) == Some("ai-title") {
+                if let Some(t) = v.get("aiTitle").and_then(|x| x.as_str()) {
+                    let t = t.trim();
+                    if !t.is_empty() {
+                        info.ai_title = Some(format_title(t));
+                    }
                 }
                 break;
             }
@@ -574,13 +621,20 @@ where
         }
 
         // Locate + tail-parse the transcript (best effort), and derive the
-        // display title from its head.
+        // display title. Priority: the tail's last custom-title (user rename) >
+        // the tail's last ai-title (auto-generated) > the first-prompt title from
+        // the head (cached). The tail-derived titles come free with the tail read
+        // and can change, so they are never cached; only the first-prompt title is.
         let (tail, last_activity_ms, title) = match find_transcript(home, &session_id) {
             Some(jsonl) => {
                 let tail = read_tail(&jsonl, TAIL_BYTES)
                     .map(|b| parse_tail(&b))
                     .unwrap_or_default();
-                let title = cached_title(&session_id, &jsonl);
+                let title = tail
+                    .custom_title
+                    .clone()
+                    .or_else(|| tail.ai_title.clone())
+                    .or_else(|| cached_title(&session_id, &jsonl));
                 (tail, file_mtime_ms(&jsonl), title)
             }
             None => (TailInfo::default(), None, None),
@@ -793,6 +847,133 @@ mod tests {
         assert_eq!(info.git_branch, None);
         assert_eq!(info.cwd, None);
         assert_eq!(info.last_user_activity_ms, None);
+    }
+
+    // ---- tail-derived display titles (ai-title / custom-title) ----
+
+    #[test]
+    fn parse_tail_picks_up_ai_title() {
+        let jsonl = concat!(
+            "{\"type\":\"user\",\"timestamp\":\"2026-07-22T10:00:00.000Z\"}\n",
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Mock up solo mode project hub layout\",\"sessionId\":\"s\"}\n",
+        );
+        let info = parse_tail(jsonl.as_bytes());
+        assert_eq!(
+            info.ai_title,
+            Some("Mock up solo mode project hub layout".to_string())
+        );
+        assert_eq!(info.custom_title, None);
+    }
+
+    #[test]
+    fn parse_tail_custom_title_and_ai_title_coexist() {
+        // Both present: parse_tail captures each independently; the composition
+        // step (list_candidates) is what prefers custom over ai.
+        let jsonl = concat!(
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Auto Generated\",\"sessionId\":\"s\"}\n",
+            "{\"type\":\"custom-title\",\"customTitle\":\"CMS\",\"sessionId\":\"s\"}\n",
+        );
+        let info = parse_tail(jsonl.as_bytes());
+        assert_eq!(info.custom_title, Some("CMS".to_string()));
+        assert_eq!(info.ai_title, Some("Auto Generated".to_string()));
+    }
+
+    #[test]
+    fn parse_tail_later_title_record_wins() {
+        // Titles change over a session; the LAST occurrence is current.
+        let jsonl = concat!(
+            "{\"type\":\"ai-title\",\"aiTitle\":\"First Guess\",\"sessionId\":\"s\"}\n",
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Better Title\",\"sessionId\":\"s\"}\n",
+            "{\"type\":\"custom-title\",\"customTitle\":\"Old Name\",\"sessionId\":\"s\"}\n",
+            "{\"type\":\"custom-title\",\"customTitle\":\"New Name\",\"sessionId\":\"s\"}\n",
+        );
+        let info = parse_tail(jsonl.as_bytes());
+        assert_eq!(info.ai_title, Some("Better Title".to_string()));
+        assert_eq!(info.custom_title, Some("New Name".to_string()));
+    }
+
+    #[test]
+    fn parse_tail_ignores_empty_ai_title() {
+        let jsonl = concat!(
+            "{\"type\":\"ai-title\",\"aiTitle\":\"   \",\"sessionId\":\"s\"}\n",
+            "{\"type\":\"custom-title\",\"customTitle\":\"\",\"sessionId\":\"s\"}\n",
+        );
+        let info = parse_tail(jsonl.as_bytes());
+        assert_eq!(info.ai_title, None);
+        assert_eq!(info.custom_title, None);
+    }
+
+    #[test]
+    fn parse_tail_truncates_long_title() {
+        let long = "z".repeat(90);
+        let jsonl = format!(
+            "{{\"type\":\"ai-title\",\"aiTitle\":\"{long}\",\"sessionId\":\"s\"}}\n"
+        );
+        let info = parse_tail(jsonl.as_bytes());
+        let t = info.ai_title.unwrap();
+        assert_eq!(t.chars().count(), 81); // 80 + '…'
+        assert!(t.ends_with('…'));
+    }
+
+    #[test]
+    fn list_candidates_prefers_custom_over_ai_over_first_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let sessions = home.join(".claude").join("sessions");
+        let projects_dir = home.join(".claude").join("projects").join("munged");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::create_dir_all(&projects_dir).unwrap();
+
+        // Session A: has a custom-title -> that wins over ai-title & first prompt.
+        fs::write(
+            sessions.join("a.json"),
+            r#"{"pid":100,"sessionId":"sid-a","cwd":"D:/proj/a","name":"slug-a","kind":"interactive","entrypoint":"claude-cli"}"#,
+        )
+        .unwrap();
+        fs::write(
+            projects_dir.join("sid-a.jsonl"),
+            concat!(
+                "{\"type\":\"user\",\"timestamp\":\"2026-07-22T12:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"First prompt A\"}}\n",
+                "{\"type\":\"ai-title\",\"aiTitle\":\"AI Title A\",\"sessionId\":\"sid-a\"}\n",
+                "{\"type\":\"custom-title\",\"customTitle\":\"Custom A\",\"sessionId\":\"sid-a\"}\n",
+            ),
+        )
+        .unwrap();
+
+        // Session B: only ai-title -> ai-title wins over first prompt.
+        fs::write(
+            sessions.join("b.json"),
+            r#"{"pid":200,"sessionId":"sid-b","cwd":"D:/proj/b","name":"slug-b","kind":"interactive","entrypoint":"claude-cli"}"#,
+        )
+        .unwrap();
+        fs::write(
+            projects_dir.join("sid-b.jsonl"),
+            concat!(
+                "{\"type\":\"user\",\"timestamp\":\"2026-07-22T11:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"First prompt B\"}}\n",
+                "{\"type\":\"ai-title\",\"aiTitle\":\"AI Title B\",\"sessionId\":\"sid-b\"}\n",
+            ),
+        )
+        .unwrap();
+
+        // Session C: no title records -> falls back to first-prompt extraction.
+        fs::write(
+            sessions.join("c.json"),
+            r#"{"pid":300,"sessionId":"sid-c","cwd":"D:/proj/c","name":"slug-c","kind":"interactive","entrypoint":"claude-cli"}"#,
+        )
+        .unwrap();
+        fs::write(
+            projects_dir.join("sid-c.jsonl"),
+            "{\"type\":\"user\",\"timestamp\":\"2026-07-22T10:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"First prompt C\"}}\n",
+        )
+        .unwrap();
+
+        let alive = |_pid: u32| true;
+        let out = list_candidates(home, &[], &alive);
+
+        let by_id = |id: &str| out.iter().find(|c| c.session_id == id).unwrap();
+        assert_eq!(by_id("sid-a").title.as_deref(), Some("Custom A"));
+        assert_eq!(by_id("sid-b").title.as_deref(), Some("AI Title B"));
+        assert_eq!(by_id("sid-c").title.as_deref(), Some("First prompt C"));
     }
 
     // ---- display title extraction ----

@@ -19,9 +19,9 @@ export interface ClaudeSessionCandidate {
   pid: number;
   /** Session display name (internal slug, e.g. "research-85"). */
   name: string;
-  /** Human-readable title: the session's first real user prompt (what Claude
-   *  Code's resume picker shows). Null until a qualifying prompt exists. Prefer
-   *  this over `name` for display. */
+  /** Human-readable title (what Claude Code's picker shows): the chat's custom
+   *  rename, else its auto-generated title, else its first real user prompt.
+   *  Null until any of those exist. Prefer this over `name` for display. */
   title: string | null;
   /** Absolute project path the session is running in. */
   cwd: string;
