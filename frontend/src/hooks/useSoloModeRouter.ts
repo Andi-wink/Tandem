@@ -61,11 +61,14 @@ interface SwitchBranchInfo {
 
 /** F055: payload the HUD relays for a manual route pick. `projectId` is set for
  *  a registered project; `cwd`+`name` are set for an unregistered session that
- *  should be auto-registered before switching. */
+ *  should be auto-registered before switching. `sessionName` (F061) is set when
+ *  the pick came from a live Claude session, and is preferred as the HUD pill
+ *  label (via the `solo-active-project` reply), falling back to the project name. */
 interface HudSwitchPayload {
   projectId?: string;
   cwd?: string;
   name?: string;
+  sessionName?: string | null;
   sessionBranch?: string | null;
   headBranch?: string | null;
   branchMismatch?: boolean;
@@ -159,6 +162,7 @@ export function useSoloModeRouter() {
       matched: Project,
       transcriptIndex: number,
       branchInfo?: SwitchBranchInfo,
+      displayName?: string | null,
     ): Promise<string> => {
       const previousProject = activeProjectRef.current;
 
@@ -175,7 +179,10 @@ export function useSoloModeRouter() {
       const sessionBranch = branchInfo?.sessionBranch ?? null;
       const branchMismatch = branchInfo?.branchMismatch === true;
 
-      switchProject(matched, transcriptIndex, branch);
+      // Prefer the live-session name for the HUD pill when the switch came from
+      // a session pick; the auto-router passes nothing and falls back to the
+      // project name inside switchProject.
+      switchProject(matched, transcriptIndex, branch, displayName);
 
       let activeSessionFolder = sessionFolderRef.current;
       if (!activeSessionFolder) {
@@ -406,7 +413,7 @@ export function useSoloModeRouter() {
 
     listen<HudSwitchPayload>('solo-hud-switch', async event => {
       const payload = event.payload ?? {};
-      const { projectId, cwd, name } = payload;
+      const { projectId, cwd, name, sessionName } = payload;
       const branchInfo: SwitchBranchInfo = {
         sessionBranch: payload.sessionBranch ?? null,
         headBranch: payload.headBranch ?? null,
@@ -457,7 +464,7 @@ export function useSoloModeRouter() {
       if (matched.id === activeProjectRef.current?.id) return; // already active
 
       try {
-        await performProjectSwitch(matched, transcriptsRef.current.length, branchInfo);
+        await performProjectSwitch(matched, transcriptsRef.current.length, branchInfo, sessionName);
       } catch (err) {
         console.error('[SoloRouter] HUD switch failed:', err);
       }

@@ -10,11 +10,15 @@
  *
  * Event contract (must match the main window):
  *   IN  solo-active-project   { id: string | null, name: string | null }
- *       → updates the pill; pulse + chime on change.
+ *       → updates the pill; pulse + chime on change. `name` is the live Claude
+ *         session name when the switch came from a session pick, otherwise the
+ *         project name.
  *   IN  solo-session-stopped  (no payload) → self-reset to listening.
- *   OUT solo-hud-switch       { projectId?, cwd?, name?, sessionBranch?, headBranch?, branchMismatch? }
+ *   OUT solo-hud-switch       { projectId?, cwd?, name?, sessionName?, sessionBranch?, headBranch?, branchMismatch? }
  *       → main window (useSoloModeRouter) applies a manual project correction;
  *         payloads without projectId carry a cwd to auto-register first.
+ *         sessionName (set for live-session picks) is preferred as the pill
+ *         label in the reply, falling back to the project name.
  *
  * The window is shown/hidden by the main window via
  * WebviewWindow.getByLabel('solo-hud').show()/.hide().
@@ -236,9 +240,11 @@ export default function SoloHudPage() {
       // live projects table with path normalization, whereas our local project
       // snapshot can be stale (loaded when the picker expanded).
       const known = Boolean(c.registered_project_id);
+      // sessionName travels alongside so the pill can show the Claude session
+      // name (not the project name) when the switch came from a live session.
       const payload = known
-        ? { projectId: c.registered_project_id, ...branchMeta }
-        : { cwd: c.cwd, name: folderName(c.cwd), ...branchMeta };
+        ? { projectId: c.registered_project_id, sessionName: c.name, ...branchMeta }
+        : { cwd: c.cwd, name: folderName(c.cwd), sessionName: c.name, ...branchMeta };
 
       // Avoid a no-op switch to the already-active registered project.
       if (known && c.registered_project_id === activeIdRef.current) {
@@ -360,7 +366,9 @@ export default function SoloHudPage() {
                           )}
                         </span>
                         <span className="flex w-full items-center gap-1.5 text-[11px] text-muted-foreground">
-                          <span className="truncate">{folderName(c.cwd)}</span>
+                          <span className="min-w-0 flex-1 truncate text-left text-[10px] font-mono text-muted-foreground [direction:rtl]">
+                            <bdo dir="ltr">{c.cwd}</bdo>
+                          </span>
                           {branch && (
                             <span
                               title={
@@ -426,17 +434,22 @@ export default function SoloHudPage() {
                   <li key={project.id}>
                     <button
                       onClick={() => handlePick(project)}
-                      className="flex w-full items-center gap-2 px-2 py-1.5 rounded-lg text-left
+                      className="flex w-full items-start gap-2 px-2 py-1.5 rounded-lg text-left
                                  text-sm text-foreground hover:bg-muted transition-colors
                                  focus-visible:outline-none focus-visible:ring-2
                                  focus-visible:ring-ring focus-visible:ring-offset-1"
                     >
                       <span
-                        className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                        className={`mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 ${
                           isCurrent ? 'bg-brand' : 'bg-transparent'
                         }`}
                       />
-                      <span className="flex-1 truncate">{project.name}</span>
+                      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <span className="truncate text-sm font-medium">{project.name}</span>
+                        <span className="min-w-0 truncate text-left text-[10px] font-mono text-muted-foreground [direction:rtl]">
+                          <bdo dir="ltr">{project.path}</bdo>
+                        </span>
+                      </span>
                       {isCurrent && (
                         <svg
                           width="14"
@@ -447,7 +460,7 @@ export default function SoloHudPage() {
                           strokeWidth="2.5"
                           strokeLinecap="round"
                           strokeLinejoin="round"
-                          className="text-brand shrink-0"
+                          className="mt-0.5 text-brand shrink-0"
                         >
                           <polyline points="20 6 9 17 4 12" />
                         </svg>

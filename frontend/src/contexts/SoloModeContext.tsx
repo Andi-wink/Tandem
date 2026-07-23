@@ -62,7 +62,7 @@ interface SoloModeState {
 interface SoloModeContextType extends SoloModeState {
   startSoloSession: () => void;
   stopSoloSession: () => void;
-  switchProject: (project: Project, transcriptIndex: number, branch?: string | null) => void;
+  switchProject: (project: Project, transcriptIndex: number, branch?: string | null, displayName?: string | null) => void;
   addTask: (task: SoloTask) => void;
   setRoutingModel: (model: string) => void;
   setSessionFolder: (folder: string) => void;
@@ -199,7 +199,7 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     setHudWindowVisible(false);
   }, []);
 
-  const switchProject = useCallback((project: Project, transcriptIndex: number, branch?: string | null) => {
+  const switchProject = useCallback((project: Project, transcriptIndex: number, branch?: string | null, displayName?: string | null) => {
     console.log(`[SoloMode] Switching to project: ${project.name} at index ${transcriptIndex}`);
 
     // Close previous entry
@@ -231,8 +231,12 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
       console.warn('[SoloMode] Failed to set screenshot routing:', err),
     );
 
-    // Update the floating HUD with the new active project.
-    emitHudActiveProject(project.id, project.name);
+    // Update the floating HUD with the new active project. When the switch came
+    // from a live Claude session pick, prefer that session's name for the pill
+    // label; otherwise fall back to the project name. (Note: on a HUD reload the
+    // `solo-hud-ready` replay re-emits the project name, since the session name
+    // is not persisted in state — an accepted, minor degradation.)
+    emitHudActiveProject(project.id, displayName ?? project.name);
   }, []);
 
   const addTask = useCallback((task: SoloTask) => {
