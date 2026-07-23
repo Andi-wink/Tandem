@@ -528,6 +528,7 @@ export type FeedEntryType =
   | 'project_switch'
   | 'session_start'
   | 'session_end'
+  | 'session_archived'
   | 'revoke';
 
 export interface FeedEntry {
@@ -624,6 +625,77 @@ export async function ensureLoopState(
   if (existing && existing.trim().length > 0) return;
   const content = JSON.stringify({ last_processed_line: 0 }, null, 2);
   await invoke('save_transcript', { filePath, content });
+}
+
+// ─── Session archival (F061) ────────────────────────────────────────────────
+
+/**
+ * F061 "all tasks done" predicate. `taskFiles` is the listing of a session
+ * folder's `tasks/` dir (from `list_dir_file_names`): `null` when the dir does
+ * not exist, otherwise the entry names.
+ *
+ * A session is done when its `tasks/` dir EXISTS (so at least one task was ever
+ * handed off) AND holds no `.md` task files left (Claude Code deletes each task
+ * file when it finishes it). A `null` listing (never handed off a task) is NOT
+ * done — nothing was completed, so nothing is archived automatically.
+ */
+export function allTasksDone(taskFiles: string[] | null): boolean {
+  if (!Array.isArray(taskFiles)) return false;
+  return taskFiles.filter(f => f.toLowerCase().endsWith('.md')).length === 0;
+}
+
+/**
+ * F061: if every task handed off from a virtual sub-project's chat is done, move
+ * its session folder `<path>/.tandem/<sessionFolder>` into
+ * `<path>/.tandem/archive/`, keeping `.tandem/sessions/` to active chats only.
+ *
+ * Best-effort and non-throwing: a listing/append/move failure is logged and the
+ * session stays put (retried on the next trigger). A self-explanatory
+ * `session_archived` feed line is appended BEFORE the move so it travels into the
+ * archived copy. Returns true only when the folder was actually moved.
+ *
+ * The CALLER guarantees `sessionFolder` is NOT the currently-active session.
+ */
+export async function maybeArchiveSessionFolder(
+  projectPath: string,
+  sessionFolder: string,
+): Promise<boolean> {
+  const sep = projectPath.includes('\\') ? '\\' : '/';
+  const tasksDir = `${tandemDirFor(projectPath, sessionFolder)}${sep}tasks`;
+
+  let taskFiles: string[] | null;
+  try {
+    taskFiles = await invoke<string[] | null>('list_dir_file_names', { path: tasksDir });
+  } catch (err) {
+    console.warn('[handoff] archive: failed to list tasks dir:', err);
+    return false;
+  }
+  if (!allTasksDone(taskFiles)) return false;
+
+  try {
+    await appendFeedEntry(projectPath, {
+      type: 'session_archived',
+      timestamp: new Date(),
+      body: 'Session archived — all handed-off tasks are done. Folder moved to .tandem/archive/.',
+    }, sessionFolder);
+  } catch (err) {
+    console.warn('[handoff] archive: failed to append session_archived entry:', err);
+  }
+
+  try {
+    const moved = await invoke<string | null>('archive_session_folder', {
+      projectDir: projectPath,
+      sessionFolder,
+    });
+    if (moved) {
+      console.log('[handoff] archived session folder ->', moved);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.warn('[handoff] archive: move failed:', err);
+    return false;
+  }
 }
 
 export function buildScreenshotFeedEntry(ss: ScreenshotData): FeedEntry {

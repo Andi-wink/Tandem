@@ -34,6 +34,7 @@ import {
   buildSessionFolderName,
   sessionScopeFolder,
   tandemDirFor,
+  maybeArchiveSessionFolder,
 } from '@/services/handoffService';
 import { invoke } from '@tauri-apps/api/core';
 import { useScreenshots } from '@/contexts/ScreenshotContext';
@@ -263,6 +264,21 @@ export function useSoloModeRouter() {
         }, activeSessionFolder);
       } catch (err) {
         console.warn('[SoloRouter] Failed to append session_start entry:', err);
+      }
+
+      // F061: switching AWAY from a virtual sub-project — if every task handed
+      // off from its chat is done, archive its (now-inactive) session folder.
+      // Never touches the just-activated folder. Fire-and-forget so a locked
+      // folder or slow move never blocks or fails the switch.
+      if (
+        previousProject &&
+        previousProject.session_id &&
+        previousProject.id !== matched.id
+      ) {
+        maybeArchiveSessionFolder(
+          previousProject.path,
+          sessionScopeFolder(previousProject.session_id, previousProject.name),
+        ).catch(err => console.warn('[SoloRouter] switch-away archive failed:', err));
       }
 
       return activeSessionFolder;
@@ -656,11 +672,23 @@ export function useSoloModeRouter() {
           ).catch(() => {});
         }
       }
-      appendFeedEntry(activeProject.path, {
+      const stopped = activeProject;
+      appendFeedEntry(stopped.path, {
         type: 'session_end',
         timestamp: new Date(),
-        body: `Solo session ended on ${activeProject.name}`,
-      }, folder).catch(() => {});
+        body: `Solo session ended on ${stopped.name}`,
+      }, folder)
+        .catch(() => {})
+        .finally(() => {
+          // F061: on stop, archive the just-ended virtual sub-project's session
+          // folder if all its handed-off tasks are done. Chained after the
+          // session_end append so that entry lands before the folder moves.
+          if (stopped.session_id && folder) {
+            maybeArchiveSessionFolder(stopped.path, folder).catch(err =>
+              console.warn('[SoloRouter] stop archive failed:', err),
+            );
+          }
+        });
       lastTranscriptCountRef.current = 0;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

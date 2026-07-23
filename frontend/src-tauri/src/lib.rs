@@ -966,6 +966,9 @@ pub fn run() {
             api::project_import_scanned,
             api::project_scan_directory,
             api::project_pick_directory,
+            // F061: session archival (virtual sub-projects)
+            api::list_dir_file_names,
+            api::archive_session_folder,
             // F055: session-aware HUD + branch stamping
             claude_sessions::get_git_branch,
             claude_sessions::list_claude_session_candidates,
