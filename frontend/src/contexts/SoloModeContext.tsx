@@ -56,8 +56,9 @@ interface SoloModeState {
    *  Set per active project by the router (useSoloModeRouter.performProjectSwitch):
    *   - plain folder project → "MyMeeting_2026-05-08_14-30-15" (meeting title +
    *     start stamp, computed once per Solo session, shared across plain switches).
-   *   - F061 virtual sub-project → "sessions/<session_id>" so each chat's artifacts
-   *     stay isolated. Null until the first project switch. */
+   *   - F061 virtual sub-project → "sessions/HH.MM, DD.MM - <name>" (session start
+   *     time from the row's created_at) so each chat's artifacts stay isolated.
+   *     Null until the first project switch. */
   sessionFolder: string | null;
 }
 

@@ -8,6 +8,7 @@ import {
   ensureLoopState,
   tandemDirFor,
   sessionScopeFolder,
+  sanitizeSessionName,
   slugify,
   generateLiveScreenshotsMarkdown,
   allTasksDone,
@@ -209,24 +210,104 @@ describe('tandemDirFor (session folder)', () => {
     );
   });
 
-  it('sessionScopeFolder falls back to the shortid alone when no display name', () => {
+  it('sessionScopeFolder falls back to the shortid alone when no display name and no timestamp', () => {
     expect(sessionScopeFolder('abc-123')).toBe('sessions/abc-123');
     expect(tandemDirFor('D:\\Proj', sessionScopeFolder('sid'))).toBe(
       'D:\\Proj\\.tandem\\sessions\\sid',
     );
   });
+});
 
-  it('sessionScopeFolder builds sessions/<slug>-<shortid> from the display name', () => {
-    // The documented example.
+// ─── F061: human-readable `HH.MM, DD.MM - <name>` session folder ────────────
+describe('sessionScopeFolder (human-readable timestamped folder)', () => {
+  // Build the LOCAL-time expected `HH.MM, DD.MM` from an instant so these
+  // assertions stay independent of the machine's timezone. `createdAt` is a
+  // SQLite UTC wall-clock string ("YYYY-MM-DD HH:MM:SS").
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const stampOf = (utc: string) => {
+    const d = new Date(`${utc.replace(' ', 'T')}Z`);
+    return `${pad(d.getHours())}.${pad(d.getMinutes())}, ${pad(d.getDate())}.${pad(d.getMonth() + 1)}`;
+  };
+
+  it('builds `sessions/HH.MM, DD.MM - <Session name>` from created_at (the documented example)', () => {
+    const createdAt = '2026-07-23 11:41:00'; // UTC; 12:41 UK local (BST)
     expect(
-      sessionScopeFolder('8effa465-9ffe-44c0-91d6-fc53f91b5687', 'Mock up solo mode project hub layout'),
-    ).toBe('sessions/mock-up-solo-mode-project-hub-layout-8effa465');
-    // shortid is exactly the first 8 chars of the session id.
-    expect(sessionScopeFolder('deadbeef-1111', 'Fix Login')).toBe('sessions/fix-login-deadbeef');
+      sessionScopeFolder('8effa465-9ffe-44c0-91d6-fc53f91b5687', 'Mock up solo mode project hub', createdAt),
+    ).toBe(`sessions/${stampOf(createdAt)} - Mock up solo mode project hub`);
   });
 
-  it('sessionScopeFolder guards an all-punctuation name (empty slug) to shortid only', () => {
-    expect(sessionScopeFolder('8effa465-xxxx', '!!! ??? ...')).toBe('sessions/8effa465');
+  it('keeps spaces and letter case in the session name (human readable, not slugified)', () => {
+    const createdAt = '2026-01-05 09:03:00';
+    expect(sessionScopeFolder('deadbeef-1111', 'Fix Login Redirect', createdAt)).toBe(
+      `sessions/${stampOf(createdAt)} - Fix Login Redirect`,
+    );
+  });
+
+  it('accepts a Date for created_at as well as a string', () => {
+    const when = new Date('2026-07-23T11:41:00Z');
+    expect(sessionScopeFolder('abc12345', 'Notes', when)).toBe(
+      `sessions/${pad(when.getHours())}.${pad(when.getMinutes())}, ${pad(when.getDate())}.${pad(when.getMonth() + 1)} - Notes`,
+    );
+  });
+
+  it('replaces Windows-illegal characters in the name with a hyphen', () => {
+    const createdAt = '2026-07-23 11:41:00';
+    expect(sessionScopeFolder('abc12345', 'a/b\\c:d*e?f"g<h>i|j', createdAt)).toBe(
+      `sessions/${stampOf(createdAt)} - a-b-c-d-e-f-g-h-i-j`,
+    );
+  });
+
+  it('collapses whitespace and caps the name at ~60 chars (no trailing dot/space)', () => {
+    const createdAt = '2026-07-23 11:41:00';
+    const long = 'A'.repeat(80);
+    const folder = sessionScopeFolder('abc12345', long, createdAt);
+    const namePart = folder.split(' - ')[1];
+    expect(namePart.length).toBe(60);
+    expect(namePart.endsWith('.')).toBe(false);
+    expect(namePart.endsWith(' ')).toBe(false);
+  });
+
+  it('falls back to the 8-char short session id when the name is empty / all-illegal', () => {
+    const createdAt = '2026-07-23 11:41:00';
+    expect(sessionScopeFolder('8effa465-xxxx', '   ', createdAt)).toBe(
+      `sessions/${stampOf(createdAt)} - 8effa465`,
+    );
+    // Illegal-only names sanitize to hyphens, not empty, so they survive as-is;
+    // a truly empty name (whitespace) is what triggers the shortid fallback.
+    expect(sessionScopeFolder('8effa465-xxxx', '', createdAt)).toBe(
+      `sessions/${stampOf(createdAt)} - 8effa465`,
+    );
+  });
+
+  it('omits the timestamp prefix (deterministic) when created_at is missing/unparseable', () => {
+    expect(sessionScopeFolder('abc12345', 'My Session')).toBe('sessions/My Session');
+    expect(sessionScopeFolder('abc12345', 'My Session', 'not-a-date')).toBe('sessions/My Session');
+    expect(sessionScopeFolder('abc12345', 'My Session', '')).toBe('sessions/My Session');
+  });
+
+  it('produces a folder tandemDirFor nests correctly (name has no path separators)', () => {
+    const createdAt = '2026-07-23 11:41:00';
+    const folder = sessionScopeFolder('abc12345', 'Mock up solo mode project hub', createdAt);
+    expect(tandemDirFor('D:\\Proj', folder)).toBe(
+      `D:\\Proj\\.tandem\\sessions\\${stampOf(createdAt)} - Mock up solo mode project hub`,
+    );
+  });
+});
+
+describe('sanitizeSessionName', () => {
+  it('keeps spaces and case, replaces illegal chars, trims and collapses whitespace', () => {
+    expect(sanitizeSessionName('  Fix   Login  ')).toBe('Fix Login');
+    expect(sanitizeSessionName('a/b\\c:d*e?f"g<h>i|j')).toBe('a-b-c-d-e-f-g-h-i-j');
+  });
+
+  it('returns empty string for empty / whitespace-only input', () => {
+    expect(sanitizeSessionName('')).toBe('');
+    expect(sanitizeSessionName('   ')).toBe('');
+  });
+
+  it('caps at 60 chars and strips a trailing dot/space', () => {
+    expect(sanitizeSessionName('A'.repeat(80)).length).toBe(60);
+    expect(sanitizeSessionName('My session name...').endsWith('.')).toBe(false);
   });
 });
 

@@ -12,8 +12,12 @@ export interface Project {
   auto_discovered: boolean;
   /** F061: null for a plain folder project; the Claude chat session id for a
    *  virtual sub-project. Identity is (path, session_id); a virtual sub-project
-   *  files under `<path>/.tandem/sessions/<session_id>/`. */
+   *  files under `<path>/.tandem/sessions/<HH.MM, DD.MM - name>/`. */
   session_id: string | null;
+  /** F061: row creation time as a SQLite UTC string ("YYYY-MM-DD HH:MM:SS").
+   *  Stable per session (set once at row insert), so it seeds the deterministic
+   *  session folder timestamp reconstructed at every call site. */
+  created_at: string;
 }
 
 export interface ProjectRaw {
@@ -46,6 +50,7 @@ function parseProject(raw: ProjectRaw): Project {
     aliases,
     auto_discovered: raw.auto_discovered === 1,
     session_id: raw.session_id ?? null,
+    created_at: raw.created_at ?? '',
   };
 }
 

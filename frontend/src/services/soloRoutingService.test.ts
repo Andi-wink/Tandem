@@ -18,6 +18,7 @@ const mkProject = (overrides: Partial<Project> = {}): Project => ({
   aliases: [],
   auto_discovered: false,
   session_id: null,
+  created_at: '2026-07-23 11:41:00',
   ...overrides,
 });
 
