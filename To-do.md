@@ -16,14 +16,20 @@ Spec: [research/enhance-my-notes-plan.md](research/enhance-my-notes-plan.md). Li
 - [x] ~~Regenerate used the paginated transcript subset~~ — fixed in the same feature's round-2 QA pass (collectAllTranscripts pages through the full transcript, unit-tested).
 - [ ] Pre-existing, NOT caused by this feature: [command-palette.spec.ts](frontend/e2e/tests/command-palette.spec.ts) "two same-title rows are individually selectable" fails deterministically at HEAD (cmdk `data-selected` never set on duplicate rows), independent of these changes.
 
-### Optional video capture during meetings (F061, 2026-07-13) — BUILT + adversarially reviewed, on `feature/video-capture`
-Opt-in continuous screen + webcam recording alongside audio, using the ffmpeg sidecar already bundled for audio encoding. Built in worktree `D:\Dev-projects\Tandem-video-capture`. Plan: [dynamic-dazzling-bachman.md](C:\Users\andre\.claude\plans\dynamic-dazzling-bachman.md). Two independent adversarial review passes (real ffmpeg smoke tests, not just code reading) both initially FAILED; all confirmed blockers fixed (CSP `media-src` gap, dshow colon device-name corruption, orphaned-ffmpeg-on-force-kill via Windows Job Object, verified with a real negative-control test). Committed at `4271a46`, not merged/pushed.
-- [ ] No live "recording video" indicator during the call — `get_video_recording_status` command exists but has no frontend caller yet; video state is only visible post-hoc in meeting review.
-- [ ] `webcam_device_name` in settings isn't reconciled if the previously selected camera disconnects/changes — stale name silently persists until the user re-picks.
+### Optional video capture during meetings (F061, 2026-07-13, review round 2 2026-07-23) — BUILT + two adversarial review rounds, on `feature/video-capture`
+Opt-in continuous screen + webcam recording alongside audio, using the ffmpeg sidecar already bundled for audio encoding. Built in worktree `D:\Dev-projects\Tandem-video-capture`. Plan: [dynamic-dazzling-bachman.md](C:\Users\andre\.claude\plans\dynamic-dazzling-bachman.md). Round 1 (commit `4271a46`): CSP `media-src` gap, dshow colon device-name corruption, orphaned-ffmpeg-on-force-kill (Windows Job Object, verified with a real negative-control test). Round 2 (commits `9aff6c6` + `835952a`, four parallel fixer subagents then a skeptic that FAILED the round's own first fixes before two more fixes closed it): live in-call video indicator (polls `get_video_recording_status`, one-shot death toasts, shutdown-progress suppression so tray/wake-word stops do not false-alarm), stale-webcam warning + semantic destructive/warning tokens in settings, branch-blocking 15 E0433s root-caused to tauri-macros 2.6's new `__tauri_command_name_*` items vs explicit re-export lists (glob re-exports fix), start TOCTOU closed with an RAII compare_exchange claim guard, and stop-vs-start claim clobber closed (manager `take()` = sole teardown ownership token). Gates: cargo 0 errors, tsc clean, vitest 174/174. Not merged/pushed.
+- [x] Live "recording video" indicator during the call ([VideoCaptureIndicator.tsx](frontend/src/components/VideoCaptureIndicator.tsx), round 2).
+- [x] Stale `webcam_device_name` reconciliation warning in settings (round 2).
+- [x] Branch-blocking summary/summary_engine E0433s (round 2, `9aff6c6`).
+- [x] `start_recording` TOCTOU + `stop_recording` claim clobber (round 2, `835952a`).
+- [ ] MERGE CAUTION: `main` independently fixed the same start TOCTOU in the bug-hunt loop (commit `5438c86`, "atomic reservation guard"); merging `feature/video-capture` into `main` will need reconciling the two guards in [recording_commands.rs](frontend/src-tauri/src/audio/recording_commands.rs), keep exactly one claim mechanism.
 - [ ] macOS avfoundation capture path is unverified — no Mac available in this dev environment; screen device index defaults to `"1:none"` which isn't guaranteed across machines.
 - [ ] No retention/disk-usage policy or UI (explicitly deferred per user decision) — revisit once real usage data exists, video is far larger than audio.
-- [ ] Pre-existing, NOT caused by this feature but blocks building the branch: 15 baseline `cargo check` errors (`E0433` in `summary`/`summary_engine` Tauri command macros), confirmed via `git stash` isolation to predate this work.
-- [ ] Pre-existing, NOT caused by this feature: a `start_recording` TOCTOU race (two near-simultaneous start calls can both pass the `IS_RECORDING` check before it's set) already existed for audio; video capture doubles the number of stray ffmpeg processes a race hit would spawn.
+- [ ] LIVE-RUNTIME pass still needed: real recording with both toggles on, confirm screen.mp4/webcam.mp4 land in the meeting folder, play back in meeting-details, indicator shows/hides correctly, and a denied-camera error surfaces cleanly.
+- [ ] Residuals from round 2 skeptic (logged, accepted): `is_recording` reports true during the sub-second start claim window (cosmetic flicker on refresh-during-start); errors after claim disarm but before the `recording-started` emit leave a live recording behind an `Err` (pre-existing behavior, unchanged).
+- [x] Capture-mode selector (commit `abef9a9`): Off / Screen only / Screen + webcam / Webcam only radio cards replacing the two switches, mapped onto the existing booleans, no Rust change. Adversarial QA PASS with a real 8-test Playwright run (mapping round-trips incl. legacy prefs, full-object save with no field clobber, webcam block gating + stale warning, arrow-key a11y, rapid double-click consistency).
+- [ ] E2E INFRA (found by QA, affects ALL worktrees): [playwright.config.ts](frontend/playwright.config.ts) has `reuseExistingServer: !CI` and a fixed port 3118, so with parallel worktree sessions the suite silently tests whichever worktree grabbed 3118 first (QA's first run tested the f055 worktree's code). Fix: per-worktree port or `reuseExistingServer: false`.
+- [ ] Nice-to-haves from capture-mode QA: no explicit `:focus-visible` token ring on the new radio cards (same debt as the AudioBackendSelector precedent); shared save toast says "Device preferences saved: Microphone ..." even for video-mode changes; e2e base mock lacks `list_webcams` and returns partial `get_recording_preferences` (future webcam-mode specs would crash on the stock mock).
 
 ### Main-driver 4-iteration loop (2026-07-12) — PAUSED AFTER I2 (user: plan only for now)
 Goal: make Tandem the daily main driver; headline feature = calendar integration (build on [research/proton-mail-calendar-integration/](research/proton-mail-calendar-integration/)).
@@ -157,16 +163,37 @@ then latency profile: median block wait 16.7s -> 7.7s for +0.71pp (5.6% -> 6.3%)
 Retry + timeouts added to the ElevenLabs provider (a failed POST used to silently
 drop a 12-35s chunk — likely the user-perceived word drops). Research report:
 [stt-improvement-ideas.md](research/stt-improvement-ideas.md).
-- [ ] **ElevenLabs Scribe v2 Realtime WebSocket** (top lever, M effort): partial +
-  committed transcripts at ~100-150ms; kills both remaining latency (VAD-segment
-  floor: a 35s monologue still arrives as one block) and boundary artifacts.
-  Needs a frontend partial/volatile rendering layer (TranscriptContext is
-  append-only by sequence_id) + live-mic runtime testing.
-  **PLANNED 2026-07-12**: full 4-phase implementation plan in
-  [scribe-realtime-ws-plan.md](research/scribe-realtime-ws-plan.md) (Phase 0 API
-  spike + pricing gate, Phase 1 frontend partial layer, Phase 2 Rust WS session
-  engine behind a `scribe_v2_realtime` model setting, Phase 3 harness
-  measurement with keep-or-kill gates, Phase 4 manual runtime pass). Not started.
+- [x] **ElevenLabs Scribe v2 Realtime WebSocket — BUILT through Phase 3** (2026-07-12,
+  plan [scribe-realtime-ws-plan.md](research/scribe-realtime-ws-plan.md)). Worktree
+  `Tandem-scribe-rt`, branch `feature/scribe-realtime-ws` (milestone 45137ff +
+  close_all fix), opt-in via elevenLabs model `scribe_v2_realtime` in settings;
+  batch stays default. Phase 0 spike GO (contract confirmed live; $0.39/audio-hr
+  vs $0.22 batch, billed per audio-hour; 15.7s idle socket timeout -> keepalives).
+  Phase 1 partial tail rendering (QA'd, seq-restart-safe, partials provably never
+  persisted). Phase 2 per-stream WS engine + pipeline tap with disconnect
+  catch-up shadow + never-0.0 timeline anchoring (2 adversarial fix rounds; the
+  re-QA caught a stop-path double-transcription regression before commit).
+  Phase 3 gates on clips 11-16: committed WER 6.00% (gate <=6.8% PASS, batch
+  5.9-6.3%), commit latency median 0.34s vs batch 7.7s (22x), TTFP 2.6s once
+  then ~1.0s/utterance; word timestamps are session-cumulative-over-fed-audio
+  (TimelineMapper design confirmed). Main-repo harness commits: 62db60d (spike),
+  27868fd (Phase 3 harness).
+- [ ] **Phase 4 — manual live-mic runtime pass (NEEDS ANDREW at the machine)**,
+  in worktree Tandem-scribe-rt: (1) select ElevenLabs / "Scribe v2 Realtime" in
+  transcription settings; record a real call: partial tail appears in ~1-2s,
+  updates in place, locks into committed lines; Local/Remote attribution correct.
+  (2) Kill the network mid-call ~30s, restore: warning toast once, transcript
+  continues (degraded batch), no duplicated/lost text vs the saved audio.
+  (3) Stop while speaking: closing utterance appears exactly once. (4) Check
+  meeting-details ordering, summary, live-transcript.md/@code see only committed
+  text. (5) Long call >1h: session survives (rotation unverified headless).
+  Then decide default-on vs opt-in + reconcile To-do follow-ups.
+- [ ] Realtime residuals (accepted, documented): commit-sent vs server-committed
+  ~0.4s race can lose that window's text on a drop at exactly that moment;
+  final-commit loss if close_all's 2s grace expires on a dead network; TTFP
+  session warmup 2.6s (first utterance of a call feels slower than the rest);
+  same-window multi-segment shadow edge (redemption 800ms > window 600ms makes
+  it near-unreachable).
 - [ ] VAD-level mid-segment partial emit: silero holds a monologue as one 13-35s
   segment; no buffer knob can subdivide it. Needed if we stay on batch HTTP.
 - [ ] Consider min 5s instead of 4s for the CLOUD profile (QA: 6.21% @ 9.1s median
