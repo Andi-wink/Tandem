@@ -64,13 +64,40 @@ export function tandemDirFor(projectDir: string, sessionFolder?: string | null):
   return segments.length > 0 ? [base, ...segments].join(sep) : base;
 }
 
+/** `.tandem`-relative prefix marking a virtual sub-project's session folder.
+ *  Used to recognize a session-scoped folder (vs a plain per-meeting folder). */
+export const SESSION_SCOPE_PREFIX = 'sessions/';
+
+/**
+ * Slugify a display name for use in a folder name: lowercase, every run of
+ * non-alphanumerics collapsed to a single hyphen, leading/trailing hyphens
+ * trimmed, capped at `maxLen` chars (re-trimming any hyphen left at the cut).
+ * May return '' (e.g. all-punctuation or empty input) — callers must guard.
+ */
+export function slugify(input: string, maxLen = 40): string {
+  return (input ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, maxLen)
+    .replace(/-+$/g, '');
+}
+
 /**
  * F061: the `.tandem`-relative filing subfolder for a virtual sub-project keyed
- * by a chat session id: `sessions/<session_id>`. Passed as the `sessionFolder`
- * argument to any handoff writer so all its artifacts are scoped to that chat.
+ * by a chat session: `sessions/<slug>-<shortid>`, where `slug` is the project's
+ * display name (the chat title captured at creation) slugified and `shortid` is
+ * the first 8 chars of the session id. Deterministic from the project row, so no
+ * DB column is needed. Falls back to `sessions/<shortid>` when the slug is empty.
+ * Passed as the `sessionFolder` argument to any handoff writer so all artifacts
+ * are scoped to that chat.
  */
-export function sessionScopeFolder(sessionId: string): string {
-  return `sessions/${sessionId}`;
+export function sessionScopeFolder(sessionId: string, displayName?: string | null): string {
+  const shortId = sessionId.slice(0, 8);
+  const slug = slugify(displayName ?? '');
+  return slug
+    ? `${SESSION_SCOPE_PREFIX}${slug}-${shortId}`
+    : `${SESSION_SCOPE_PREFIX}${shortId}`;
 }
 
 /**
@@ -270,7 +297,10 @@ export async function ensureTandemClaudeMd(
 
 // ─── Live Screenshots File ──────────────────────────────────────────────────
 
-export function generateLiveScreenshotsMarkdown(screenshots: ScreenshotData[]): string {
+export function generateLiveScreenshotsMarkdown(
+  screenshots: ScreenshotData[],
+  sessionFolder?: string | null,
+): string {
   const lines: string[] = [];
 
   lines.push('# Live Screenshots');
@@ -282,13 +312,20 @@ export function generateLiveScreenshotsMarkdown(screenshots: ScreenshotData[]): 
     return lines.join('\n');
   }
 
+  // F061: for a virtual sub-project the screenshot files are co-located with
+  // this index inside the session folder (`.../<sessionFolder>/screenshots/`),
+  // so reference them relative to the index. Plain projects keep the shared
+  // project-root-relative `.tandem/screenshots/` location unchanged.
+  const isSessionScoped = !!sessionFolder && sessionFolder.startsWith(SESSION_SCOPE_PREFIX);
+  const refDir = isSessionScoped ? 'screenshots' : '.tandem/screenshots';
+
   for (const ss of screenshots) {
     const ts = ss.recording_elapsed_secs != null
       ? `[${formatTimestamp(ss.recording_elapsed_secs)}]`
       : `[${ss.timestamp}]`;
     const filename = ss.file_path.split(/[/\\]/).pop() || 'screenshot.png';
     lines.push(`## ${ts} ${ss.capture_mode === 'region' ? 'Region' : 'Fullscreen'} — ${ss.width}×${ss.height}`);
-    lines.push(`File: .tandem/screenshots/${filename}`);
+    lines.push(`File: ${refDir}/${filename}`);
     lines.push(`Original: ${ss.file_path}`);
     lines.push('');
   }
@@ -308,7 +345,7 @@ export async function writeLiveScreenshots(
   const sep = projectDir.includes('\\') ? '\\' : '/';
   const tandemDir = tandemDirFor(projectDir, sessionFolder);
   const filePath = `${tandemDir}${sep}screenshots.md`;
-  const content = generateLiveScreenshotsMarkdown(screenshots);
+  const content = generateLiveScreenshotsMarkdown(screenshots, sessionFolder);
   await invoke('save_transcript', { filePath, content });
 }
 

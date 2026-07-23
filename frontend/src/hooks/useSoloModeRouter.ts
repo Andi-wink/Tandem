@@ -196,19 +196,17 @@ export function useSoloModeRouter() {
       const sessionBranch = branchInfo?.sessionBranch ?? null;
       const branchMismatch = branchInfo?.branchMismatch === true;
 
-      // Prefer the live-session name for the HUD pill when the switch came from
-      // a session pick; the auto-router passes nothing and falls back to the
-      // project name inside switchProject.
-      switchProject(matched, transcriptIndex, branch, displayName);
-
       // F061: choose the filing folder PER active project. A virtual sub-project
-      // (session_id set) files under `.tandem/sessions/<session_id>/`; a plain
+      // (session_id set) files under `.tandem/sessions/<slug>-<shortid>/` (slug
+      // from the project's display name, shortid from the session id); a plain
       // folder project uses the shared per-meeting folder (computed once). This
       // is the single derivation point: every downstream writer just reads
-      // sessionFolderRef, so switching projects re-scopes all filing.
+      // sessionFolderRef, so switching projects re-scopes all filing. Computed
+      // BEFORE switchProject so the screenshot-routing subfolder can be handed
+      // to setActiveSoloProject in the same call.
       let activeSessionFolder: string;
       if (matched.session_id) {
-        activeSessionFolder = sessionScopeFolder(matched.session_id);
+        activeSessionFolder = sessionScopeFolder(matched.session_id, matched.name);
       } else {
         if (!meetingFolderRef.current) {
           meetingFolderRef.current = buildSessionFolderName(meetingTitleRef.current || 'Solo');
@@ -216,6 +214,20 @@ export function useSoloModeRouter() {
         }
         activeSessionFolder = meetingFolderRef.current;
       }
+
+      // Prefer the live-session name for the HUD pill when the switch came from
+      // a session pick; the auto-router passes nothing and falls back to the
+      // project name inside switchProject. For a virtual sub-project, also route
+      // screenshot files into the session folder (plain projects → null → the
+      // shared `.tandem/screenshots/`).
+      switchProject(
+        matched,
+        transcriptIndex,
+        branch,
+        displayName,
+        matched.session_id ? activeSessionFolder : null,
+      );
+
       if (sessionFolderRef.current !== activeSessionFolder) {
         setSessionFolder(activeSessionFolder);
         sessionFolderRef.current = activeSessionFolder;
@@ -664,7 +676,9 @@ export function useSoloModeRouter() {
         // F061: a virtual sub-project's Claude Code writes response.md under
         // `.tandem/sessions/<session_id>/`; a plain project uses the `.tandem`
         // root (unchanged). tandemDirFor(null) collapses to the root.
-        const folder = entry.project.session_id ? sessionScopeFolder(entry.project.session_id) : null;
+        const folder = entry.project.session_id
+          ? sessionScopeFolder(entry.project.session_id, entry.project.name)
+          : null;
         const responsePath = `${tandemDirFor(entry.project.path, folder)}${sep}response.md`;
 
         try {

@@ -8,6 +8,8 @@ import {
   ensureLoopState,
   tandemDirFor,
   sessionScopeFolder,
+  slugify,
+  generateLiveScreenshotsMarkdown,
   FeedEntry,
 } from './handoffService';
 import { ScreenshotData, ClipboardData } from '@/types';
@@ -205,11 +207,74 @@ describe('tandemDirFor (session folder)', () => {
     );
   });
 
-  it('sessionScopeFolder builds the sessions/<id> subfolder', () => {
+  it('sessionScopeFolder falls back to the shortid alone when no display name', () => {
     expect(sessionScopeFolder('abc-123')).toBe('sessions/abc-123');
     expect(tandemDirFor('D:\\Proj', sessionScopeFolder('sid'))).toBe(
       'D:\\Proj\\.tandem\\sessions\\sid',
     );
+  });
+
+  it('sessionScopeFolder builds sessions/<slug>-<shortid> from the display name', () => {
+    // The documented example.
+    expect(
+      sessionScopeFolder('8effa465-9ffe-44c0-91d6-fc53f91b5687', 'Mock up solo mode project hub layout'),
+    ).toBe('sessions/mock-up-solo-mode-project-hub-layout-8effa465');
+    // shortid is exactly the first 8 chars of the session id.
+    expect(sessionScopeFolder('deadbeef-1111', 'Fix Login')).toBe('sessions/fix-login-deadbeef');
+  });
+
+  it('sessionScopeFolder guards an all-punctuation name (empty slug) to shortid only', () => {
+    expect(sessionScopeFolder('8effa465-xxxx', '!!! ??? ...')).toBe('sessions/8effa465');
+  });
+});
+
+describe('slugify', () => {
+  it('lowercases, collapses non-alphanumeric runs to single hyphens, trims edges', () => {
+    expect(slugify('Mock up solo mode project hub layout')).toBe(
+      'mock-up-solo-mode-project-hub-layout',
+    );
+    expect(slugify('  Hello,   World!!  ')).toBe('hello-world');
+    expect(slugify('a/b\\c:d')).toBe('a-b-c-d');
+  });
+
+  it('returns empty string for empty / all-punctuation input', () => {
+    expect(slugify('')).toBe('');
+    expect(slugify('!!! ???')).toBe('');
+  });
+
+  it('caps at ~40 chars and re-trims a trailing hyphen left at the cut', () => {
+    // Groups of 4 put a hyphen at index 39, so the raw 40-char slice ends in a
+    // hyphen that must be re-trimmed: 'aaaa-bbbb-cccc-dddd-eeee-ffff-gggg-hhhh-'.
+    const out = slugify('aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii');
+    expect(out).toBe('aaaa-bbbb-cccc-dddd-eeee-ffff-gggg-hhhh');
+    expect(out.length).toBeLessThanOrEqual(40);
+    expect(out.endsWith('-')).toBe(false);
+  });
+});
+
+describe('generateLiveScreenshotsMarkdown (F061 session-scoped refs)', () => {
+  const ss: ScreenshotData = {
+    id: 'ss-1',
+    file_path: 'D:\\P\\.tandem\\sessions\\slug-8effa465\\screenshots\\shot.png',
+    thumbnail_base64: '',
+    timestamp: '10:00',
+    recording_elapsed_secs: 5,
+    width: 800,
+    height: 600,
+    capture_mode: 'fullscreen',
+  };
+
+  it('references co-located screenshots/ for a virtual sub-project session folder', () => {
+    const md = generateLiveScreenshotsMarkdown([ss], 'sessions/slug-8effa465');
+    expect(md).toContain('File: screenshots/shot.png');
+    expect(md).not.toContain('.tandem/screenshots/shot.png');
+  });
+
+  it('keeps the shared .tandem/screenshots/ ref for plain projects', () => {
+    const md = generateLiveScreenshotsMarkdown([ss], null);
+    expect(md).toContain('File: .tandem/screenshots/shot.png');
+    const md2 = generateLiveScreenshotsMarkdown([ss], 'MyMeeting_2026-05-08_14-30-15');
+    expect(md2).toContain('File: .tandem/screenshots/shot.png');
   });
 });
 

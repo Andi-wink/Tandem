@@ -64,7 +64,7 @@ interface SoloModeState {
 interface SoloModeContextType extends SoloModeState {
   startSoloSession: () => void;
   stopSoloSession: () => void;
-  switchProject: (project: Project, transcriptIndex: number, branch?: string | null, displayName?: string | null) => void;
+  switchProject: (project: Project, transcriptIndex: number, branch?: string | null, displayName?: string | null, screenshotSubfolder?: string | null) => void;
   addTask: (task: SoloTask) => void;
   setRoutingModel: (model: string) => void;
   setSessionFolder: (folder: string) => void;
@@ -201,7 +201,7 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     setHudWindowVisible(false);
   }, []);
 
-  const switchProject = useCallback((project: Project, transcriptIndex: number, branch?: string | null, displayName?: string | null) => {
+  const switchProject = useCallback((project: Project, transcriptIndex: number, branch?: string | null, displayName?: string | null, screenshotSubfolder?: string | null) => {
     console.log(`[SoloMode] Switching to project: ${project.name} at index ${transcriptIndex}`);
 
     // Close previous entry
@@ -229,7 +229,10 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
       activeProject: project,
       projectHistory: history,
     }));
-    setActiveSoloProject(project.path).catch(err =>
+    // F061: for a virtual sub-project, screenshotSubfolder ("sessions/<slug>-<id>")
+    // routes captured screenshots into that session folder's screenshots/ dir;
+    // plain projects pass null and keep the shared .tandem/screenshots/.
+    setActiveSoloProject(project.path, screenshotSubfolder ?? null).catch(err =>
       console.warn('[SoloMode] Failed to set screenshot routing:', err),
     );
 

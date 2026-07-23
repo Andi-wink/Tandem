@@ -2230,7 +2230,9 @@
         "Adversarial QA: 2 skeptic passes incl. live-data run over 25 real sessions and real dead-worktree checks",
         "F061 virtual sub-projects: migration adds nullable projects.session_id + (path, COALESCE(session_id,'')) unique index (rebuild drops path-unique); ProjectModel.session_id, create_project session_id arg, find_by_path_session, project_create_virtual command",
         "F061 session-scoped filing: single derivation in performProjectSwitch sets sessionFolder to sessions/<session_id> for virtual sub-projects; tandemDirFor re-splits multi-segment folders on the project separator; response.md poll session-scoped; filing recreates a manually-deleted session folder on write",
-        "F061 HUD: live-session pick sends {cwd, sessionId, sessionName} and activates/creates the virtual sub-project via ensureVirtualProject; Rust match_project prefers the session-specific project over the plain path row; 'chat' badge on virtual sub-projects in the HUD picker and Settings > Projects table"
+        "F061 HUD: live-session pick sends {cwd, sessionId, sessionName} and activates/creates the virtual sub-project via ensureVirtualProject; Rust match_project prefers the session-specific project over the plain path row; 'chat' badge on virtual sub-projects in the HUD picker and Settings > Projects table",
+        "F061 readable session folders: sessionScopeFolder derives sessions/<slug>-<shortid> (slug = display name slugified, max 40 chars; shortid = first 8 of session id; empty slug falls back to shortid alone) deterministically from the project row, no DB column",
+        "F061 session-scoped screenshots: set_active_solo_project gains a session_folder arg; the Rust screenshot routing (get_screenshots_dir) writes a virtual sub-project's captures to .tandem/sessions/<slug>-<shortid>/screenshots/ (create_dir_all on write); screenshots.md references the co-located screenshots/ dir; plain projects keep the shared .tandem/screenshots/"
       ],
       "files": [
         "frontend/src-tauri/src/claude_sessions/mod.rs",
@@ -2247,6 +2249,8 @@
         "frontend/src/components/ProjectSettings.tsx",
         "frontend/src/services/projectService.ts",
         "frontend/src/services/handoffService.ts",
+        "frontend/src/services/screenshotService.ts",
+        "frontend/src-tauri/src/screenshot/commands.rs",
         "frontend/src/types/solo.ts"
       ]
     }
