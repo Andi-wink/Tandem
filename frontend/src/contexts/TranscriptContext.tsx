@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback, ReactNode, MutableRefObject } from 'react';
 import { Transcript, TranscriptUpdate } from '@/types';
+import { createNoteTranscript, insertSegmentOrdered } from '@/lib/transcriptNotes';
 import { toast } from 'sonner';
 import { useRecordingState } from './RecordingStateContext';
 import { transcriptService } from '@/services/transcriptService';
@@ -12,6 +13,7 @@ interface TranscriptContextType {
   transcripts: Transcript[];
   transcriptsRef: MutableRefObject<Transcript[]>
   addTranscript: (update: TranscriptUpdate) => void;
+  addNote: (text: string) => boolean;
   updateTranscriptText: (transcriptId: string, newText: string) => void;
   copyTranscript: () => void;
   flushBuffer: () => void;
@@ -478,6 +480,27 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  // Add a typed note INTO the transcript as a first-class segment. The note is
+  // marked (source = "note") and stamped at the current recording position, then
+  // inserted in the same time-then-sequence order the live buffered path uses,
+  // so it flows into the live view, the saved meeting transcript (via the stop
+  // save that reads this state), live-transcript.md, and summaries. Returns true
+  // when a note was added (false for empty input).
+  const addNote = useCallback((text: string): boolean => {
+    const note = createNoteTranscript(text, transcriptsRef.current);
+    if (!note) return false;
+
+    setTranscripts(prev => insertSegmentOrdered(prev, note));
+
+    // Mirror into IndexedDB for crash recovery, matching the spoken-segment path.
+    const meetingId = currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id');
+    if (meetingId) {
+      indexedDBService.saveTranscript(meetingId, note)
+        .catch(err => console.warn('IndexedDB note save failed:', err));
+    }
+    return true;
+  }, [currentMeetingId]);
+
   // Update transcript text in-place (for inline editing)
   const updateTranscriptText = useCallback((transcriptId: string, newText: string) => {
     setTranscripts(prev =>
@@ -545,6 +568,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     transcripts,
     transcriptsRef,
     addTranscript,
+    addNote,
     updateTranscriptText,
     copyTranscript,
     flushBuffer,

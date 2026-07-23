@@ -11,6 +11,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { TranscriptSegmentData, ScreenshotData, ClipboardData, TimelineItem, TimelineFilter } from "@/types";
 import { getSpeakerColor, formatSpeakerLabel } from "@/lib/speakerColors";
 import { resolveSpeaker, getLocalSpeakerName } from "@/lib/speakerNames";
+import { isNoteSegment } from "@/lib/transcriptNotes";
+import { StickyNote } from "lucide-react";
 import { useLocalSpeakerName } from "@/hooks/useLocalSpeakerName";
 import { TimelineFilterBar } from "./TimelineFilterBar";
 import { ScreenshotThumbnail } from "./ScreenshotThumbnail";
@@ -163,6 +165,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     onEditCancel,
     onEditKeyDown,
     speakerName,
+    isNote = false,
 }: {
     id: string;
     timestamp: number;
@@ -182,9 +185,12 @@ const TranscriptSegment = memo(function TranscriptSegment({
     onEditKeyDown?: (e: React.KeyboardEvent) => void;
     // Resolved speaker name (pyannote label or channel name), already precedence-resolved
     speakerName?: string;
+    // True when this segment is a typed note (source === "note"): distinct badge, verbatim text
+    isNote?: boolean;
 }) {
     const { isDragging, dragHandlers } = useDraggableBasketItem(basketItem ?? null, selectedItems);
-    const displayText = cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
+    // Notes are shown verbatim (links must survive; no filler-word stripping, no [Silence]).
+    const displayText = isNote ? text : (cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text));
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
     // Auto-focus and auto-resize when editing starts
@@ -201,7 +207,15 @@ const TranscriptSegment = memo(function TranscriptSegment({
     return (
         <div id={`segment-${id}`} data-selectable-id={`segment-${id}`} className="mb-3" {...(isEditing ? {} : dragHandlers)}>
             <div className={`flex items-start gap-2 select-none transition-all ${isDragging ? 'opacity-60 ring-2 ring-blue-400 shadow-[0_0_12px_rgba(59,130,246,0.4)] scale-[0.97] rounded-lg' : ''} ${isSelected && !isEditing ? 'bg-blue-50 dark:bg-blue-900/30 ring-1 ring-blue-300 rounded-lg px-1' : ''} ${basketItem && !isEditing ? 'cursor-grab' : ''}`}>
-                {speakerName && (
+                {isNote ? (
+                    <span
+                        title="Note"
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold mt-1 flex-shrink-0 bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300"
+                    >
+                        <StickyNote className="w-3 h-3" aria-hidden="true" />
+                        Note
+                    </span>
+                ) : speakerName && (
                     <span
                         title={speakerName}
                         className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold mt-1 flex-shrink-0 max-w-[12ch] truncate ${getSpeakerColor(speakerName)}`}
@@ -247,7 +261,9 @@ const TranscriptSegment = memo(function TranscriptSegment({
                         </div>
                     ) : (
                         <p
-                            className="text-base text-foreground leading-relaxed select-text cursor-text"
+                            className={`text-base leading-relaxed select-text cursor-text break-words ${isNote
+                                ? 'text-foreground border-l-2 border-indigo-300 dark:border-indigo-500/40 pl-2'
+                                : 'text-foreground'}`}
                             onDoubleClick={onEditStart}
                             onMouseDown={(e) => e.stopPropagation()}
                         >
@@ -629,6 +645,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         onEditCancel={handleEditCancel}
                                         onEditKeyDown={handleEditKeyDown}
                                         speakerName={resolveSpeaker(seg, localName)}
+                                        isNote={isNoteSegment(seg)}
                                     />
                                 </motion.div>
                             );
@@ -694,6 +711,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         onEditCancel={handleEditCancel}
                                         onEditKeyDown={handleEditKeyDown}
                                         speakerName={resolveSpeaker(segment, localName)}
+                                        isNote={isNoteSegment(segment)}
                                     />
                                 </div>
                             );
@@ -762,6 +780,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         onEditCancel={handleEditCancel}
                                         onEditKeyDown={handleEditKeyDown}
                                         speakerName={resolveSpeaker(segment, localName)}
+                                        isNote={isNoteSegment(segment)}
                                     />
                                 </motion.div>
                             );

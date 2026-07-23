@@ -3,7 +3,7 @@
   "description": "AI co-pilot for every call — work in tandem with AI to capture, collaborate, and act. Fork of Meetily (Zackriya-Solutions/meeting-minutes) with screenshots, clipboard integration, PII sanitization, and real-time AI collaboration",
   "base_branch": "main",
   "working_branch": "main",
-  "last_updated": "2026-07-22",
+  "last_updated": "2026-07-23",
   "features": [
     {
       "id": "F001",
@@ -2253,6 +2253,32 @@
         "frontend/src/services/screenshotService.ts",
         "frontend/src-tauri/src/screenshot/commands.rs",
         "frontend/src/types/solo.ts"
+      ]
+    },
+    {
+      "id": "F062",
+      "category": "functional",
+      "name": "Typed Transcript Notes (Solo Mode)",
+      "description": "A compact, keyboard-first note input in the recording view lets the user type a quick note or link that is injected INTO the live transcript as a first-class segment marked source=\"note\" (Enter to add, verbatim/link-safe). Because it lands in TranscriptContext state, it flows through every existing transcript consumer with no new plumbing: the live transcript view, the saved meeting transcript (Rust SQLite via api_save_transcript, source persisted to the speaker column, no schema change), the .tandem/live-transcript.md that Claude Code /loop reads (rendered as \"Note: ...\"), @code task files, and LLM summaries. Notes render with a distinct indigo \"Note\" badge (dark-mode variants) in both the live view and meeting-details (shared VirtualizedTranscriptView) and skip filler-word cleanup so links survive. Pure logic (marker/timestamp/ordering) in transcriptNotes.ts with 14 vitest cases; note sequence_ids live in a high namespace (>=1e9) so they never collide with the worker counter (which would drop a real segment via dedup).",
+      "priority": "medium",
+      "status": "complete",
+      "branch": "feature/solo-transcript-notes",
+      "commit": "uncommitted",
+      "steps": [
+        "Add pure note logic: createNoteTranscript/isNoteSegment/noteElapsedSecs/insertSegmentOrdered (lib/transcriptNotes.ts) + tests",
+        "Expose addNote() on TranscriptContext (insert time-then-sequence ordered, mirror to IndexedDB for crash recovery)",
+        "Add TranscriptNoteInput component and mount it in the live TranscriptPanel (shown while recording/paused)",
+        "Render a distinct \"Note\" badge + verbatim text in VirtualizedTranscriptView (covers live + meeting-details)",
+        "Mark notes as \"Note: ...\" in live-transcript.md / task files via handoffService.withSpeaker"
+      ],
+      "files": [
+        "frontend/src/lib/transcriptNotes.ts",
+        "frontend/src/lib/transcriptNotes.test.ts",
+        "frontend/src/components/TranscriptNoteInput.tsx",
+        "frontend/src/contexts/TranscriptContext.tsx",
+        "frontend/src/components/VirtualizedTranscriptView.tsx",
+        "frontend/src/app/_components/TranscriptPanel.tsx",
+        "frontend/src/services/handoffService.ts"
       ]
     }
   ]
