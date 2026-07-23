@@ -29,6 +29,8 @@ use super::{
 use super::transcription::{
     self,
     reset_speech_detected_flag,
+    ElevenLabsRealtimeSession,
+    RealtimeEvent,
 };
 
 // Re-export TranscriptUpdate for backward compatibility
@@ -177,6 +179,14 @@ static TRANSCRIPTION_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 // Listener ID for proper cleanup - prevents microphone from staying active after recording stops
 static TRANSCRIPT_LISTENER_ID: Mutex<Option<tauri::EventId>> = Mutex::new(None);
 
+// ElevenLabs Scribe v2 Realtime session for the active recording (Some only when
+// the realtime model is selected AND a key is present). Held across .await, so a
+// tokio Mutex. Closed on stop. The bridge task maps the session's RealtimeEvent
+// stream to Tauri events (transcript-partial / transcript-update / warning).
+static REALTIME_SESSION: Lazy<tokio::sync::Mutex<Option<Arc<ElevenLabsRealtimeSession>>>> =
+    Lazy::new(|| tokio::sync::Mutex::new(None));
+static REALTIME_BRIDGE_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
+
 // ============================================================================
 // PUBLIC TYPES
 // ============================================================================
@@ -274,6 +284,139 @@ async fn resolve_flush_profile<R: Runtime>(app: &AppHandle<R>) -> super::pipelin
               "none".to_string()
           });
     profile
+}
+
+/// Bridge the realtime session's `RealtimeEvent` stream to Tauri events. Runs
+/// until the session drops all event senders (on close/degrade). Keeps the
+/// session free of Tauri generics and makes it unit-testable without a runtime.
+fn spawn_realtime_bridge<R: Runtime>(
+    app: AppHandle<R>,
+    mut rx: mpsc::UnboundedReceiver<RealtimeEvent>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                RealtimeEvent::Partial {
+                    source,
+                    text,
+                    session_seq,
+                } => {
+                    // NEW volatile-tail event (Phase 1 frontend layer drops stale seq).
+                    let _ = app.emit(
+                        "transcript-partial",
+                        serde_json::json!({
+                            "source": source,
+                            "text": text,
+                            "session_seq": session_seq,
+                        }),
+                    );
+                }
+                RealtimeEvent::Committed {
+                    source,
+                    text,
+                    audio_start_time,
+                    audio_end_time,
+                    duration,
+                } => {
+                    // Existing commit event: same downstream persistence path as the
+                    // batch worker (recording_commands transcript-update listener).
+                    // Shares the worker's monotonic sequence_id space.
+                    let update = TranscriptUpdate {
+                        text,
+                        timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                        source,
+                        sequence_id: transcription::next_sequence_id(),
+                        chunk_start_time: audio_start_time,
+                        is_partial: false,
+                        // Scribe returns no chunk-level confidence; use the same
+                        // neutral default the worker applies for such providers.
+                        confidence: 0.85,
+                        audio_start_time,
+                        audio_end_time,
+                        duration,
+                    };
+                    let _ = app.emit("transcript-update", &update);
+                }
+                RealtimeEvent::Warning { message } => {
+                    let _ = app.emit("transcription-warning", message);
+                }
+            }
+        }
+        info!("🎧 Realtime bridge task ended (session closed)");
+    })
+}
+
+/// If the configured provider+model select the realtime engine and an ElevenLabs
+/// API key is present, create the session + bridge and return it for the pipeline
+/// tap. Returns None (falling back to the batch path) on any missing prerequisite.
+async fn maybe_start_realtime_session<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Option<Arc<ElevenLabsRealtimeSession>> {
+    let config = match crate::api::api::api_get_transcript_config(
+        app.clone(),
+        app.clone().state(),
+        None,
+    )
+    .await
+    {
+        Ok(Some(c)) => c,
+        _ => return None,
+    };
+    if !transcription::is_realtime_model(&config.provider, &config.model) {
+        return None;
+    }
+
+    // Defensive: close any lingering session from a prior recording before starting
+    // a new one, so stale WS keepalives can't accumulate.
+    teardown_realtime_session().await;
+
+    let pool = app.state::<crate::state::AppState>().db_manager.pool().clone();
+    let api_key = match crate::database::repositories::setting::SettingsRepository::get_transcript_api_key(
+        &pool, "elevenLabs",
+    )
+    .await
+    {
+        Ok(Some(k)) if !k.trim().is_empty() => k,
+        _ => {
+            warn!("🎧 Realtime model selected but no ElevenLabs API key — using batch path");
+            return None;
+        }
+    };
+
+    info!("🎧 Starting ElevenLabs Scribe v2 Realtime session");
+    let (event_tx, event_rx) = mpsc::unbounded_channel::<RealtimeEvent>();
+    // Language left as auto-detect (None); Phase 3 can seed from the picker.
+    let session = ElevenLabsRealtimeSession::start(api_key, None, event_tx);
+
+    let bridge = spawn_realtime_bridge(app.clone(), event_rx);
+    {
+        let mut slot = REALTIME_BRIDGE_TASK
+            .lock()
+            .map_err(|e| warn!("realtime bridge lock poisoned: {e}"))
+            .ok();
+        if let Some(ref mut s) = slot {
+            **s = Some(bridge);
+        }
+    }
+    *REALTIME_SESSION.lock().await = Some(session.clone());
+    Some(session)
+}
+
+/// Close and clear the active realtime session + bridge (called on stop). Sends a
+/// final commit and shuts the WS connections. Safe to call when none is active.
+async fn teardown_realtime_session() {
+    let session = { REALTIME_SESSION.lock().await.take() };
+    if let Some(session) = session {
+        info!("🎧 Closing realtime session");
+        session.close_all().await;
+    }
+    if let Some(bridge) = REALTIME_BRIDGE_TASK
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take())
+    {
+        bridge.abort();
+    }
 }
 
 /// Start recording with default devices
@@ -453,9 +596,14 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     // local engines (Parakeet / Whisper) keep the large-context 12s profile.
     let flush_profile = resolve_flush_profile(&app).await;
 
+    // If the realtime model is selected (+ key present), start the streaming
+    // session; the pipeline taps it live and uses the batch path only if it
+    // degrades (plan D2/D5). None -> unchanged batch/local behavior.
+    let realtime_session = maybe_start_realtime_session(&app).await;
+
     // Start recording with resolved devices (replaces start_recording_with_defaults_and_auto_save call)
     let transcription_receiver = manager
-        .start_recording(microphone_device, system_device, auto_save, flush_profile)
+        .start_recording(microphone_device, system_device, auto_save, flush_profile, realtime_session)
         .await
         .map_err(|e| format!("Failed to start recording: {}", e))?;
 
@@ -641,9 +789,12 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     // Provider-aware flush profile (see resolve_flush_profile).
     let flush_profile = resolve_flush_profile(&app).await;
 
+    // Realtime streaming session (None unless the realtime model + key are set).
+    let realtime_session = maybe_start_realtime_session(&app).await;
+
     // Start recording with specified devices and auto_save setting
     let transcription_receiver = manager
-        .start_recording(mic_device, system_device, auto_save, flush_profile)
+        .start_recording(mic_device, system_device, auto_save, flush_profile, realtime_session)
         .await
         .map_err(|e| format!("Failed to start recording: {}", e))?;
 
@@ -819,6 +970,12 @@ pub async fn stop_recording<R: Runtime>(
             return Ok(());
         }
     }
+
+    // Close the realtime streaming session (if any). Sends a final commit so an
+    // open segment at stop is still transcribed, then shuts the WS connections.
+    // Done after capture stops (no more feeds) but before the transcription drain
+    // so any committed tail still persists via the transcript-update listener.
+    teardown_realtime_session().await;
 
     // Capture has stopped: flip IS_RECORDING to false immediately so is_recording()/tray
     // reflect "not capturing". CLEANUP_IN_PROGRESS stays true through the drain/save below,

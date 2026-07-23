@@ -142,6 +142,14 @@ impl ContinuousVadProcessor {
         self.processed_samples as f64 / VAD_SAMPLE_RATE as f64
     }
 
+    /// Whether the VAD is currently inside an open speech segment. Read-only; used
+    /// by the realtime pipeline tap to detect speech onset and forward open-segment
+    /// audio live (rather than waiting for silero's SpeechEnd). Does not affect the
+    /// local/batch transcription path.
+    pub fn is_in_speech(&self) -> bool {
+        self.in_speech
+    }
+
     /// Process incoming audio samples and return any complete speech segments
     /// Handles resampling from input sample rate to 16kHz for VAD processing
     pub fn process_audio(&mut self, samples: &[f32]) -> Result<Vec<SpeechSegment>> {

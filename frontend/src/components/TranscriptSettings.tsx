@@ -81,7 +81,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         localWhisper: [], // Model selection handled by ModelManager component
         parakeet: [], // Model selection handled by ParakeetModelManager component
         deepgram: ['nova-2-phonecall'],
-        elevenLabs: ['scribe_v2', 'scribe_v1'],
+        elevenLabs: ['scribe_v2', 'scribe_v2_realtime', 'scribe_v1'],
         groq: ['llama-3.3-70b-versatile'],
         openai: ['gpt-4o'],
         mistral: ['voxtral-mini-latest', 'voxtral-mini-2507', 'voxtral-small-latest'],

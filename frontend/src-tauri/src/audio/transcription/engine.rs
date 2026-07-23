@@ -327,8 +327,21 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                 Err(e) => return Err(format!("Failed to read ElevenLabs API key: {}", e)),
             };
 
-            let provider = ElevenLabsProvider::new(api_key, config.model.clone(), None);
-            info!("✅ ElevenLabs Scribe provider ready (model: {})", config.model);
+            // For the realtime model, the streaming session (elevenlabs_realtime.rs)
+            // owns transcription; the batch Provider built here is ONLY the
+            // degraded/fallback path (plan D5), and the batch HTTP endpoint does
+            // not accept the realtime model id, so map it to the batch model.
+            let batch_model = if super::elevenlabs_realtime::is_realtime_model(
+                &config.provider,
+                &config.model,
+            ) {
+                info!("☁️  ElevenLabs realtime selected — batch fallback provider uses 'scribe_v2'");
+                "scribe_v2".to_string()
+            } else {
+                config.model.clone()
+            };
+            let provider = ElevenLabsProvider::new(api_key, batch_model.clone(), None);
+            info!("✅ ElevenLabs Scribe provider ready (model: {})", batch_model);
             Ok(TranscriptionEngine::Provider(Arc::new(provider)))
         }
         "localWhisper" | _ => {

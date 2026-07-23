@@ -14,6 +14,16 @@ use tauri::{AppHandle, Emitter, Runtime};
 // Sequence counter for transcript updates
 static SEQUENCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Allocate the next monotonic transcript sequence id from the SHARED counter.
+///
+/// The realtime session engine (elevenlabs_realtime.rs, via the recording_commands
+/// bridge) uses this so its committed segments interleave with worker-emitted
+/// segments under one strictly-increasing id space (D3/D4). Batch and realtime
+/// commits therefore never collide on `sequence_id`.
+pub fn next_sequence_id() -> u64 {
+    SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst)
+}
+
 /// How many words from the previous emission to keep as the dedup window for
 /// the chunk-overlap prepend in pipeline.rs. 10 covers the ~1s audio overlap.
 const OVERLAP_TAIL_WORDS: usize = 10;

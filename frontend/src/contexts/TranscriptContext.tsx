@@ -1,15 +1,20 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback, ReactNode, MutableRefObject } from 'react';
-import { Transcript, TranscriptUpdate } from '@/types';
+import { Transcript, TranscriptUpdate, TranscriptPartial } from '@/types';
 import { toast } from 'sonner';
 import { useRecordingState } from './RecordingStateContext';
 import { transcriptService } from '@/services/transcriptService';
 import { recordingService } from '@/services/recordingService';
 import { indexedDBService } from '@/services/indexedDBService';
+import { installDevTranscriptEmitter } from '@/lib/devTranscriptEmitter';
 
 interface TranscriptContextType {
   transcripts: Transcript[];
+  // Volatile partial tails, keyed by source ("Local" / "Remote"). Never persisted;
+  // replaced in place by incoming `transcript-partial` events, cleared when the
+  // matching committed segment arrives or recording stops.
+  pendingBySource: Record<string, string>;
   transcriptsRef: MutableRefObject<Transcript[]>
   addTranscript: (update: TranscriptUpdate) => void;
   updateTranscriptText: (transcriptId: string, newText: string) => void;
@@ -29,6 +34,94 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
   const [meetingTitle, setMeetingTitle] = useState('+ New Call');
   const [currentMeetingId, setCurrentMeetingId] = useState<string | null>(null);
+
+  // ── Volatile partial ("live") tails, one per source ─────────────────────────
+  // Rendered state consumed by the transcript view. Only ever holds unpersisted,
+  // revisable text; committed segments flow through `transcripts` untouched.
+  const [pendingBySource, setPendingBySource] = useState<Record<string, string>>({});
+  // Staging ref is the source of truth between RAF flushes; partials can arrive
+  // >10/sec, so we coalesce them and push to React state at most once per frame.
+  const pendingStagingRef = useRef<Record<string, string>>({});
+  const pendingRafRef = useRef<number | null>(null);
+  // Last session_seq seen per source, to drop stale / out-of-order partials.
+  const lastSeqBySourceRef = useRef<Record<string, number>>({});
+
+  const flushPending = useCallback(() => {
+    pendingRafRef.current = null;
+    setPendingBySource({ ...pendingStagingRef.current });
+  }, []);
+
+  const schedulePendingFlush = useCallback(() => {
+    if (pendingRafRef.current !== null) return;
+    if (typeof requestAnimationFrame === 'function') {
+      pendingRafRef.current = requestAnimationFrame(flushPending);
+    } else {
+      // Fallback for environments without RAF: flush on next tick.
+      pendingRafRef.current = setTimeout(flushPending, 16) as unknown as number;
+    }
+  }, [flushPending]);
+
+  // Apply an incoming partial: replace the tail for its source in place. Within an
+  // utterance, session_seq is monotonic, so a LOWER seq is a late/out-of-order
+  // delivery and is dropped. The counter can legitimately RESTART lower across an
+  // utterance boundary or a Rust WS reconnect; clearPendingSource resets the per-
+  // source baseline on commit so a restart is never mistaken for a stale partial.
+  const applyPartial = useCallback((partial: TranscriptPartial) => {
+    const { source, text, session_seq } = partial;
+    // Payload validation: a missing source or a non-finite seq (NaN/undefined)
+    // must never poison lastSeqBySourceRef or the staged tails.
+    if (!source || !Number.isFinite(session_seq)) return;
+    const lastSeq = lastSeqBySourceRef.current[source];
+    if (lastSeq !== undefined && session_seq < lastSeq) {
+      return; // stale — a newer partial for this source already applied
+    }
+    lastSeqBySourceRef.current[source] = session_seq;
+    const nextText = text ?? '';
+    const nextStaging: Record<string, string> = { ...pendingStagingRef.current };
+    if (nextText.trim() === '') {
+      // Empty tail carries nothing to render; drop the key so it can't inflate the
+      // rendered tail count (which drives the per-source label heuristic).
+      delete nextStaging[source];
+    } else {
+      nextStaging[source] = nextText;
+    }
+    pendingStagingRef.current = nextStaging;
+    schedulePendingFlush();
+  }, [schedulePendingFlush]);
+
+  // Clear the pending tail for a single source (committed segment supersedes it).
+  const clearPendingSource = useCallback((source: string) => {
+    if (!source) return;
+    // Reset the per-source seq baseline: the next utterance may restart the counter
+    // lower, and it must be allowed to render rather than being dropped as "stale".
+    delete lastSeqBySourceRef.current[source];
+    if (pendingStagingRef.current[source] === undefined) return;
+    const nextStaging: Record<string, string> = {};
+    for (const [k, v] of Object.entries(pendingStagingRef.current)) {
+      if (k !== source) nextStaging[k] = v;
+    }
+    pendingStagingRef.current = nextStaging;
+    setPendingBySource(prev => {
+      if (prev[source] === undefined) return prev;
+      const next: Record<string, string> = {};
+      for (const [k, v] of Object.entries(prev)) {
+        if (k !== source) next[k] = v;
+      }
+      return next;
+    });
+  }, []);
+
+  // Clear all pending tails (recording stop / new recording).
+  const clearAllPending = useCallback(() => {
+    pendingStagingRef.current = {};
+    lastSeqBySourceRef.current = {};
+    if (pendingRafRef.current !== null) {
+      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(pendingRafRef.current);
+      else clearTimeout(pendingRafRef.current as unknown as ReturnType<typeof setTimeout>);
+      pendingRafRef.current = null;
+    }
+    setPendingBySource(prev => (Object.keys(prev).length === 0 ? prev : {}));
+  }, []);
 
   // Recording state context - provides backend-synced state
   const recordingState = useRecordingState();
@@ -149,6 +242,8 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         // Listen for recording-stopped event
         const stoppedUnlisten = await recordingService.onRecordingStopped(async (payload) => {
           try {
+            // Recording ended: no more partials will arrive; drop any live tails.
+            clearAllPending();
             if (currentMeetingId) {
               // Update folder path in IndexedDB
               const metadata = await indexedDBService.getMeetingMetadata(currentMeetingId);
@@ -329,6 +424,11 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
           transcriptBuffer.set(update.sequence_id, newTranscript);
           console.log(`✅ MAIN LISTENER: Buffered transcript with sequence_id ${update.sequence_id}. Buffer size: ${transcriptBuffer.size}, Last processed: ${lastProcessedSequence}`);
 
+          // A committed segment supersedes the volatile tail for its source.
+          if (update.source) {
+            clearPendingSource(update.source);
+          }
+
           // Save to IndexedDB (non-blocking)
           if (currentMeetingId) {
             indexedDBService.saveTranscript(currentMeetingId, update)
@@ -368,6 +468,42 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       }
     };
   }, [currentMeetingId]); // Add currentMeetingId dependency
+
+  // ── Volatile partial ("live") tail listener ─────────────────────────────────
+  // Registered exactly once (empty deps). Reads/writes only the pending refs +
+  // state via stable callbacks, so it never needs to re-subscribe. This path is
+  // isolated from the committed flow above: partials never touch `transcripts`,
+  // IndexedDB, or backend persistence.
+  useEffect(() => {
+    let mounted = true;
+    let unlistenPartial: (() => void) | undefined;
+
+    const setupPartialListener = async () => {
+      try {
+        const unlisten = await transcriptService.onTranscriptPartial((partial) => {
+          applyPartial(partial);
+        });
+        if (!mounted) { unlisten(); return; }
+        unlistenPartial = unlisten;
+      } catch (error) {
+        console.error('❌ Failed to setup transcript-partial listener:', error);
+      }
+    };
+
+    setupPartialListener();
+
+    return () => {
+      mounted = false;
+      if (unlistenPartial) unlistenPartial();
+      clearAllPending();
+    };
+  }, [applyPartial, clearAllPending]);
+
+  // Dev / e2e only: expose synthetic partial-emitter helpers on window so the
+  // volatile-tail layer can be driven before the Rust engine (Phase 2) exists.
+  useEffect(() => {
+    return installDevTranscriptEmitter();
+  }, []);
 
   // Sync transcript history and meeting name from backend on reload
   // This fixes the issue where reloading during active recording causes state desync
@@ -501,8 +637,9 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   // Clear transcripts (used when starting new recording)
   const clearTranscripts = useCallback(() => {
     setTranscripts([]);
+    clearAllPending();
     // Don't clear currentMeetingId here - it will be set by recording-started event
-  }, []);
+  }, [clearAllPending]);
 
   // Mark current meeting as saved in IndexedDB
   const markMeetingAsSaved = useCallback(async () => {
@@ -529,6 +666,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
   const value: TranscriptContextType = {
     transcripts,
+    pendingBySource,
     transcriptsRef,
     addTranscript,
     updateTranscriptText,

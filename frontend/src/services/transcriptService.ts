@@ -7,7 +7,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
-import { TranscriptUpdate, Transcript } from '@/types';
+import { TranscriptUpdate, Transcript, TranscriptPartial } from '@/types';
 
 export interface TranscriptionStatus {
   chunks_in_queue: number;
@@ -55,6 +55,19 @@ export class TranscriptService {
    */
   async onTranscriptUpdate(callback: (update: TranscriptUpdate) => void): Promise<UnlistenFn> {
     return listen<TranscriptUpdate>('transcript-update', (event) => {
+      callback(event.payload);
+    });
+  }
+
+  /**
+   * Listen for revisable partial transcript updates (Scribe Realtime WS).
+   * These are volatile: they replace the pending tail for a source and are never
+   * persisted. A subsequent `transcript-update` (committed) supersedes them.
+   * @param callback - Function to call when a partial arrives
+   * @returns Promise that resolves to unlisten function
+   */
+  async onTranscriptPartial(callback: (partial: TranscriptPartial) => void): Promise<UnlistenFn> {
+    return listen<TranscriptPartial>('transcript-partial', (event) => {
       callback(event.payload);
     });
   }

@@ -53,7 +53,56 @@ export interface VirtualizedTranscriptViewProps {
 
     /** Callback when a segment's text is edited (double-click to edit) */
     onSegmentEdit?: (segmentId: string, newText: string) => void;
+
+    /**
+     * Volatile "live" partial tails, one per source ("Local" / "Remote").
+     * Rendered muted/italic below the committed segments, OUTSIDE the virtualized
+     * list so rapid partial updates never thrash the virtualizer. Superseded by the
+     * next committed segment for that source.
+     */
+    pendingTails?: Array<{ source: string; text: string }>;
 }
+
+/**
+ * A single volatile partial tail. Muted, italic, no timestamp chip, with a small
+ * pulsing "live" affordance (static under prefers-reduced-motion). Not selectable,
+ * not draggable, not persisted.
+ */
+const LiveTail = memo(function LiveTail({
+    source,
+    text,
+    showSource,
+}: {
+    source: string;
+    text: string;
+    showSource: boolean;
+}) {
+    const trimmed = text.trim();
+    if (trimmed === '') return null;
+
+    // aria-live off: partials update many times/sec via RAF and would flood a
+    // screen reader. The committed segments are the announced content.
+    return (
+        <div className="mb-3" data-testid={`live-tail-${source}`} aria-live="off">
+            <div className="flex items-start gap-2">
+                <span className="text-xs text-muted-foreground mt-1 flex-shrink-0 min-w-[50px] flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse motion-reduce:animate-none" aria-hidden="true" />
+                    <span className="uppercase tracking-wide text-[10px]">Live</span>
+                </span>
+                <div className="flex-1">
+                    {showSource && (
+                        <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70 mr-2 align-middle">
+                            {source}
+                        </span>
+                    )}
+                    <span className="text-base italic text-muted-foreground leading-relaxed select-text break-words">
+                        {text}
+                    </span>
+                </div>
+            </div>
+        </div>
+    );
+});
 
 // Threshold for enabling virtualization (below this, use simple rendering)
 const VIRTUALIZATION_THRESHOLD = 10;
@@ -265,6 +314,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     clipboardCount = 0,
     onClipboardItemClick,
     onSegmentEdit,
+    pendingTails,
 }) => {
     const { selectedIds, isSelected, replaceSelection, toggle, rangeTo } = useSelection();
 
@@ -773,6 +823,21 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                         </motion.div>
                     )}
                 </>
+            )}
+
+            {/* Volatile "live" partial tails — rendered OUTSIDE the virtualized list,
+                below all committed segments, so partial churn never re-measures rows. */}
+            {pendingTails && pendingTails.length > 0 && (
+                <div className="mt-1">
+                    {pendingTails.map((tail) => (
+                        <LiveTail
+                            key={`live-tail-${tail.source}`}
+                            source={tail.source}
+                            text={tail.text}
+                            showSource={pendingTails.length > 1}
+                        />
+                    ))}
+                </div>
             )}
             </div>
 

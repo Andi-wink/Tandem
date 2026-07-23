@@ -33,6 +33,15 @@ export interface TranscriptUpdate {
   duration: number;          // Segment duration in seconds
 }
 
+// Revisable partial transcript (Scribe Realtime WS). Volatile: never persisted,
+// never enters the committed transcript list. Superseded by a `transcript-update`
+// (committed) for the same source.
+export interface TranscriptPartial {
+  source: string;       // "Local" (mic) or "Remote" (system audio)
+  text: string;
+  session_seq: number;  // per-source monotonic sequence; used to drop stale/out-of-order partials
+}
+
 export interface Block {
   id: string;
   type: string;

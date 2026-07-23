@@ -116,6 +116,11 @@ tokio = { version = "1.32.0", features = ["full", "tracing"] }
 tokio-util = "0.7"  # Utilities for tokio including CancellationToken
 async-trait = "0.1"  # Trait abstraction for async methods
 
+# ElevenLabs Scribe v2 Realtime WebSocket transcription (F: scribe-realtime-ws).
+# native-tls matches reqwest's default TLS backend already in the tree (schannel on
+# Windows), so no extra TLS stack is pulled in.
+tokio-tungstenite = { version = "0.21", default-features = false, features = ["connect", "native-tls"] }
+
 reqwest = { version = "0.11", features = ["blocking", "multipart", "json", "stream"] }
 
 # crossbeam
@@ -206,6 +211,9 @@ whisper-rs = { version = "0.13.2", features = ["raw-api"] }
 futures-channel = "0.3.31"
 
 [dev-dependencies]
+# test-util enables the paused-clock (start_paused) runtime used by the realtime
+# session reconnect-ladder / keepalive unit tests (no real waiting, no network).
+tokio = { version = "1.32.0", features = ["full", "test-util"] }
 tempfile = "3.3.0"
 infer = "0.15"
 criterion = { version = "0.5.1", features = ["async_tokio"] }
