@@ -2,6 +2,12 @@
 
 ## Open
 
+### Solo mode: typed note added INTO the transcript (requested, never implemented, 2026-07-23)
+Andrew's intent: while in solo mode, take a quick note and have it appear in the transcript itself (as a transcript entry alongside the spoken text). Verified missing across all 11 worktrees (committed + uncommitted) on 2026-07-23. Closest existing features, neither of which does this: the in-call jot strip (notes stay separate, enhanced FROM the transcript, [meetingJots.ts](frontend/src/lib/meetingJots.ts)) and Alt+Shift+N quick capture (files a note to a project as markdown, [quickCapture.ts](frontend/src/lib/quickCapture.ts)). Likely shape: a note input in solo mode / solo HUD that appends a typed segment into TranscriptContext + the saved transcript with a "note" marker.
+
+### Voxtral worktree is stale, do not merge (verified 2026-07-23)
+All uncommitted work in `D:\Dev-projects\Tandem-voxtral` (Mistral/Voxtral provider, solo HUD, notification system, Lightbox/Mermaid, LanguagePicker) was already recovered onto main (55fa649, 9a42d80, ed63952) and has evolved further there; the worktree copies are older versions (emit-based HUD, outdated CSP, test bundle identifier `com.tandem.ai.voxtral`). Merging would regress main. Safe to discard the worktree's local changes / remove the worktree once confirmed nothing personal is in it.
+
 ### Bug-hunt 5-iteration loop — DONE, committed 5438c86 (2026-07-17)
 24 bugs found across 5 risk zones (stop pipeline, calendar stack, routing/filing, Rust core, UI surfaces), 21 fixed at the root with regression tests, each iteration adversarially verified (round-2 fix passes in I1/I2/I4; I4's concurrency fix independently re-verified with a full interleaving trace). Closed long-standing To-do items: start_recording TOCTOU (atomic reservation guard), frecency-not-unlearned-on-Undo, non-atomic move+DB divergence, double-rendered action items (read-only exclusion path, save payload intact), summary-polling teardown. Gates: tsc clean, vitest 367/367, Playwright 62/62, cargo test 145 pass.
 - [ ] Residual (safe direction): stop_recording reads manager_populated and IS_RECORDING as two sequential reads; a stop landing exactly as a start finishes populating can get a spurious no-op and need a second stop click. Rare UX miss, never corruption ([recording_commands.rs](frontend/src-tauri/src/audio/recording_commands.rs)).
