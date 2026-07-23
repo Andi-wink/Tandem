@@ -523,16 +523,38 @@ fn normalize_path(p: &str) -> String {
     s
 }
 
-/// Match a session cwd against the registered projects (`(id, path)` pairs).
-fn match_project(cwd: &str, projects: &[(String, String)]) -> Option<String> {
+/// Match a session against the registered projects (`(id, path, session_id)`
+/// triples). F061: prefer the virtual sub-project whose session_id equals this
+/// session's id, then fall back to the plain folder project (NULL session_id) at
+/// the same path, then any path match. This makes the HUD pair a live session
+/// with its own virtual sub-project rather than the coexisting plain project.
+fn match_project(
+    cwd: &str,
+    session_id: &str,
+    projects: &[(String, String, Option<String>)],
+) -> Option<String> {
     if cwd.is_empty() {
         return None;
     }
     let target = normalize_path(cwd);
-    projects
+    let path_matches: Vec<&(String, String, Option<String>)> = projects
         .iter()
-        .find(|(_, path)| normalize_path(path) == target)
-        .map(|(id, _)| id.clone())
+        .filter(|(_, path, _)| normalize_path(path) == target)
+        .collect();
+
+    // 1. Exact session match wins.
+    if let Some((id, _, _)) = path_matches
+        .iter()
+        .find(|(_, _, sid)| sid.as_deref() == Some(session_id))
+    {
+        return Some(id.clone());
+    }
+    // 2. Plain folder project (no session_id).
+    if let Some((id, _, _)) = path_matches.iter().find(|(_, _, sid)| sid.is_none()) {
+        return Some(id.clone());
+    }
+    // 3. Any project at that path.
+    path_matches.first().map(|(id, _, _)| id.clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -573,7 +595,7 @@ fn cmp_opt_desc(a: Option<i64>, b: Option<i64>) -> Ordering {
 /// pairs, and `is_alive` decides PID liveness.
 pub fn list_candidates<F>(
     home: &Path,
-    projects: &[(String, String)],
+    projects: &[(String, String, Option<String>)],
     is_alive: &F,
 ) -> Vec<ClaudeSessionCandidate>
 where
@@ -654,7 +676,7 @@ where
             _ => false,
         };
 
-        let registered_project_id = match_project(&cwd, projects);
+        let registered_project_id = match_project(&cwd, &session_id, projects);
 
         candidates.push(ClaudeSessionCandidate {
             session_id,
@@ -700,13 +722,15 @@ pub async fn list_claude_session_candidates(
     let projects = ProjectRepository::list_projects(pool)
         .await
         .map_err(|e| e.to_string())?;
-    let project_pairs: Vec<(String, String)> =
-        projects.into_iter().map(|p| (p.id, p.path)).collect();
+    let project_triples: Vec<(String, String, Option<String>)> = projects
+        .into_iter()
+        .map(|p| (p.id, p.path, p.session_id))
+        .collect();
 
     let candidates = tokio::task::spawn_blocking(move || {
         let home = dirs::home_dir()?;
         let is_alive = default_pid_is_alive();
-        Some(list_candidates(&home, &project_pairs, &is_alive))
+        Some(list_candidates(&home, &project_triples, &is_alive))
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -1201,7 +1225,7 @@ mod tests {
         .unwrap();
 
         let alive = |pid: u32| pid == 100 || pid == 200;
-        let projects = vec![("proj-a-id".to_string(), "D:\\proj\\a\\".to_string())];
+        let projects = vec![("proj-a-id".to_string(), "D:\\proj\\a\\".to_string(), None)];
 
         let out = list_candidates(home, &projects, &alive);
         assert_eq!(out.len(), 2, "only alive interactive sessions kept");
@@ -1216,5 +1240,50 @@ mod tests {
 
         assert_eq!(out[0].git_branch.as_deref(), Some("main"));
         assert!(out[0].last_activity_ms.is_some());
+    }
+
+    // ---- F061: (path, session_id) project matching ----
+
+    #[test]
+    fn match_project_prefers_session_over_plain() {
+        // Same path registered twice: a plain folder project (NULL session_id)
+        // and a virtual sub-project for "sid-x". A session whose id is "sid-x"
+        // must resolve to the virtual sub-project, not the plain one.
+        let projects = vec![
+            ("plain-id".to_string(), "D:/proj/a".to_string(), None),
+            (
+                "virtual-id".to_string(),
+                "D:\\proj\\a\\".to_string(),
+                Some("sid-x".to_string()),
+            ),
+        ];
+        assert_eq!(
+            match_project("d:/proj/a", "sid-x", &projects).as_deref(),
+            Some("virtual-id")
+        );
+        // A different session id at the same path falls back to the plain project.
+        assert_eq!(
+            match_project("D:/proj/a", "sid-other", &projects).as_deref(),
+            Some("plain-id")
+        );
+        // No path match at all -> None.
+        assert_eq!(match_project("D:/proj/z", "sid-x", &projects), None);
+        // Empty cwd -> None.
+        assert_eq!(match_project("", "sid-x", &projects), None);
+    }
+
+    #[test]
+    fn match_project_falls_back_to_any_when_no_plain() {
+        // Only a virtual sub-project exists at the path; an unrelated session id
+        // still resolves to it (path match of last resort).
+        let projects = vec![(
+            "virtual-id".to_string(),
+            "D:/proj/a".to_string(),
+            Some("sid-x".to_string()),
+        )];
+        assert_eq!(
+            match_project("D:/proj/a", "sid-other", &projects).as_deref(),
+            Some("virtual-id")
+        );
     }
 }

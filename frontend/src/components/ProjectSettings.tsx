@@ -426,7 +426,19 @@ export function ProjectSettings() {
             <tbody>
               {projects.map(project => (
                 <tr key={project.id} className="border-b border-border last:border-0 hover:bg-muted/20">
-                  <td className="px-4 py-2.5 font-medium">{project.name}</td>
+                  <td className="px-4 py-2.5 font-medium">
+                    <span className="flex items-center gap-1.5">
+                      <span className="truncate">{project.name}</span>
+                      {project.session_id && (
+                        <span
+                          title="Virtual sub-project scoped to a Claude chat session"
+                          className="shrink-0 rounded bg-brand/15 px-1.5 py-px text-[10px] font-medium uppercase tracking-wide text-brand"
+                        >
+                          chat
+                        </span>
+                      )}
+                    </span>
+                  </td>
                   <td className="px-4 py-2.5 text-muted-foreground text-xs truncate max-w-[250px]" title={project.path}>
                     {project.path}
                   </td>

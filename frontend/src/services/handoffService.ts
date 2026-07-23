@@ -50,11 +50,27 @@ function formatTimestamp(secs: number): string {
  * - With sessionFolder: `{projectDir}/.tandem/{sessionFolder}` — per-session subdir,
  *   intended to be archivable as a unit when the session ends.
  * - Without sessionFolder (legacy / Meeting mode): `{projectDir}/.tandem`.
+ *
+ * F061: sessionFolder may be a MULTI-segment path (e.g. `sessions/<session_id>`
+ * for a virtual sub-project). Any `/` or `\` inside it is re-split and re-joined
+ * with the project's own separator so the result never mixes separators on
+ * Windows (`…\.tandem\sessions\<id>`, not `…\.tandem\sessions/<id>`).
  */
 export function tandemDirFor(projectDir: string, sessionFolder?: string | null): string {
   const sep = projectDir.includes('\\') ? '\\' : '/';
   const base = `${projectDir}${sep}.tandem`;
-  return sessionFolder ? `${base}${sep}${sessionFolder}` : base;
+  if (!sessionFolder) return base;
+  const segments = sessionFolder.split(/[/\\]+/).filter(Boolean);
+  return segments.length > 0 ? [base, ...segments].join(sep) : base;
+}
+
+/**
+ * F061: the `.tandem`-relative filing subfolder for a virtual sub-project keyed
+ * by a chat session id: `sessions/<session_id>`. Passed as the `sessionFolder`
+ * argument to any handoff writer so all its artifacts are scoped to that chat.
+ */
+export function sessionScopeFolder(sessionId: string): string {
+  return `sessions/${sessionId}`;
 }
 
 /**

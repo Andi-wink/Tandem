@@ -1698,7 +1698,30 @@ pub async fn project_create(
     aliases: String,
 ) -> Result<ProjectModel, String> {
     let pool = state.db_manager.pool();
-    ProjectRepository::create_project(pool, &name, &path, &aliases, false)
+    ProjectRepository::create_project(pool, &name, &path, &aliases, false, None)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// F061: create (or return the existing) virtual sub-project keyed by
+/// (path, session_id). A virtual sub-project shares a folder path with a plain
+/// project but is scoped to one Claude chat session; its artifacts live under
+/// `<path>/.tandem/sessions/<session_id>/`. Idempotent: a duplicate (path,
+/// session_id) returns the existing row rather than erroring on the unique index.
+#[tauri::command]
+pub async fn project_create_virtual(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    path: String,
+    session_id: String,
+) -> Result<ProjectModel, String> {
+    let pool = state.db_manager.pool();
+    if let Ok(Some(existing)) =
+        ProjectRepository::find_by_path_session(pool, &path, Some(&session_id)).await
+    {
+        return Ok(existing);
+    }
+    ProjectRepository::create_project(pool, &name, &path, "[]", true, Some(&session_id))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1741,7 +1764,7 @@ pub async fn project_import_scanned(
         if let Ok(Some(_)) = ProjectRepository::find_by_path(pool, &scanned.path).await {
             continue;
         }
-        match ProjectRepository::create_project(pool, &scanned.name, &scanned.path, "[]", true)
+        match ProjectRepository::create_project(pool, &scanned.name, &scanned.path, "[]", true, None)
             .await
         {
             Ok(project) => imported.push(project),

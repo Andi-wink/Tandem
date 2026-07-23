@@ -14,9 +14,12 @@
  *         session name when the switch came from a session pick, otherwise the
  *         project name.
  *   IN  solo-session-stopped  (no payload) → self-reset to listening.
- *   OUT solo-hud-switch       { projectId?, cwd?, name?, sessionName?, sessionBranch?, headBranch?, branchMismatch? }
- *       → main window (useSoloModeRouter) applies a manual project correction;
- *         payloads without projectId carry a cwd to auto-register first.
+ *   OUT solo-hud-switch       { projectId?, cwd?, name?, sessionId?, sessionName?, sessionBranch?, headBranch?, branchMismatch? }
+ *       → main window (useSoloModeRouter) applies a manual project correction.
+ *         - projectId  → switch to that registered folder project.
+ *         - sessionId + cwd (F061) → activate/create the VIRTUAL SUB-PROJECT for
+ *           that chat session (identity = (cwd, sessionId)); name = chat title.
+ *         - cwd only (no sessionId) → auto-register the plain path first.
  *         sessionName (set for live-session picks) is preferred as the pill
  *         label in the reply, falling back to the project name.
  *
@@ -238,25 +241,20 @@ export default function SoloHudPage() {
         headBranch: c.head_branch,
         branchMismatch: c.branch_mismatch,
       };
-      // Registered → route by project id (identical flow to the rows below).
-      // Unregistered → hand the main window the cwd so it can auto-register.
-      // Trust registered_project_id as-is: the Rust side matched it against the
-      // live projects table with path normalization, whereas our local project
-      // snapshot can be stale (loaded when the picker expanded).
-      const known = Boolean(c.registered_project_id);
-      // sessionName travels alongside so the pill can show the Claude session
-      // title (not the project name) when the switch came from a live session.
+      // F061: every live-session pick activates the VIRTUAL SUB-PROJECT keyed by
+      // (cwd, session_id) — even when a plain project is already registered at
+      // this path — so notes/tasks from different chats against one folder never
+      // mix. The main window resolves or creates the row (identity + dedupe live
+      // there, since our local project snapshot can be stale). sessionName is the
+      // chat title, preferred as the pill label; it also names the new project.
       const sessionName = sessionDisplayName(c);
-      const payload = known
-        ? { projectId: c.registered_project_id, sessionName, ...branchMeta }
-        : { cwd: c.cwd, name: folderName(c.cwd), sessionName, ...branchMeta };
-
-      // Avoid a no-op switch to the already-active registered project.
-      if (known && c.registered_project_id === activeIdRef.current) {
-        collapse();
-        return;
-      }
-      relay('solo-hud-switch', payload).catch(err =>
+      relay('solo-hud-switch', {
+        cwd: c.cwd,
+        sessionId: c.session_id,
+        sessionName,
+        name: sessionName || folderName(c.cwd),
+        ...branchMeta,
+      }).catch(err =>
         console.warn('[SoloHUD] emit session switch failed:', err),
       );
       collapse();
@@ -450,7 +448,17 @@ export default function SoloHudPage() {
                         }`}
                       />
                       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                        <span className="truncate text-sm font-medium">{project.name}</span>
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <span className="truncate text-sm font-medium">{project.name}</span>
+                          {project.session_id && (
+                            <span
+                              title="Virtual sub-project scoped to a Claude chat session"
+                              className="shrink-0 rounded bg-brand/15 px-1 py-px text-[9px] font-medium uppercase tracking-wide text-brand"
+                            >
+                              chat
+                            </span>
+                          )}
+                        </span>
                         <span className="min-w-0 truncate text-left text-[10px] font-mono text-muted-foreground [direction:rtl]">
                           <bdo dir="ltr">{project.path}</bdo>
                         </span>

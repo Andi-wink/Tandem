@@ -960,6 +960,7 @@ pub fn run() {
             // Project management commands (Solo Mode)
             api::project_list,
             api::project_create,
+            api::project_create_virtual,
             api::project_update,
             api::project_delete,
             api::project_import_scanned,

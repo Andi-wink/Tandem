@@ -51,11 +51,13 @@ interface SoloModeState {
   detectedTasks: SoloTask[];
   isProcessing: boolean;
   routingModel: string;
-  /** Per-session subfolder name (e.g. "MyMeeting_2026-05-08_14-30-15").
-   *  All Solo Mode artifacts for this session are written under
-   *  {projectPath}/.tandem/{sessionFolder}/ so the entire session can be
-   *  archived as a single folder. Computed lazily on first project switch
-   *  from the meeting title + start timestamp. Null until then. */
+  /** `.tandem`-relative filing subfolder for the CURRENTLY active project. All
+   *  Solo Mode artifacts are written under {projectPath}/.tandem/{sessionFolder}/.
+   *  Set per active project by the router (useSoloModeRouter.performProjectSwitch):
+   *   - plain folder project → "MyMeeting_2026-05-08_14-30-15" (meeting title +
+   *     start stamp, computed once per Solo session, shared across plain switches).
+   *   - F061 virtual sub-project → "sessions/<session_id>" so each chat's artifacts
+   *     stay isolated. Null until the first project switch. */
   sessionFolder: string | null;
 }
 

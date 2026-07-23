@@ -94,3 +94,6 @@ __pycache__/
 
 # Dogfooding — local meeting recordings
 meetings/
+
+# Solo Mode handoff artifacts (feed, transcripts, tasks, session subfolders)
+.tandem/

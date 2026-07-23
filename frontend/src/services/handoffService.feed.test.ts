@@ -7,6 +7,7 @@ import {
   buildSessionFolderName,
   ensureLoopState,
   tandemDirFor,
+  sessionScopeFolder,
   FeedEntry,
 } from './handoffService';
 import { ScreenshotData, ClipboardData } from '@/types';
@@ -190,6 +191,25 @@ describe('tandemDirFor (session folder)', () => {
   it('treats null/undefined sessionFolder as no session folder', () => {
     expect(tandemDirFor('D:\\Proj', null)).toBe('D:\\Proj\\.tandem');
     expect(tandemDirFor('D:\\Proj', undefined)).toBe('D:\\Proj\\.tandem');
+  });
+
+  // F061: virtual sub-projects file under sessions/<session_id>, passed as a
+  // multi-segment sessionFolder. Separators must be normalized to the project's
+  // own, never mixed.
+  it('re-splits a multi-segment (sessions/<id>) folder onto the project separator', () => {
+    expect(tandemDirFor('D:\\Proj', 'sessions/abc-123')).toBe(
+      'D:\\Proj\\.tandem\\sessions\\abc-123',
+    );
+    expect(tandemDirFor('/home/u/p', 'sessions/abc-123')).toBe(
+      '/home/u/p/.tandem/sessions/abc-123',
+    );
+  });
+
+  it('sessionScopeFolder builds the sessions/<id> subfolder', () => {
+    expect(sessionScopeFolder('abc-123')).toBe('sessions/abc-123');
+    expect(tandemDirFor('D:\\Proj', sessionScopeFolder('sid'))).toBe(
+      'D:\\Proj\\.tandem\\sessions\\sid',
+    );
   });
 });
 

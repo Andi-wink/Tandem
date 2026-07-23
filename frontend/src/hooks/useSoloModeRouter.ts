@@ -18,7 +18,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useSoloMode } from '@/contexts/SoloModeContext';
-import { listProjects, ensureProjectForPath, normalizeProjectPath, Project } from '@/services/projectService';
+import { listProjects, ensureProjectForPath, ensureVirtualProject, normalizeProjectPath, Project } from '@/services/projectService';
 import { getGitBranch } from '@/services/claudeSessionService';
 import { analyzeTranscript, matchProjectByName, warmupModel, detectProjectSwitchFastPath } from '@/services/soloRoutingService';
 import {
@@ -32,6 +32,8 @@ import {
   buildClipboardFeedEntry,
   ensureLoopState,
   buildSessionFolderName,
+  sessionScopeFolder,
+  tandemDirFor,
 } from '@/services/handoffService';
 import { invoke } from '@tauri-apps/api/core';
 import { useScreenshots } from '@/contexts/ScreenshotContext';
@@ -59,15 +61,21 @@ interface SwitchBranchInfo {
   branchMismatch?: boolean;
 }
 
-/** F055: payload the HUD relays for a manual route pick. `projectId` is set for
- *  a registered project; `cwd`+`name` are set for an unregistered session that
- *  should be auto-registered before switching. `sessionName` (F061) is set when
- *  the pick came from a live Claude session, and is preferred as the HUD pill
- *  label (via the `solo-active-project` reply), falling back to the project name. */
+/** F055/F061: payload the HUD relays for a manual route pick.
+ *  - Plain "Route to project" row: `projectId` set → switch to that folder project.
+ *  - Live Claude session pick: `sessionId`+`cwd` set → activate (or create) the
+ *    VIRTUAL SUB-PROJECT keyed by (cwd, sessionId), so each chat against one
+ *    folder is its own project. `name` is the chat title (falling back to the
+ *    session slug) used as the new project's name. A plain unregistered path
+ *    (no sessionId) still auto-registers via `cwd`+`name`.
+ *  `sessionName` (F061) is preferred as the HUD pill label (via the
+ *  `solo-active-project` reply), falling back to the project name. */
 interface HudSwitchPayload {
   projectId?: string;
   cwd?: string;
   name?: string;
+  /** F061: chat session id — presence marks this as a virtual sub-project pick. */
+  sessionId?: string | null;
   sessionName?: string | null;
   sessionBranch?: string | null;
   headBranch?: string | null;
@@ -124,11 +132,20 @@ export function useSoloModeRouter() {
   const lastScreenshotCountRef = useRef<number>(0);
   const lastClipboardCountRef = useRef<number>(0);
   const recentIntentsRef = useRef<Array<{ hash: string; ts: number }>>([]);
-  const lastIntentRef = useRef<{ description: string; projectPath: string } | null>(null);
+  const lastIntentRef = useRef<{ description: string; projectPath: string; folder: string | null } | null>(null);
+  // F061: the lazily-computed per-meeting folder name (`{title}_{stamp}`) used by
+  // PLAIN folder projects. Computed once per Solo session and reused across
+  // plain-project switches so their `.tandem/{folder}/` mirrors one name. Virtual
+  // sub-projects ignore this and file under `.tandem/sessions/<session_id>/`.
+  const meetingFolderRef = useRef<string | null>(null);
 
   // ── Load projects on session start + periodic refresh ───────────────
   useEffect(() => {
-    if (!isActive) return;
+    if (!isActive) {
+      // Reset the per-meeting folder so the next Solo session recomputes it.
+      meetingFolderRef.current = null;
+      return;
+    }
 
     const fetchProjects = () => {
       listProjects().then(projects => {
@@ -184,12 +201,24 @@ export function useSoloModeRouter() {
       // project name inside switchProject.
       switchProject(matched, transcriptIndex, branch, displayName);
 
-      let activeSessionFolder = sessionFolderRef.current;
-      if (!activeSessionFolder) {
-        activeSessionFolder = buildSessionFolderName(meetingTitleRef.current || 'Solo');
+      // F061: choose the filing folder PER active project. A virtual sub-project
+      // (session_id set) files under `.tandem/sessions/<session_id>/`; a plain
+      // folder project uses the shared per-meeting folder (computed once). This
+      // is the single derivation point: every downstream writer just reads
+      // sessionFolderRef, so switching projects re-scopes all filing.
+      let activeSessionFolder: string;
+      if (matched.session_id) {
+        activeSessionFolder = sessionScopeFolder(matched.session_id);
+      } else {
+        if (!meetingFolderRef.current) {
+          meetingFolderRef.current = buildSessionFolderName(meetingTitleRef.current || 'Solo');
+          toast.info(`Session folder: .tandem/${meetingFolderRef.current}`, { duration: 6000 });
+        }
+        activeSessionFolder = meetingFolderRef.current;
+      }
+      if (sessionFolderRef.current !== activeSessionFolder) {
         setSessionFolder(activeSessionFolder);
         sessionFolderRef.current = activeSessionFolder;
-        toast.info(`Session folder: .tandem/${activeSessionFolder}`, { duration: 6000 });
       }
 
       toast.success(`Switched to ${matched.name}`);
@@ -335,7 +364,7 @@ export function useSoloModeRouter() {
             type: 'revoke',
             timestamp: new Date(),
             body: `User retracted the most recent intent: "${revokeTarget.description}"`,
-          }, activeSessionFolder);
+          }, revokeTarget.folder);
           toast.info(`Revoked: ${revokeTarget.description.slice(0, 60)}`);
         } catch (err) {
           console.error('[SoloRouter] Failed to append revoke entry:', err);
@@ -366,7 +395,7 @@ export function useSoloModeRouter() {
               body: intent.description,
               meta: { confidence: intent.confidence.toFixed(2) },
             }, activeSessionFolder);
-            lastIntentRef.current = { description: intent.description, projectPath: currentActive.path };
+            lastIntentRef.current = { description: intent.description, projectPath: currentActive.path, folder: activeSessionFolder };
             addTask({
               id: `solo-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
               description: intent.description,
@@ -413,7 +442,7 @@ export function useSoloModeRouter() {
 
     listen<HudSwitchPayload>('solo-hud-switch', async event => {
       const payload = event.payload ?? {};
-      const { projectId, cwd, name, sessionName } = payload;
+      const { projectId, cwd, name, sessionName, sessionId } = payload;
       const branchInfo: SwitchBranchInfo = {
         sessionBranch: payload.sessionBranch ?? null,
         headBranch: payload.headBranch ?? null,
@@ -423,7 +452,21 @@ export function useSoloModeRouter() {
 
       let matched: Project | undefined;
 
-      if (projectId) {
+      if (sessionId && cwd) {
+        // F061: live Claude session pick → activate (or create) the virtual
+        // sub-project keyed by (cwd, sessionId). A plain folder project at the
+        // same path may coexist and is left untouched. The chat title (name)
+        // becomes the sub-project's name, falling back to the folder name.
+        const registered = await ensureVirtualProject(name || cwd, cwd, sessionId);
+        if (registered) {
+          matched = registered;
+          try {
+            projectsRef.current = await listProjects();
+          } catch {
+            projectsRef.current = [...projectsRef.current.filter(p => p.id !== registered.id), registered];
+          }
+        }
+      } else if (projectId) {
         matched = projectsRef.current.find(p => p.id === projectId);
         if (!matched) {
           // The project cache may not have loaded yet (or is stale) — re-fetch
@@ -618,7 +661,11 @@ export function useSoloModeRouter() {
     responsePollRef.current = setInterval(async () => {
       for (const entry of projectHistory) {
         const sep = entry.project.path.includes('\\') ? '\\' : '/';
-        const responsePath = `${entry.project.path}${sep}.tandem${sep}response.md`;
+        // F061: a virtual sub-project's Claude Code writes response.md under
+        // `.tandem/sessions/<session_id>/`; a plain project uses the `.tandem`
+        // root (unchanged). tandemDirFor(null) collapses to the root.
+        const folder = entry.project.session_id ? sessionScopeFolder(entry.project.session_id) : null;
+        const responsePath = `${tandemDirFor(entry.project.path, folder)}${sep}response.md`;
 
         try {
           const content = await invoke<string | null>('read_file_if_exists', { path: responsePath });

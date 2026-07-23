@@ -116,6 +116,9 @@ pub struct ProjectModel {
     pub path: String,
     pub aliases: String,
     pub auto_discovered: i64,
+    /// F061: NULL for a plain folder project; the chat session id for a virtual
+    /// sub-project. Identity is (path, session_id).
+    pub session_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
