@@ -18,6 +18,11 @@ import { useCanvas } from '@/contexts/CanvasContext';
 const AUTO_RELOAD_MS = 3000;
 const MAX_AUTO_RELOADS = 4;
 
+// The whiteboard "room" Tandem's embedded canvas joins. MUST match CANVAS_BOARD_ID in .mcp.json so
+// Claude Code's MCP writes land on the same board the UI is showing (otherwise the UI sits on
+// 'default' while the agent draws on 'tandem' and neither sees the other's shapes).
+const TANDEM_BOARD_ID = 'tandem';
+
 export function CanvasIframe() {
   const { agentUrl, canvasVisible, canvasReady, registerCanvasIframe, boardReadOnly, setBoardReadOnly } = useCanvas();
   const ref = useRef<HTMLIFrameElement | null>(null);
@@ -63,7 +68,9 @@ export function CanvasIframe() {
   }, [canvasVisible, canvasReady, autoReloads]);
 
   // `embed=1` tells the agent app to hide its own ChatPanel — Tandem's input is the single input.
-  const base = agentUrl.includes('?') ? `${agentUrl}&embed=1` : `${agentUrl}?embed=1`;
+  // `board=<TANDEM_BOARD_ID>` pins the canvas to the same room as Claude Code's MCP (see .mcp.json).
+  const sep = agentUrl.includes('?') ? '&' : '?';
+  const base = `${agentUrl}${sep}embed=1&board=${encodeURIComponent(TANDEM_BOARD_ID)}`;
   const src = reloadNonce ? `${base}&_r=${reloadNonce}` : base;
 
   return (

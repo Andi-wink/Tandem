@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "tldraw-canvas": {
+      "command": "node",
+      "args": ["D:/Dev-projects/visual-work/agent-whiteboard/vendor/tldraw-mcp-server/dist/index.js"],
+      "env": {
+        "EXPRESS_SERVER_URL": "http://127.0.0.1:3939",
+        "CANVAS_BOARD_ID": "tandem"
+      }
+    }
+  }
+}
