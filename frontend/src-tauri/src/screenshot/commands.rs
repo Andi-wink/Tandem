@@ -12,15 +12,37 @@ use super::types::{CaptureMode, ScreenshotData};
 static ACTIVE_SOLO_PROJECT_DIR: LazyLock<Mutex<Option<PathBuf>>> =
     LazyLock::new(|| Mutex::new(None));
 
+/// F061: optional `.tandem`-relative session subfolder for a virtual sub-project
+/// (e.g. "sessions/<slug>-<id>"). When set alongside the project dir, screenshots
+/// route into `{path}/.tandem/{subfolder}/screenshots/` so each chat's captures
+/// stay isolated. None → the shared `{path}/.tandem/screenshots/`.
+static ACTIVE_SOLO_SESSION_FOLDER: LazyLock<Mutex<Option<String>>> =
+    LazyLock::new(|| Mutex::new(None));
+
 /// Set or clear the active Solo Mode project. Called from the frontend when
-/// the user switches projects or stops the solo session.
+/// the user switches projects or stops the solo session. `session_folder` scopes
+/// screenshots into a virtual sub-project's session folder (F061); pass None for
+/// a plain project (shared `.tandem/screenshots/`).
 #[tauri::command]
-pub async fn set_active_solo_project(path: Option<String>) -> Result<(), String> {
-    let mut guard = ACTIVE_SOLO_PROJECT_DIR
-        .lock()
-        .map_err(|e| format!("Lock poisoned: {}", e))?;
-    *guard = path.map(PathBuf::from);
-    info!("Active solo project: {:?}", *guard);
+pub async fn set_active_solo_project(
+    path: Option<String>,
+    session_folder: Option<String>,
+) -> Result<(), String> {
+    {
+        let mut guard = ACTIVE_SOLO_PROJECT_DIR
+            .lock()
+            .map_err(|e| format!("Lock poisoned: {}", e))?;
+        *guard = path.map(PathBuf::from);
+        info!("Active solo project: {:?}", *guard);
+    }
+    {
+        let mut guard = ACTIVE_SOLO_SESSION_FOLDER
+            .lock()
+            .map_err(|e| format!("Lock poisoned: {}", e))?;
+        // Ignore an empty string as "no subfolder".
+        *guard = session_folder.filter(|s| !s.is_empty());
+        info!("Active solo session folder: {:?}", *guard);
+    }
     Ok(())
 }
 
@@ -413,7 +435,16 @@ pub async fn save_annotated_screenshot<R: Runtime>(
 fn get_screenshots_dir<R: Runtime>(app: &AppHandle<R>) -> Result<std::path::PathBuf, String> {
     if let Ok(guard) = ACTIVE_SOLO_PROJECT_DIR.lock() {
         if let Some(project_dir) = guard.as_ref() {
-            return Ok(project_dir.join(".tandem").join("screenshots"));
+            let mut dir = project_dir.join(".tandem");
+            // F061: a virtual sub-project scopes its screenshots under the session
+            // folder. `Path::join` treats the '/' in "sessions/<slug>-<id>" as a
+            // component separator on all platforms.
+            if let Ok(sub) = ACTIVE_SOLO_SESSION_FOLDER.lock() {
+                if let Some(subfolder) = sub.as_ref() {
+                    dir = dir.join(subfolder);
+                }
+            }
+            return Ok(dir.join("screenshots"));
         }
     }
 

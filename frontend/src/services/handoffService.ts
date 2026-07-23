@@ -10,6 +10,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Transcript, ScreenshotData, ClipboardData } from '@/types';
 import { ContextBasketItem } from '@/contexts/ContextBasketContext';
 import { resolveSpeaker, getLocalSpeakerName } from '@/lib/speakerNames';
+import { getGitBranch } from '@/services/claudeSessionService';
 
 /** Prefix a transcript line's body with its resolved speaker ("Andrew: ..." / "Client: ..."). */
 function withSpeaker(t: Transcript, localName: string): string {
@@ -49,11 +50,54 @@ function formatTimestamp(secs: number): string {
  * - With sessionFolder: `{projectDir}/.tandem/{sessionFolder}` — per-session subdir,
  *   intended to be archivable as a unit when the session ends.
  * - Without sessionFolder (legacy / Meeting mode): `{projectDir}/.tandem`.
+ *
+ * F061: sessionFolder may be a MULTI-segment path (e.g. `sessions/<session_id>`
+ * for a virtual sub-project). Any `/` or `\` inside it is re-split and re-joined
+ * with the project's own separator so the result never mixes separators on
+ * Windows (`…\.tandem\sessions\<id>`, not `…\.tandem\sessions/<id>`).
  */
 export function tandemDirFor(projectDir: string, sessionFolder?: string | null): string {
   const sep = projectDir.includes('\\') ? '\\' : '/';
   const base = `${projectDir}${sep}.tandem`;
-  return sessionFolder ? `${base}${sep}${sessionFolder}` : base;
+  if (!sessionFolder) return base;
+  const segments = sessionFolder.split(/[/\\]+/).filter(Boolean);
+  return segments.length > 0 ? [base, ...segments].join(sep) : base;
+}
+
+/** `.tandem`-relative prefix marking a virtual sub-project's session folder.
+ *  Used to recognize a session-scoped folder (vs a plain per-meeting folder). */
+export const SESSION_SCOPE_PREFIX = 'sessions/';
+
+/**
+ * Slugify a display name for use in a folder name: lowercase, every run of
+ * non-alphanumerics collapsed to a single hyphen, leading/trailing hyphens
+ * trimmed, capped at `maxLen` chars (re-trimming any hyphen left at the cut).
+ * May return '' (e.g. all-punctuation or empty input) — callers must guard.
+ */
+export function slugify(input: string, maxLen = 40): string {
+  return (input ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, maxLen)
+    .replace(/-+$/g, '');
+}
+
+/**
+ * F061: the `.tandem`-relative filing subfolder for a virtual sub-project keyed
+ * by a chat session: `sessions/<slug>-<shortid>`, where `slug` is the project's
+ * display name (the chat title captured at creation) slugified and `shortid` is
+ * the first 8 chars of the session id. Deterministic from the project row, so no
+ * DB column is needed. Falls back to `sessions/<shortid>` when the slug is empty.
+ * Passed as the `sessionFolder` argument to any handoff writer so all artifacts
+ * are scoped to that chat.
+ */
+export function sessionScopeFolder(sessionId: string, displayName?: string | null): string {
+  const shortId = sessionId.slice(0, 8);
+  const slug = slugify(displayName ?? '');
+  return slug
+    ? `${SESSION_SCOPE_PREFIX}${slug}-${shortId}`
+    : `${SESSION_SCOPE_PREFIX}${shortId}`;
 }
 
 /**
@@ -97,6 +141,8 @@ export interface TaskHandoffData {
   transcripts: Transcript[];
   contextItems: ContextBasketItem[];
   timestamp: Date;
+  /** F055: git branch of the target project checkout ("unknown" when null). */
+  branch?: string | null;
 }
 
 export function generateTaskMarkdown(data: TaskHandoffData): string {
@@ -105,6 +151,7 @@ export function generateTaskMarkdown(data: TaskHandoffData): string {
   // Header
   lines.push(`# Task: ${data.taskDescription.slice(0, 80)}`);
   lines.push(`Meeting: ${data.meetingTitle} | ${data.timestamp.toLocaleString()}`);
+  lines.push(`**Branch:** ${data.branch ?? 'unknown'}`);
   lines.push('');
 
   // Instructions
@@ -156,7 +203,12 @@ export async function writeTaskHandoff(
   const tasksDir = `${tandemDir}${sep}tasks`;
   const filename = `task-${Date.now()}.md`;
   const filePath = `${tasksDir}${sep}${filename}`;
-  const content = generateTaskMarkdown(data);
+
+  // Stamp the target checkout's branch. Best-effort: a branch lookup must never
+  // block or delay the handoff, so a caller-supplied branch wins and a failed
+  // lookup falls back to null (rendered as "unknown").
+  const branch = data.branch !== undefined ? data.branch : await getGitBranch(projectDir);
+  const content = generateTaskMarkdown({ ...data, branch });
 
   await invoke('save_transcript', { filePath, content });
   return filePath;
@@ -245,7 +297,10 @@ export async function ensureTandemClaudeMd(
 
 // ─── Live Screenshots File ──────────────────────────────────────────────────
 
-export function generateLiveScreenshotsMarkdown(screenshots: ScreenshotData[]): string {
+export function generateLiveScreenshotsMarkdown(
+  screenshots: ScreenshotData[],
+  sessionFolder?: string | null,
+): string {
   const lines: string[] = [];
 
   lines.push('# Live Screenshots');
@@ -257,13 +312,20 @@ export function generateLiveScreenshotsMarkdown(screenshots: ScreenshotData[]): 
     return lines.join('\n');
   }
 
+  // F061: for a virtual sub-project the screenshot files are co-located with
+  // this index inside the session folder (`.../<sessionFolder>/screenshots/`),
+  // so reference them relative to the index. Plain projects keep the shared
+  // project-root-relative `.tandem/screenshots/` location unchanged.
+  const isSessionScoped = !!sessionFolder && sessionFolder.startsWith(SESSION_SCOPE_PREFIX);
+  const refDir = isSessionScoped ? 'screenshots' : '.tandem/screenshots';
+
   for (const ss of screenshots) {
     const ts = ss.recording_elapsed_secs != null
       ? `[${formatTimestamp(ss.recording_elapsed_secs)}]`
       : `[${ss.timestamp}]`;
     const filename = ss.file_path.split(/[/\\]/).pop() || 'screenshot.png';
     lines.push(`## ${ts} ${ss.capture_mode === 'region' ? 'Region' : 'Fullscreen'} — ${ss.width}×${ss.height}`);
-    lines.push(`File: .tandem/screenshots/${filename}`);
+    lines.push(`File: ${refDir}/${filename}`);
     lines.push(`Original: ${ss.file_path}`);
     lines.push('');
   }
@@ -283,7 +345,7 @@ export async function writeLiveScreenshots(
   const sep = projectDir.includes('\\') ? '\\' : '/';
   const tandemDir = tandemDirFor(projectDir, sessionFolder);
   const filePath = `${tandemDir}${sep}screenshots.md`;
-  const content = generateLiveScreenshotsMarkdown(screenshots);
+  const content = generateLiveScreenshotsMarkdown(screenshots, sessionFolder);
   await invoke('save_transcript', { filePath, content });
 }
 
@@ -466,6 +528,7 @@ export type FeedEntryType =
   | 'project_switch'
   | 'session_start'
   | 'session_end'
+  | 'session_archived'
   | 'revoke';
 
 export interface FeedEntry {
@@ -562,6 +625,77 @@ export async function ensureLoopState(
   if (existing && existing.trim().length > 0) return;
   const content = JSON.stringify({ last_processed_line: 0 }, null, 2);
   await invoke('save_transcript', { filePath, content });
+}
+
+// ─── Session archival (F061) ────────────────────────────────────────────────
+
+/**
+ * F061 "all tasks done" predicate. `taskFiles` is the listing of a session
+ * folder's `tasks/` dir (from `list_dir_file_names`): `null` when the dir does
+ * not exist, otherwise the entry names.
+ *
+ * A session is done when its `tasks/` dir EXISTS (so at least one task was ever
+ * handed off) AND holds no `.md` task files left (Claude Code deletes each task
+ * file when it finishes it). A `null` listing (never handed off a task) is NOT
+ * done — nothing was completed, so nothing is archived automatically.
+ */
+export function allTasksDone(taskFiles: string[] | null): boolean {
+  if (!Array.isArray(taskFiles)) return false;
+  return taskFiles.filter(f => f.toLowerCase().endsWith('.md')).length === 0;
+}
+
+/**
+ * F061: if every task handed off from a virtual sub-project's chat is done, move
+ * its session folder `<path>/.tandem/<sessionFolder>` into
+ * `<path>/.tandem/archive/`, keeping `.tandem/sessions/` to active chats only.
+ *
+ * Best-effort and non-throwing: a listing/append/move failure is logged and the
+ * session stays put (retried on the next trigger). A self-explanatory
+ * `session_archived` feed line is appended BEFORE the move so it travels into the
+ * archived copy. Returns true only when the folder was actually moved.
+ *
+ * The CALLER guarantees `sessionFolder` is NOT the currently-active session.
+ */
+export async function maybeArchiveSessionFolder(
+  projectPath: string,
+  sessionFolder: string,
+): Promise<boolean> {
+  const sep = projectPath.includes('\\') ? '\\' : '/';
+  const tasksDir = `${tandemDirFor(projectPath, sessionFolder)}${sep}tasks`;
+
+  let taskFiles: string[] | null;
+  try {
+    taskFiles = await invoke<string[] | null>('list_dir_file_names', { path: tasksDir });
+  } catch (err) {
+    console.warn('[handoff] archive: failed to list tasks dir:', err);
+    return false;
+  }
+  if (!allTasksDone(taskFiles)) return false;
+
+  try {
+    await appendFeedEntry(projectPath, {
+      type: 'session_archived',
+      timestamp: new Date(),
+      body: 'Session archived — all handed-off tasks are done. Folder moved to .tandem/archive/.',
+    }, sessionFolder);
+  } catch (err) {
+    console.warn('[handoff] archive: failed to append session_archived entry:', err);
+  }
+
+  try {
+    const moved = await invoke<string | null>('archive_session_folder', {
+      projectDir: projectPath,
+      sessionFolder,
+    });
+    if (moved) {
+      console.log('[handoff] archived session folder ->', moved);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.warn('[handoff] archive: move failed:', err);
+    return false;
+  }
 }
 
 export function buildScreenshotFeedEntry(ss: ScreenshotData): FeedEntry {

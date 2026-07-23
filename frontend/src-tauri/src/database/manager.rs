@@ -34,6 +34,10 @@ impl DatabaseManager {
 
         sqlx::migrate!("./migrations").run(&pool).await?;
 
+        // Move any plaintext Anthropic API key out of SQLite into the OS
+        // credential store. Best-effort: never blocks startup.
+        crate::database::secure_store::migrate_anthropic_key_to_secure_store(&pool).await;
+
         Ok(DatabaseManager { pool })
     }
 

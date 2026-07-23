@@ -14,6 +14,8 @@ export interface ProjectHistoryEntry {
   startIndex: number;
   endIndex: number | null;
   startTime: number; // Date.now()
+  /** F055: git branch of the project checkout when this entry opened. */
+  branch?: string | null;
 }
 
 export interface RoutingDecision {

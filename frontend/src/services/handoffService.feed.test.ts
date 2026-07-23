@@ -7,6 +7,11 @@ import {
   buildSessionFolderName,
   ensureLoopState,
   tandemDirFor,
+  sessionScopeFolder,
+  slugify,
+  generateLiveScreenshotsMarkdown,
+  allTasksDone,
+  maybeArchiveSessionFolder,
   FeedEntry,
 } from './handoffService';
 import { ScreenshotData, ClipboardData } from '@/types';
@@ -191,6 +196,88 @@ describe('tandemDirFor (session folder)', () => {
     expect(tandemDirFor('D:\\Proj', null)).toBe('D:\\Proj\\.tandem');
     expect(tandemDirFor('D:\\Proj', undefined)).toBe('D:\\Proj\\.tandem');
   });
+
+  // F061: virtual sub-projects file under sessions/<session_id>, passed as a
+  // multi-segment sessionFolder. Separators must be normalized to the project's
+  // own, never mixed.
+  it('re-splits a multi-segment (sessions/<id>) folder onto the project separator', () => {
+    expect(tandemDirFor('D:\\Proj', 'sessions/abc-123')).toBe(
+      'D:\\Proj\\.tandem\\sessions\\abc-123',
+    );
+    expect(tandemDirFor('/home/u/p', 'sessions/abc-123')).toBe(
+      '/home/u/p/.tandem/sessions/abc-123',
+    );
+  });
+
+  it('sessionScopeFolder falls back to the shortid alone when no display name', () => {
+    expect(sessionScopeFolder('abc-123')).toBe('sessions/abc-123');
+    expect(tandemDirFor('D:\\Proj', sessionScopeFolder('sid'))).toBe(
+      'D:\\Proj\\.tandem\\sessions\\sid',
+    );
+  });
+
+  it('sessionScopeFolder builds sessions/<slug>-<shortid> from the display name', () => {
+    // The documented example.
+    expect(
+      sessionScopeFolder('8effa465-9ffe-44c0-91d6-fc53f91b5687', 'Mock up solo mode project hub layout'),
+    ).toBe('sessions/mock-up-solo-mode-project-hub-layout-8effa465');
+    // shortid is exactly the first 8 chars of the session id.
+    expect(sessionScopeFolder('deadbeef-1111', 'Fix Login')).toBe('sessions/fix-login-deadbeef');
+  });
+
+  it('sessionScopeFolder guards an all-punctuation name (empty slug) to shortid only', () => {
+    expect(sessionScopeFolder('8effa465-xxxx', '!!! ??? ...')).toBe('sessions/8effa465');
+  });
+});
+
+describe('slugify', () => {
+  it('lowercases, collapses non-alphanumeric runs to single hyphens, trims edges', () => {
+    expect(slugify('Mock up solo mode project hub layout')).toBe(
+      'mock-up-solo-mode-project-hub-layout',
+    );
+    expect(slugify('  Hello,   World!!  ')).toBe('hello-world');
+    expect(slugify('a/b\\c:d')).toBe('a-b-c-d');
+  });
+
+  it('returns empty string for empty / all-punctuation input', () => {
+    expect(slugify('')).toBe('');
+    expect(slugify('!!! ???')).toBe('');
+  });
+
+  it('caps at ~40 chars and re-trims a trailing hyphen left at the cut', () => {
+    // Groups of 4 put a hyphen at index 39, so the raw 40-char slice ends in a
+    // hyphen that must be re-trimmed: 'aaaa-bbbb-cccc-dddd-eeee-ffff-gggg-hhhh-'.
+    const out = slugify('aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii');
+    expect(out).toBe('aaaa-bbbb-cccc-dddd-eeee-ffff-gggg-hhhh');
+    expect(out.length).toBeLessThanOrEqual(40);
+    expect(out.endsWith('-')).toBe(false);
+  });
+});
+
+describe('generateLiveScreenshotsMarkdown (F061 session-scoped refs)', () => {
+  const ss: ScreenshotData = {
+    id: 'ss-1',
+    file_path: 'D:\\P\\.tandem\\sessions\\slug-8effa465\\screenshots\\shot.png',
+    thumbnail_base64: '',
+    timestamp: '10:00',
+    recording_elapsed_secs: 5,
+    width: 800,
+    height: 600,
+    capture_mode: 'fullscreen',
+  };
+
+  it('references co-located screenshots/ for a virtual sub-project session folder', () => {
+    const md = generateLiveScreenshotsMarkdown([ss], 'sessions/slug-8effa465');
+    expect(md).toContain('File: screenshots/shot.png');
+    expect(md).not.toContain('.tandem/screenshots/shot.png');
+  });
+
+  it('keeps the shared .tandem/screenshots/ ref for plain projects', () => {
+    const md = generateLiveScreenshotsMarkdown([ss], null);
+    expect(md).toContain('File: .tandem/screenshots/shot.png');
+    const md2 = generateLiveScreenshotsMarkdown([ss], 'MyMeeting_2026-05-08_14-30-15');
+    expect(md2).toContain('File: .tandem/screenshots/shot.png');
+  });
 });
 
 describe('buildSessionFolderName', () => {
@@ -290,5 +377,101 @@ describe('ensureLoopState', () => {
 
     const saveCalls = mockInvoke.mock.calls.filter(c => c[0] === 'save_transcript');
     expect(saveCalls.length).toBe(1);
+  });
+});
+
+// ─── F061: session archival ─────────────────────────────────────────────────
+
+describe('allTasksDone', () => {
+  it('is false when the tasks dir never existed (null listing)', () => {
+    expect(allTasksDone(null)).toBe(false);
+  });
+
+  it('is true when the tasks dir exists but holds no .md task files', () => {
+    expect(allTasksDone([])).toBe(true);
+    // A stray non-task file does not count as pending work.
+    expect(allTasksDone(['.gitkeep', 'notes.txt'])).toBe(true);
+  });
+
+  it('is false while any task-*.md file remains', () => {
+    expect(allTasksDone(['task-1712345678.md'])).toBe(false);
+    expect(allTasksDone(['task-a.md', 'task-b.md'])).toBe(false);
+    expect(allTasksDone(['done.txt', 'task-2.md'])).toBe(false);
+  });
+});
+
+describe('maybeArchiveSessionFolder', () => {
+  const projectPath = 'D:\\Dev-projects\\Tandem';
+  const sessionFolder = 'sessions/mock-up-8effa465';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('archives (appends session_archived, then moves) when all tasks are done', async () => {
+    mockInvoke.mockImplementation(async (cmd) => {
+      if (cmd === 'list_dir_file_names') return []; // tasks dir exists, empty
+      if (cmd === 'read_file_if_exists') return null; // feed doesn't exist yet
+      if (cmd === 'save_transcript') return undefined;
+      if (cmd === 'archive_session_folder') return 'D:\\Dev-projects\\Tandem\\.tandem\\archive\\mock-up-8effa465';
+      return undefined;
+    });
+
+    const result = await maybeArchiveSessionFolder(projectPath, sessionFolder);
+    expect(result).toBe(true);
+
+    // Listed the session's tasks/ dir.
+    const listCall = mockInvoke.mock.calls.find(c => c[0] === 'list_dir_file_names');
+    expect((listCall![1] as { path: string }).path).toBe(
+      'D:\\Dev-projects\\Tandem\\.tandem\\sessions\\mock-up-8effa465\\tasks',
+    );
+    // Appended the session_archived marker into the session folder BEFORE moving.
+    const feedSave = mockInvoke.mock.calls.find(
+      c => c[0] === 'save_transcript' && String((c[1] as { content: string }).content).includes('session_archived'),
+    );
+    expect(feedSave).toBeDefined();
+    expect((feedSave![1] as { filePath: string }).filePath).toBe(
+      'D:\\Dev-projects\\Tandem\\.tandem\\sessions\\mock-up-8effa465\\feed.md',
+    );
+    // Requested the move with the session folder.
+    const moveCall = mockInvoke.mock.calls.find(c => c[0] === 'archive_session_folder');
+    expect(moveCall![1]).toEqual({ projectDir: projectPath, sessionFolder });
+  });
+
+  it('does nothing when tasks are still pending', async () => {
+    mockInvoke.mockImplementation(async (cmd) => {
+      if (cmd === 'list_dir_file_names') return ['task-1.md'];
+      return undefined;
+    });
+
+    const result = await maybeArchiveSessionFolder(projectPath, sessionFolder);
+    expect(result).toBe(false);
+    expect(mockInvoke.mock.calls.some(c => c[0] === 'archive_session_folder')).toBe(false);
+    // No feed marker either.
+    expect(mockInvoke.mock.calls.some(c => c[0] === 'save_transcript')).toBe(false);
+  });
+
+  it('does nothing when no task was ever handed off (tasks dir missing)', async () => {
+    mockInvoke.mockImplementation(async (cmd) => {
+      if (cmd === 'list_dir_file_names') return null;
+      return undefined;
+    });
+
+    const result = await maybeArchiveSessionFolder(projectPath, sessionFolder);
+    expect(result).toBe(false);
+    expect(mockInvoke.mock.calls.some(c => c[0] === 'archive_session_folder')).toBe(false);
+  });
+
+  it('returns false (no throw) when the move reports it was skipped (locked folder)', async () => {
+    mockInvoke.mockImplementation(async (cmd) => {
+      if (cmd === 'list_dir_file_names') return [];
+      if (cmd === 'read_file_if_exists') return null;
+      if (cmd === 'save_transcript') return undefined;
+      if (cmd === 'archive_session_folder') return null; // busy/locked → skipped
+      return undefined;
+    });
+
+    const result = await maybeArchiveSessionFolder(projectPath, sessionFolder);
+    expect(result).toBe(false);
   });
 });
