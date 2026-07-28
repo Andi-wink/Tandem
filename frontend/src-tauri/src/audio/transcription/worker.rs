@@ -60,6 +60,22 @@ fn dedup_overlap_prefix(prev_tail: &[String], current: &str) -> String {
     }
 }
 
+/// Maximum length, in CHARACTERS, of a provider error we surface to the UI via
+/// `transcription-warning`. The payload is provider-controlled text that gets
+/// rendered in a toast, so it is capped; the full error always stays in the log.
+const WARNING_MAX_CHARS: usize = 200;
+
+/// Truncate `text` to at most `max_chars` characters, appending "..." when it
+/// was cut. Cuts on a char boundary (never a byte index), so multi-byte text
+/// from a provider response can never be sliced mid-codepoint.
+fn truncate_for_warning(text: &str, max_chars: usize) -> String {
+    match text.char_indices().nth(max_chars) {
+        // Fewer than or exactly `max_chars` characters: nothing to cut.
+        None => text.to_string(),
+        Some((byte_idx, _)) => format!("{}...", &text[..byte_idx]),
+    }
+}
+
 // Speech detection flag - reset per recording session
 static SPEECH_DETECTED_EMITTED: AtomicBool = AtomicBool::new(false);
 
@@ -119,6 +135,18 @@ pub fn start_transcription_task<R: Runtime>(
         let chunks_completed = Arc::new(AtomicU64::new(0));
         let input_finished = Arc::new(AtomicBool::new(false));
 
+        // One-shot guard for the user-facing `transcription-warning` toast.
+        // During a provider outage EVERY chunk fails, so emitting per failed
+        // chunk stacks an unbounded number of toasts. A single AtomicBool,
+        // shared across the worker pool, is the simplest thing that fits: it
+        // is created here, inside the per-recording task, so it resets for
+        // free on the next recording (start_transcription_task is called once
+        // per recording from recording_commands.rs) with no global to reset.
+        // Chosen over a per-error-kind HashSet because every kind still lands
+        // in the warn! log in full, and one toast is enough to tell the user
+        // transcription is degraded.
+        let warning_emitted = Arc::new(AtomicBool::new(false));
+
         info!("📊 Starting {} transcription worker{} (serial mode for ordered emission)", NUM_WORKERS, if NUM_WORKERS == 1 { "" } else { "s" });
 
         // Spawn worker tasks
@@ -134,6 +162,7 @@ pub fn start_transcription_task<R: Runtime>(
             let chunks_completed_clone = chunks_completed.clone();
             let input_finished_clone = input_finished.clone();
             let chunks_queued_clone = chunks_queued.clone();
+            let warning_emitted_clone = warning_emitted.clone();
 
             let worker_handle = tokio::spawn(async move {
                 info!("👷 Worker {} started", worker_id);
@@ -349,8 +378,20 @@ pub fn start_transcription_task<R: Runtime>(
                                             continue;
                                         }
                                         _ => {
+                                            // FULL error stays in the log, every time.
                                             warn!("Worker {}: Transcription failed: {}", worker_id, e);
-                                            let _ = app_clone.emit("transcription-warning", e.to_string());
+                                            // User-facing toast: at most one per recording (see
+                                            // `warning_emitted`), and truncated because the text is
+                                            // provider-controlled and gets rendered in the UI.
+                                            // Chunk handling below is unchanged: this chunk is still
+                                            // counted as completed and the loop continues as before.
+                                            if warning_emitted_clone
+                                                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                                                .is_ok()
+                                            {
+                                                let message = truncate_for_warning(&e.to_string(), WARNING_MAX_CHARS);
+                                                let _ = app_clone.emit("transcription-warning", message);
+                                            }
                                         }
                                     }
                                 }
@@ -701,4 +742,49 @@ fn format_recording_time(seconds: f64) -> String {
     let secs = total_seconds % 60;
 
     format!("[{:02}:{:02}]", minutes, secs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{truncate_for_warning, WARNING_MAX_CHARS};
+
+    #[test]
+    fn truncate_leaves_short_text_untouched() {
+        assert_eq!(truncate_for_warning("provider timed out", 200), "provider timed out");
+        assert_eq!(truncate_for_warning("", 200), "");
+    }
+
+    #[test]
+    fn truncate_leaves_exact_length_untouched() {
+        let text = "a".repeat(WARNING_MAX_CHARS);
+        assert_eq!(truncate_for_warning(&text, WARNING_MAX_CHARS), text);
+    }
+
+    #[test]
+    fn truncate_cuts_one_char_over_the_limit() {
+        let text = "a".repeat(WARNING_MAX_CHARS + 1);
+        let out = truncate_for_warning(&text, WARNING_MAX_CHARS);
+        assert_eq!(out.chars().count(), WARNING_MAX_CHARS + 3);
+        assert!(out.ends_with("..."));
+        assert_eq!(&out[..WARNING_MAX_CHARS], &text[..WARNING_MAX_CHARS]);
+    }
+
+    #[test]
+    fn truncate_cuts_on_char_boundary_for_multibyte_text() {
+        // Each of these is multiple bytes, so a byte-index cut would panic or
+        // produce broken text. Counting is in characters.
+        let text = "üüüüü";
+        assert_eq!(truncate_for_warning(text, 3), "üüü...");
+
+        let emoji = "🎤🎤🎤🎤";
+        assert_eq!(truncate_for_warning(emoji, 2), "🎤🎤...");
+
+        // Cutting exactly at the char count of a multi-byte string: no marker.
+        assert_eq!(truncate_for_warning(emoji, 4), emoji);
+    }
+
+    #[test]
+    fn truncate_with_zero_limit_yields_only_the_marker() {
+        assert_eq!(truncate_for_warning("anything", 0), "...");
+    }
 }

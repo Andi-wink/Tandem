@@ -161,48 +161,79 @@ impl RecordingSaver {
         self.write_transcripts_json_debounced();
     }
 
+    /// Set the "transcripts.json is behind the in-memory list" flag, recovering from
+    /// a poisoned lock rather than silently skipping the update: dropping a `true`
+    /// here is what loses data, because nothing would ever retry the write.
+    fn set_transcripts_dirty(&self, value: bool) {
+        let mut dirty = match self.transcripts_dirty.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        *dirty = value;
+    }
+
+    /// Stamp "transcripts.json is up to date as of now". Only ever called after a
+    /// SUCCESSFUL write: the debounce is a "has enough time passed since the last
+    /// good write" test, so stamping it for a write that failed would make the saver
+    /// believe the mirror is current and hold back every later segment.
+    fn stamp_transcript_write(&self) {
+        let mut last = match self.last_transcript_write.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        *last = Some(std::time::Instant::now());
+    }
+
     /// Rewrite transcripts.json only if the debounce window has elapsed; otherwise
     /// just mark the mirror dirty.
+    ///
+    /// FAILURE SEMANTICS: `last_transcript_write` is stamped only when the write
+    /// actually succeeds, and a failed write leaves the mirror DIRTY. Stamping up
+    /// front (the old behaviour) meant a single transient I/O error convinced the
+    /// debounce that a write had just landed, so `flush_transcripts_now` turned into
+    /// a no-op and every later segment was dropped from transcripts.json silently.
+    /// The cost of not stamping is that a persistently failing folder is retried on
+    /// each new segment; each attempt fails fast and the alternative is losing the
+    /// meeting's transcript.
     fn write_transcripts_json_debounced(&self) {
         let Some(folder) = self.meeting_folder.clone() else {
             return;
         };
         let due = {
-            let mut last = match self.last_transcript_write.lock() {
+            let last = match self.last_transcript_write.lock() {
                 Ok(g) => g,
                 Err(e) => e.into_inner(),
             };
-            let now = std::time::Instant::now();
-            let due = match *last {
-                Some(prev) => now.duration_since(prev) >= TRANSCRIPT_WRITE_DEBOUNCE,
+            match *last {
+                Some(prev) => std::time::Instant::now().duration_since(prev) >= TRANSCRIPT_WRITE_DEBOUNCE,
                 None => true,
-            };
-            if due {
-                *last = Some(now);
             }
-            due
         };
         if !due {
-            if let Ok(mut dirty) = self.transcripts_dirty.lock() {
-                *dirty = true;
-            }
+            self.set_transcripts_dirty(true);
             return;
         }
         if let Err(e) = self.write_transcripts_json(&folder) {
-            warn!("Failed to write incremental transcript update: {}", e);
+            warn!(
+                "Failed to write incremental transcript update (mirror left dirty for the next flush): {}",
+                e
+            );
+            self.set_transcripts_dirty(true);
             return;
         }
-        if let Ok(mut dirty) = self.transcripts_dirty.lock() {
-            *dirty = false;
-        }
+        self.stamp_transcript_write();
+        self.set_transcripts_dirty(false);
     }
 
-    /// Whether segments have been added since the last transcripts.json write.
+    /// Whether segments have been added (or a write failed) since the last
+    /// successful transcripts.json write.
     pub fn transcripts_pending_write(&self) -> bool {
-        self.transcripts_dirty
-            .lock()
-            .map(|g| *g)
-            .unwrap_or(false)
+        match self.transcripts_dirty.lock() {
+            Ok(g) => *g,
+            // A poisoned lock must not be read as "nothing pending": that would skip
+            // the terminal flush and lose the closing segments.
+            Err(e) => *e.into_inner(),
+        }
     }
 
     /// Write transcripts.json NOW if anything is pending, ignoring the debounce.
@@ -219,14 +250,12 @@ impl RecordingSaver {
         };
         match self.write_transcripts_json(&folder) {
             Ok(()) => {
-                if let Ok(mut dirty) = self.transcripts_dirty.lock() {
-                    *dirty = false;
-                }
-                if let Ok(mut last) = self.last_transcript_write.lock() {
-                    *last = Some(std::time::Instant::now());
-                }
+                self.set_transcripts_dirty(false);
+                self.stamp_transcript_write();
                 info!("💾 Flushed pending transcripts.json before teardown");
             }
+            // Stays dirty and unstamped, so a later flush (including the one in Drop)
+            // still tries again instead of assuming the mirror is current.
             Err(e) => warn!("Failed to flush pending transcripts.json: {}", e),
         }
     }
@@ -647,6 +676,29 @@ impl Drop for RecordingSaver {
         // Drop the chunk receiver to close the channel and unblock the accumulation task
         self.chunk_receiver.take();
 
+        // LAST-CHANCE FLUSH. The transcripts.json mirror is debounced, so a saver that
+        // dies without a graceful stop (error return, panic unwind, aborted teardown)
+        // still holds the closing burst of segments in memory only. Warning about it
+        // was not enough: write it out. This is the plain std::fs path, no async, so
+        // it is legal in Drop, and it runs BEFORE the segment list is cleared below.
+        if self.transcripts_pending_write() {
+            match self.meeting_folder.clone() {
+                Some(folder) => match self.write_transcripts_json(&folder) {
+                    Ok(()) => {
+                        self.set_transcripts_dirty(false);
+                        info!("💾 RecordingSaver dropped with pending transcripts — flushed to disk");
+                    }
+                    Err(e) => warn!(
+                        "RecordingSaver dropped with pending transcripts and the last-chance flush failed: {}",
+                        e
+                    ),
+                },
+                None => warn!(
+                    "RecordingSaver dropped with pending transcripts but no meeting folder — nothing could be written"
+                ),
+            }
+        }
+
         // Clear any accumulated transcript segments
         if let Ok(mut segments) = self.transcript_segments.lock() {
             if !segments.is_empty() {
@@ -755,5 +807,105 @@ mod transcript_debounce_tests {
         let saver = RecordingSaver::new();
         saver.add_transcript_segment(seg(1));
         saver.flush_transcripts_now();
+    }
+
+    #[test]
+    fn a_failed_write_stays_dirty_and_does_not_stamp_the_debounce() {
+        // The debounce used to stamp last_transcript_write BEFORE attempting the
+        // write and left the dirty flag alone on failure. One transient I/O error
+        // therefore convinced the saver that transcripts.json was current: the
+        // terminal flush became a no-op and every later segment was lost silently.
+        let parent = temp_dir("failed_write");
+        // Points at a folder that does not exist yet, so the atomic write fails.
+        let missing = parent.join("not_created_yet");
+        let saver = saver_in(&missing);
+
+        saver.add_transcript_segment(seg(1));
+        assert!(
+            saver.transcripts_pending_write(),
+            "a failed write must leave the mirror dirty so something retries it"
+        );
+        assert!(
+            saver
+                .last_transcript_write
+                .lock()
+                .expect("last_write lock")
+                .is_none(),
+            "a failed write must NOT advance the debounce stamp"
+        );
+        assert!(
+            !missing.join("transcripts.json").exists(),
+            "nothing should have been written to a missing folder"
+        );
+
+        // The failure clears (folder appears): because the debounce was never
+        // stamped, the very next segment retries immediately instead of waiting out
+        // a window that never expires, and the terminal flush still has work to do.
+        std::fs::create_dir_all(&missing).expect("create folder");
+        saver.add_transcript_segment(seg(2));
+        assert!(!saver.transcripts_pending_write(), "the retry must clear the dirty flag");
+        assert_eq!(
+            segments_on_disk(&missing),
+            2,
+            "both segments (including the one whose write failed) must reach disk"
+        );
+
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn a_failed_write_still_lets_the_terminal_flush_retry() {
+        // Same defect from the flush side: after a failed write the pending state
+        // must survive so flush_transcripts_now actually attempts the write again.
+        let parent = temp_dir("failed_then_flush");
+        let missing = parent.join("appears_later");
+        let saver = saver_in(&missing);
+
+        saver.add_transcript_segment(seg(1));
+        for i in 2..=5 {
+            saver.add_transcript_segment(seg(i));
+        }
+        assert!(saver.transcripts_pending_write());
+
+        std::fs::create_dir_all(&missing).expect("create folder");
+        saver.flush_transcripts_now();
+        assert!(!saver.transcripts_pending_write());
+        assert_eq!(segments_on_disk(&missing), 5);
+
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn drop_flushes_pending_transcripts_instead_of_only_warning() {
+        // An ungraceful teardown (error return, panic unwind) drops the saver with
+        // the debounced burst still in memory. Drop now writes it out best-effort.
+        let dir = temp_dir("drop_flush");
+        {
+            let saver = saver_in(&dir);
+            saver.add_transcript_segment(seg(1));
+            for i in 2..=8 {
+                saver.add_transcript_segment(seg(i));
+            }
+            assert!(saver.transcripts_pending_write());
+            assert_eq!(segments_on_disk(&dir), 1, "the burst is still pending here");
+        }
+        assert_eq!(
+            segments_on_disk(&dir),
+            8,
+            "Drop must flush the pending segments rather than just warn about them"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn drop_without_pending_transcripts_writes_nothing_new() {
+        let dir = temp_dir("drop_clean");
+        {
+            let saver = saver_in(&dir);
+            saver.add_transcript_segment(seg(1));
+            assert!(!saver.transcripts_pending_write());
+        }
+        assert_eq!(segments_on_disk(&dir), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

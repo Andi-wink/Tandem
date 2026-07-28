@@ -228,14 +228,22 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
         if (cancelled) { unlistenResumed(); return; }
         unsubscribers.push(unlistenResumed);
 
-        // Transcription degraded (live path fell back to batch, or the realtime
-        // catch-up buffer hit its cap). The recording is fine and continues, so
-        // this is a warning rather than an error. The backend emits each of these
-        // at most once per recording, so no de-duplication is needed here.
+        // Transcription degraded (live path fell back to batch, the realtime
+        // catch-up buffer hit its cap, or a batch chunk failed at the provider).
+        // The recording is fine and continues, so this is a warning rather than
+        // an error.
+        //
+        // De-duplication contract, enforced on BOTH sides:
+        //  - Rust: the batch worker throttles its per-failed-chunk emission to at
+        //    most one warning per recording, and truncates the provider text it
+        //    puts in the payload (audio/transcription/worker.rs).
+        //  - Here: the toast carries a stable id, so any warning that still
+        //    arrives (from another emitter, or a later recording in the same
+        //    session) REPLACES the visible toast instead of stacking a new one.
         const unlistenTranscriptionWarning = await recordingService.onTranscriptionWarning(
           (message) => {
             console.warn('[RecordingStateContext] Transcription warning:', message);
-            toast.warning(message, { duration: 8000 });
+            toast.warning(message, { id: 'transcription-warning', duration: 8000 });
           }
         );
         if (cancelled) { unlistenTranscriptionWarning(); return; }

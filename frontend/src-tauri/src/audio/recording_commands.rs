@@ -164,19 +164,56 @@ impl Drop for CleanupGuard {
 /// a suppressed session and its bridge alive into the NEXT recording, where the
 /// stale bridge still held an AppHandle and the stale sockets still sent
 /// keepalives.
-struct RealtimeTeardownGuard;
+///
+/// INSTANCE-SCOPED (this is the important part). Drop cannot await, so the
+/// teardown runs DETACHED, and `close_all` sleeps before it returns. By the time
+/// the detached task actually touches the globals, `CLEANUP_IN_PROGRESS` has been
+/// released and a fast next `start_recording` may already have installed a NEW
+/// session and bridge. A blind `take()` then killed the new recording's realtime
+/// path outright: every transcript event of that meeting was lost.
+///
+/// The guard therefore captures [`REALTIME_GENERATION`] at CREATION and the
+/// teardown only takes the globals while the generation still matches. A
+/// generation counter is used rather than comparing `Arc::ptr_eq` because a stop
+/// can be armed BEFORE it is known whether a session even exists (and a stop with
+/// no session must still not clobber a later one), which a pointer comparison
+/// cannot express; the counter also covers the bridge handle, which is not an Arc.
+struct RealtimeTeardownGuard {
+    /// The realtime session generation this stop is responsible for tearing down.
+    generation: u64,
+}
+
+impl RealtimeTeardownGuard {
+    /// Arm the backstop for whatever realtime session is installed right now.
+    fn new() -> Self {
+        Self {
+            generation: REALTIME_GENERATION.load(Ordering::SeqCst),
+        }
+    }
+}
 
 impl Drop for RealtimeTeardownGuard {
     fn drop(&mut self) {
         // Teardown is async and Drop is not, so run it detached. It take()s the
         // globals, so it is idempotent: the normal in-line call and this backstop
-        // cannot double-free anything.
+        // cannot double-free anything. The captured generation makes it harmless
+        // when a NEXT recording has already installed its own session.
+        let generation = self.generation;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async {
-                teardown_realtime_session().await;
+            handle.spawn(async move {
+                teardown_realtime_session_for_generation(Some(generation)).await;
             });
         }
     }
+}
+
+/// Whether a teardown armed for session generation `captured` may still take the
+/// realtime globals, given the generation `current`ly installed.
+///
+/// False means a later `start_recording` has installed its own session since this
+/// stop was armed, so the globals belong to that recording and must be left alone.
+fn should_take_teardown(captured: u64, current: u64) -> bool {
+    captured == current
 }
 
 // Tracks when recording started (for screenshot elapsed-time calculation)
@@ -197,6 +234,54 @@ static AUDIO_ELAPSED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 // reached transcripts.json, the meeting-details UI, and search's ORDER BY.
 // An atomic because the event bridge reads it without the manager lock.
 static TOTAL_PAUSED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+// Start of the pause that is currently OPEN, as milliseconds of wall time since
+// RECORDING_START_TIME. 0 means "no pause is open".
+//
+// TOTAL_PAUSED_MS only advances on RESUME, so an event stamped while still paused
+// (a stop pressed during a pause, or an auto-commit fed by the realtime keepalives)
+// saw a total that was missing the open pause entirely and was stamped early by its
+// whole length. See total_paused_secs.
+//
+// Sentinel note: a pause opened inside the recording's first millisecond stores 1,
+// not 0, so the "no pause open" sentinel stays unambiguous. The 1ms error is far
+// below the one-second resolution of the display stamp.
+static PAUSE_START_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Wall milliseconds since the current recording started (0 when none is live).
+fn recording_elapsed_ms() -> u64 {
+    RECORDING_START_TIME
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .map(|start| start.elapsed().as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Reset both pause mirrors. Called wherever a recording's clocks are (re)started
+/// or torn down, so an open pause can never leak across recordings.
+fn reset_pause_mirrors() {
+    TOTAL_PAUSED_MS.store(0, Ordering::Relaxed);
+    PAUSE_START_MS.store(0, Ordering::Relaxed);
+}
+
+/// Total paused seconds INCLUDING a pause that is still open.
+///
+/// `total_ms` is the closed-pause total (TOTAL_PAUSED_MS), `pause_start_ms` is the
+/// recording-relative mark at which the open pause began (0 = none), and `now_ms`
+/// is the recording-relative mark of the moment being stamped. Pure so the
+/// stop-while-paused arithmetic is testable without touching the process clocks.
+///
+/// (Named `effective_` rather than `total_` because `seconds_back_for_audio_time`
+/// already takes a parameter called `total_paused_secs`.)
+fn effective_paused_secs(total_ms: u64, pause_start_ms: u64, now_ms: u64) -> f64 {
+    let open_ms = if pause_start_ms == 0 {
+        0
+    } else {
+        now_ms.saturating_sub(pause_start_ms)
+    };
+    total_ms.saturating_add(open_ms) as f64 / 1000.0
+}
 
 /// Update the latest audio-elapsed time. Called by the audio pipeline as it processes audio.
 pub fn update_audio_elapsed_secs(secs: f64) {
@@ -234,6 +319,14 @@ static TRANSCRIPT_LISTENER_ID: Mutex<Option<tauri::EventId>> = Mutex::new(None);
 static REALTIME_SESSION: Lazy<tokio::sync::Mutex<Option<Arc<ElevenLabsRealtimeSession>>>> =
     Lazy::new(|| tokio::sync::Mutex::new(None));
 static REALTIME_BRIDGE_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
+
+// Identity of the realtime session/bridge pair currently installed in the two
+// globals above. Bumped by every start that installs a pair, always inside the
+// REALTIME_SESSION critical section that installs it, and captured by
+// RealtimeTeardownGuard so a detached teardown from a PREVIOUS stop can tell
+// "the session I was armed for" from "a session a later recording installed".
+// See RealtimeTeardownGuard for the race this closes.
+static REALTIME_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 // ============================================================================
 // PUBLIC TYPES
@@ -349,6 +442,10 @@ async fn resolve_flush_profile<R: Runtime>(app: &AppHandle<R>) -> super::pipelin
 /// case (no pause, or segments after the last resume) is exact, and the previous
 /// behaviour was wrong by the pause duration for EVERY later segment.
 ///
+/// A pause that is still OPEN counts too (see `PAUSE_START_MS`): stamping while
+/// paused, which a stop-during-pause or a keepalive-driven auto-commit does, used
+/// to miss it and land the segment early by the whole open pause.
+///
 /// Without a live recording, or if the arithmetic would overflow, this degrades
 /// to the current time.
 fn wall_clock_for_audio_time(audio_start_time: f64) -> String {
@@ -358,7 +455,14 @@ fn wall_clock_for_audio_time(audio_start_time: f64) -> String {
         .ok()
         .and_then(|g| *g)
         .map(|start| start.elapsed().as_secs_f64());
-    let paused = TOTAL_PAUSED_MS.load(Ordering::Relaxed) as f64 / 1000.0;
+    // Same instant for both clocks: derive the millisecond mark from the elapsed
+    // seconds already read rather than re-reading the start time.
+    let now_ms = elapsed.map(|e| (e * 1000.0).max(0.0) as u64).unwrap_or(0);
+    let paused = effective_paused_secs(
+        TOTAL_PAUSED_MS.load(Ordering::Relaxed),
+        PAUSE_START_MS.load(Ordering::Relaxed),
+        now_ms,
+    );
     let stamp = match elapsed.and_then(|e| seconds_back_for_audio_time(e, paused, audio_start_time))
     {
         Some(back_secs) => chrono::Duration::try_milliseconds((back_secs * 1000.0) as i64)
@@ -501,15 +605,18 @@ async fn maybe_start_realtime_session<R: Runtime>(
 
     let bridge = spawn_realtime_bridge(app.clone(), event_rx);
     {
-        let mut slot = REALTIME_BRIDGE_TASK
-            .lock()
-            .map_err(|e| warn!("realtime bridge lock poisoned: {e}"))
-            .ok();
-        if let Some(ref mut s) = slot {
-            **s = Some(bridge);
+        // Install the session AND the bridge in ONE critical section on the session
+        // lock, bumping REALTIME_GENERATION inside it. A detached teardown from the
+        // previous stop checks the generation while holding this same lock, so it
+        // can never observe "still my generation" and then take this new pair.
+        let mut session_slot = REALTIME_SESSION.lock().await;
+        REALTIME_GENERATION.fetch_add(1, Ordering::SeqCst);
+        match REALTIME_BRIDGE_TASK.lock() {
+            Ok(mut slot) => *slot = Some(bridge),
+            Err(e) => warn!("realtime bridge lock poisoned: {e}"),
         }
+        *session_slot = Some(session.clone());
     }
-    *REALTIME_SESSION.lock().await = Some(session.clone());
     Some(session)
 }
 
@@ -524,7 +631,42 @@ const REALTIME_FINALIZE_TIMEOUT: std::time::Duration = std::time::Duration::from
 /// to call without a prior `begin_shutdown` (close_all sets the flag itself as a
 /// backstop).
 async fn teardown_realtime_session() {
-    let session = { REALTIME_SESSION.lock().await.take() };
+    teardown_realtime_session_for_generation(None).await;
+}
+
+/// Teardown, optionally scoped to the session generation it was armed for.
+///
+/// `expected: None` is the unconditional in-line teardown (the caller knows it owns
+/// whatever is installed). `expected: Some(g)` is the detached backstop from
+/// [`RealtimeTeardownGuard`]: it bails out untouched once a later recording has
+/// installed its own session, instead of killing that recording's realtime bridge.
+///
+/// The generation check and the take() share ONE critical section on
+/// REALTIME_SESSION (the same one `maybe_start_realtime_session` installs under),
+/// so there is no window between deciding and taking. The bridge handle is taken in
+/// that section too, before the awaits below.
+async fn teardown_realtime_session_for_generation(expected: Option<u64>) {
+    let (session, bridge) = {
+        let mut session_slot = REALTIME_SESSION.lock().await;
+        if let Some(expected) = expected {
+            let current = REALTIME_GENERATION.load(Ordering::SeqCst);
+            if !should_take_teardown(expected, current) {
+                info!(
+                    "🎧 Realtime teardown backstop skipped: armed for session generation {} but {} is installed (a newer recording owns it)",
+                    expected, current
+                );
+                return;
+            }
+        }
+        let bridge = match REALTIME_BRIDGE_TASK.lock() {
+            Ok(mut slot) => slot.take(),
+            Err(e) => {
+                warn!("realtime bridge lock poisoned: {e}");
+                None
+            }
+        };
+        (session_slot.take(), bridge)
+    };
     if let Some(session) = session {
         info!("🎧 Closing realtime session");
         // Dropping this Arc (and the session's own senders when its stream tasks
@@ -532,11 +674,7 @@ async fn teardown_realtime_session() {
         // exit rather than being cut off mid-queue.
         session.close_all().await;
     }
-    if let Some(bridge) = REALTIME_BRIDGE_TASK
-        .lock()
-        .ok()
-        .and_then(|mut g| g.take())
-    {
+    if let Some(bridge) = bridge {
         // Let the bridge DRAIN: aborting it immediately discards events that were
         // already emitted and are still sitting in the channel, silently losing
         // transcript text that had been produced successfully.
@@ -764,7 +902,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         *start_time = Some(std::time::Instant::now());
     }
     AUDIO_ELAPSED_MS.store(0, Ordering::Relaxed);
-    TOTAL_PAUSED_MS.store(0, Ordering::Relaxed);
+    reset_pause_mirrors();
     reset_speech_detected_flag(); // Reset for new recording session
 
     // Start optimized parallel transcription task and store handle
@@ -965,7 +1103,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         *start_time = Some(std::time::Instant::now());
     }
     AUDIO_ELAPSED_MS.store(0, Ordering::Relaxed);
-    TOTAL_PAUSED_MS.store(0, Ordering::Relaxed);
+    reset_pause_mirrors();
     reset_speech_detected_flag(); // Reset for new recording session
 
     // Start optimized parallel transcription task and store handle
@@ -1036,6 +1174,23 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     info!("✅ Recording started with custom devices using async-first approach");
 
     Ok(())
+}
+
+/// Best-effort terminal flush of the debounced transcripts.json mirror, for the
+/// ERROR return paths of `stop_recording` that fire AFTER the drain while the
+/// manager is still in the global slot.
+///
+/// The success path flushes with `manager.flush_transcripts_now()` just before the
+/// final save. A bail-out taken between the drain and that point left the entire
+/// closing burst of segments in memory only, so the meeting's transcripts.json was
+/// silently missing its tail. Failures are logged inside the saver; the caller
+/// still returns its original error.
+async fn flush_transcripts_from_global_manager() {
+    if let Some(manager) = RECORDING_MANAGER.lock().await.as_ref() {
+        manager.flush_transcripts_now();
+    } else {
+        warn!("⚠️ No recording manager available for the terminal transcript flush");
+    }
 }
 
 /// Stop recording with optimized graceful shutdown ensuring NO transcript chunks are lost
@@ -1121,7 +1276,10 @@ pub async fn stop_recording<R: Runtime>(
     // The wait is bounded but usually instant: a stream that declines the finalize
     // (inside the danger band, nothing real outstanding, degraded, or mid-backoff)
     // resolves immediately rather than burning the whole timeout.
-    let _realtime_guard = RealtimeTeardownGuard;
+    // Armed for the session generation installed RIGHT NOW: if this stop's detached
+    // backstop only gets to run after the next recording has started, it leaves that
+    // recording's session and bridge alone instead of taking them.
+    let _realtime_guard = RealtimeTeardownGuard::new();
     {
         let session = { REALTIME_SESSION.lock().await.clone() };
         if let Some(session) = session {
@@ -1178,7 +1336,8 @@ pub async fn stop_recording<R: Runtime>(
         *start_time = None;
     }
     AUDIO_ELAPSED_MS.store(0, Ordering::Relaxed);
-    TOTAL_PAUSED_MS.store(0, Ordering::Relaxed);
+    // Clears any still-open pause too, so it cannot leak into the next recording.
+    reset_pause_mirrors();
 
     // NOTE: the transcript-update listener is intentionally NOT removed here. It must stay
     // registered through the drain below so the final force-flush transcript segments are
@@ -1273,9 +1432,25 @@ pub async fn stop_recording<R: Runtime>(
     // manager out of the global for the final analytics + save below.
     {
         use tauri::Listener;
-        if let Some(listener_id) = TRANSCRIPT_LISTENER_ID.lock().map_err(|e| format!("Failed to lock transcript listener: {e}"))?.take() {
-            app.unlisten(listener_id);
-            info!("✅ Transcript-update listener removed");
+        // The lock guard is resolved to a plain Result INSIDE this scope: it must not
+        // be alive across the flush await below (a std MutexGuard is not Send, which
+        // would make the whole stop_recording future non-Send).
+        let listener_id = match TRANSCRIPT_LISTENER_ID.lock() {
+            Ok(mut guard) => Ok(guard.take()),
+            Err(e) => Err(format!("Failed to lock transcript listener: {e}")),
+        };
+        match listener_id {
+            Ok(Some(listener_id)) => {
+                app.unlisten(listener_id);
+                info!("✅ Transcript-update listener removed");
+            }
+            Ok(None) => {}
+            Err(message) => {
+                // Post-drain error return: the closing segments exist only in the
+                // manager's debounced mirror at this point, so flush before bailing.
+                flush_transcripts_from_global_manager().await;
+                return Err(message);
+            }
         }
     }
 
@@ -1335,6 +1510,12 @@ pub async fn stop_recording<R: Runtime>(
                     Ok(guard) => guard,
                     Err(e) => {
                         log::error!("Parakeet engine mutex poisoned during shutdown: {e}");
+                        // The manager has already been taken out of the global, so the
+                        // success path's flush below is unreachable from here: write the
+                        // debounced transcripts.json mirror before giving up on the stop.
+                        if let Some(ref manager) = manager_for_cleanup {
+                            manager.flush_transcripts_now();
+                        }
                         return Err(format!("Parakeet engine mutex poisoned: {e}"));
                     }
                 };
@@ -1365,6 +1546,11 @@ pub async fn stop_recording<R: Runtime>(
                     Ok(guard) => guard,
                     Err(e) => {
                         log::error!("Whisper engine mutex poisoned during shutdown: {e}");
+                        // Same as the Parakeet branch: flush the closing segments before
+                        // returning, since the manager is no longer in the global slot.
+                        if let Some(ref manager) = manager_for_cleanup {
+                            manager.flush_transcripts_now();
+                        }
                         return Err(format!("Whisper engine mutex poisoned: {e}"));
                     }
                 };
@@ -1620,6 +1806,12 @@ pub async fn pause_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String
     let manager_guard = RECORDING_MANAGER.lock().await;
     if let Some(manager) = manager_guard.as_ref() {
         manager.pause_recording().map_err(|e| e.to_string())?;
+        // Mirror the START of this pause. TOTAL_PAUSED_MS only advances on resume,
+        // so anything stamped while this pause is still open (a stop pressed during
+        // the pause, or a realtime auto-commit fed by keepalives) would otherwise
+        // miss it and be stamped early by the whole open pause. Clamped to >= 1 so
+        // it cannot collide with the "no pause open" sentinel of 0.
+        PAUSE_START_MS.store(recording_elapsed_ms().max(1), Ordering::Relaxed);
 
         // Emit pause event to frontend
         app.emit(
@@ -1656,6 +1848,11 @@ pub async fn resume_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), Strin
         manager.resume_recording().map_err(|e| e.to_string())?;
         // R3: the pause total only advances on resume, so mirror it here for the
         // realtime bridge's wall-clock conversion.
+        //
+        // Order matters: close the open pause FIRST, then fold it into the total the
+        // manager has just updated. The reverse order would, for the few instructions
+        // in between, count the same pause twice and stamp segments late.
+        PAUSE_START_MS.store(0, Ordering::Relaxed);
         TOTAL_PAUSED_MS.store(
             (manager.get_total_pause_duration() * 1000.0).max(0.0) as u64,
             Ordering::Relaxed,
@@ -2093,5 +2290,104 @@ mod tests {
 
         // is_recording=true and manager populated: a genuine live recording, tear it down.
         assert_eq!(decide_stop_action(true, true), StopAction::Teardown);
+    }
+
+    /// Regression for the teardown backstop killing the NEXT recording's realtime
+    /// bridge. The guard's Drop runs its teardown DETACHED (Drop cannot await) and
+    /// close_all sleeps before returning, while CLEANUP_IN_PROGRESS has already been
+    /// released, so a fast next start can have installed its own session by the time
+    /// the detached task runs. Taking the globals then lost every realtime event of
+    /// the new meeting.
+    #[test]
+    fn teardown_is_scoped_to_the_session_it_was_armed_for() {
+        // Same generation: this stop still owns the installed session.
+        assert!(should_take_teardown(7, 7));
+        // A later start bumped the generation: the session belongs to that recording.
+        assert!(
+            !should_take_teardown(7, 8),
+            "a backstop armed for an older session must not take a newer recording's session"
+        );
+        // Defensive: a wrapped/reset counter is still a mismatch, so the backstop
+        // errs toward leaving the globals alone rather than clobbering them.
+        assert!(!should_take_teardown(8, 7));
+    }
+
+    /// The same guarantee end to end on the real globals: a stale backstop must
+    /// leave an installed bridge handle alone, and a current one must still take it.
+    /// (A real ElevenLabsRealtimeSession needs a network socket, so the bridge
+    /// handle, which is the part that was being aborted, stands in for the pair.)
+    #[tokio::test(start_paused = true)]
+    async fn stale_teardown_backstop_leaves_a_newer_bridge_installed() {
+        let armed_generation = REALTIME_GENERATION.load(Ordering::SeqCst);
+
+        // A next recording installs its bridge and bumps the generation.
+        let bridge = tokio::spawn(async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            }
+        });
+        REALTIME_GENERATION.fetch_add(1, Ordering::SeqCst);
+        *REALTIME_BRIDGE_TASK.lock().expect("bridge lock") = Some(bridge);
+
+        // The PREVIOUS stop's detached backstop finally runs: it must be a no-op.
+        teardown_realtime_session_for_generation(Some(armed_generation)).await;
+        {
+            let slot = REALTIME_BRIDGE_TASK.lock().expect("bridge lock");
+            let handle = slot.as_ref().expect("the new recording's bridge must survive");
+            assert!(
+                !handle.is_finished(),
+                "the stale backstop must not abort the new recording's bridge"
+            );
+        }
+
+        // A backstop armed for the CURRENT session still tears it down.
+        let current = REALTIME_GENERATION.load(Ordering::SeqCst);
+        teardown_realtime_session_for_generation(Some(current)).await;
+        assert!(
+            REALTIME_BRIDGE_TASK.lock().expect("bridge lock").is_none(),
+            "the owning teardown must still take the bridge"
+        );
+    }
+
+    /// Regression for the stop-while-paused stamp. TOTAL_PAUSED_MS only advances on
+    /// RESUME, so a stop pressed during a pause (or an auto-commit fed by the
+    /// realtime keepalives) used to convert with the open pause missing entirely and
+    /// stamped the segment early by its whole length.
+    #[test]
+    fn stopping_while_paused_stamps_the_same_as_resuming_then_stopping() {
+        // 700s of wall time. A pause opened at 100s and is STILL OPEN, so 600s of
+        // that wall time is paused and the audio clock reads 100s.
+        let while_paused = effective_paused_secs(0, 100_000, 700_000);
+        assert!((while_paused - 600.0).abs() < 1e-9, "got {}", while_paused);
+
+        // The same recording, but resumed first: the 600s now lives in the closed
+        // total and no pause is open. Both routes must agree.
+        let after_resume = effective_paused_secs(600_000, 0, 700_000);
+        assert_eq!(while_paused, after_resume);
+
+        // ...and so must the resulting stamp: a segment at audio 95s was recorded 5s
+        // of audio time ago either way.
+        let stopped_while_paused =
+            seconds_back_for_audio_time(700.0, while_paused, 95.0).unwrap();
+        let stopped_after_resume =
+            seconds_back_for_audio_time(700.0, after_resume, 95.0).unwrap();
+        assert_eq!(stopped_while_paused, stopped_after_resume);
+        assert!((stopped_while_paused - 5.0).abs() < 1e-9);
+
+        // The old behaviour (open pause invisible) put the segment 605s back, i.e.
+        // ten minutes early.
+        let open_pause_blind = effective_paused_secs(0, 0, 700_000);
+        let wrong = seconds_back_for_audio_time(700.0, open_pause_blind, 95.0).unwrap();
+        assert!((wrong - 605.0).abs() < 1e-9, "got {}", wrong);
+    }
+
+    #[test]
+    fn open_pause_accounting_edge_cases() {
+        // 0 is the "no pause open" sentinel: the closed total passes through.
+        assert_eq!(effective_paused_secs(12_000, 0, 900_000), 12.0);
+        // Multiple closed pauses plus an open one accumulate.
+        assert_eq!(effective_paused_secs(30_000, 100_000, 145_000), 75.0);
+        // A pause_start ahead of now (clock read ordering) clamps instead of wrapping.
+        assert_eq!(effective_paused_secs(5_000, 900_000, 100_000), 5.0);
     }
 }

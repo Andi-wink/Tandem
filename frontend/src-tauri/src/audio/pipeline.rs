@@ -1535,12 +1535,18 @@ impl AudioPipeline {
     /// batch worker treats the block as one utterance run, which is what the
     /// ordinary VAD-accumulated batch buffer is too.
     fn flush_shadow(&mut self, device_type: &DeviceType) {
-        if self.shadow_has_audio(device_type) && !self.stream_buffer_is_empty(device_type) {
-            // M1b: never concatenate the shadow onto leftover batch audio. They
-            // are different runs with different start timestamps, so the leftover
-            // goes out as its own chunk first.
+        // M1b: never concatenate the shadow onto leftover batch audio. They are
+        // different runs with different start timestamps, so the leftover always
+        // goes out as its own chunk first.
+        //
+        // Unconditionally, not only when the shadow also has audio: on the
+        // Realtime->Batch flip this is the only flush the stream gets, so gating
+        // it on a non-empty shadow stranded up to a full batch buffer of speech
+        // (and the log line claimed a flush that never happened). The stop path
+        // already drains the buffer before calling this, so it is a no-op there.
+        if !self.stream_buffer_is_empty(device_type) {
             info!(
-                "📤 {:?} has both a leftover batch buffer and shadow windows — flushing the buffer as its own chunk first",
+                "📤 {:?} has a leftover batch buffer — flushing it as its own chunk first",
                 device_type
             );
             self.flush_transcription_buffer(device_type.clone());
@@ -1563,7 +1569,12 @@ impl AudioPipeline {
             data.len() as f64 / 16000.0,
             first_start
         );
-        self.flush_transcription_buffer(device_type.clone());
+        // NO overlap prepend: the shadow chunk is audio the realtime socket
+        // already had, and the previous flush's 1s tail is either the leftover
+        // batch buffer flushed one line above or an older batch chunk. Prepending
+        // it would re-send that second of speech and duplicate the seam, which the
+        // batch worker's prefix dedupe cannot undo across two different runs.
+        self.flush_transcription_buffer_inner(device_type.clone(), false);
     }
 
     /// Return mutable references to the per-stream buffer triple.
@@ -1596,6 +1607,17 @@ impl AudioPipeline {
     /// prepending) is then saved for the next flush. worker.rs dedupes the
     /// overlapping prefix words in the resulting transcript.
     fn flush_transcription_buffer(&mut self, device_type: DeviceType) {
+        self.flush_transcription_buffer_inner(device_type, true);
+    }
+
+    /// As [`flush_transcription_buffer`](Self::flush_transcription_buffer), with
+    /// the left-context overlap prepend made optional. Only the realtime shadow
+    /// chunk passes `false`: see [`flush_shadow`](Self::flush_shadow).
+    fn flush_transcription_buffer_inner(
+        &mut self,
+        device_type: DeviceType,
+        prepend_overlap: bool,
+    ) {
         // Read before borrowing self mutably via buffer_for (E0503 otherwise).
         let reuse_capacity = self.flush_profile.min_samples;
         let (buffer, start_ts, _) = self.buffer_for(&device_type);
@@ -1626,7 +1648,8 @@ impl AudioPipeline {
             DeviceType::Microphone => &mut self.mic_overlap_tail,
             DeviceType::System => &mut self.system_overlap_tail,
         };
-        let overlap_samples = if Self::TRANSCRIPTION_OVERLAP_SAMPLES > 0
+        let overlap_samples = if prepend_overlap
+            && Self::TRANSCRIPTION_OVERLAP_SAMPLES > 0
             && !prev_tail_slot.is_empty()
         {
             let overlap_len = prev_tail_slot.len();
@@ -1677,17 +1700,19 @@ impl AudioPipeline {
                 continue;
             }
 
-            // The VAD processor is ALWAYS flushed, to reset it. Whether its
-            // segments are USED depends on the shadow, not on the route: a socket
-            // that died in the last window already reads Batch while the shadow
-            // still holds the closing speech (M1a).
+            // The VAD processor is ALWAYS flushed, to reset it. Its segments are
+            // USED only by a stream the realtime path does not already own: on the
+            // Batch route (or with no session at all) AND with an empty shadow.
+            // A Realtime stream's open segment went to the socket, and a
+            // non-empty shadow is re-transcribed by flush_shadow below, so in
+            // either case draining here duplicates the closing utterance.
             let shadow_has_audio = self.shadow_has_audio(&device_type);
             let vad_result = match device_type {
                 DeviceType::Microphone => self.vad_mic.flush(),
                 DeviceType::System => self.vad_system.flush(),
             };
 
-            if should_drain_vad_into_batch_on_stop(shadow_has_audio) {
+            if should_drain_vad_into_batch_on_stop(route, shadow_has_audio) {
                 match vad_result {
                     Ok(final_segments) => {
                         for segment in final_segments {
@@ -1712,8 +1737,10 @@ impl AudioPipeline {
                 }
             } else {
                 info!(
-                    "🎧 {:?} stop: shadow holds the closing speech — discarding the VAD flush to avoid transcribing it twice",
-                    device_type
+                    "🎧 {:?} stop: the realtime path owns the closing speech (route {:?}, shadow {}) — discarding the VAD flush to avoid transcribing it twice",
+                    device_type,
+                    route,
+                    if shadow_has_audio { "pending" } else { "empty" }
                 );
             }
 
@@ -2002,29 +2029,41 @@ mod shadow_tests {
     }
 
     #[test]
-    fn stop_must_not_drain_the_vad_when_the_shadow_holds_the_speech() {
-        // M3 + M1a: the open segment is already in the shadow, so draining the VAD
-        // on top transcribed the closing sentence twice inside one chunk. Keyed on
-        // the SHADOW rather than the route, because a socket that dies in the last
-        // window flips the route to Batch while the shadow still holds that speech.
-        let shadow_has_audio = true;
-        assert!(!should_drain_vad_into_batch_on_stop(shadow_has_audio));
-        // Nothing shadowed (pure batch stream, or a realtime stream that had no
-        // speech since its last confirmed commit): the VAD tail is all there is.
-        assert!(should_drain_vad_into_batch_on_stop(false));
+    fn stop_drains_the_vad_only_for_a_batch_stream_with_an_empty_shadow() {
+        // FINDING 11: the round-4 rule keyed on shadow-emptiness ALONE, which is
+        // inverted on the healthy path. An empty shadow on a Realtime stream means
+        // realtime coverage SUCCEEDED, i.e. an emitted commit already transcribed
+        // the open segment, so draining the VAD there duplicates the closing
+        // utterance in the very case that is supposed to work.
+        assert!(
+            !should_drain_vad_into_batch_on_stop(Some(Route::Realtime), false),
+            "healthy realtime stream: the commit already covered the open segment"
+        );
+        assert!(
+            !should_drain_vad_into_batch_on_stop(Some(Route::Realtime), true),
+            "realtime with a pending shadow: flush_shadow re-transcribes it"
+        );
+        // The only draining case: the batch path owns this audio outright.
+        assert!(should_drain_vad_into_batch_on_stop(Some(Route::Batch), false));
+        assert!(
+            should_drain_vad_into_batch_on_stop(None, false),
+            "no realtime session at all: pure batch behaviour is unchanged"
+        );
     }
 
     #[test]
     fn a_dead_socket_in_the_last_window_still_defers_to_the_shadow() {
         // M1a, concretely: route reads Batch (the socket just died) but the shadow
-        // holds the closing speech. Draining the VAD as well would duplicate it.
+        // holds the closing speech. Draining the VAD as well would duplicate it,
+        // because flush_shadow is about to send exactly that audio to the batch
+        // worker. This is the one case where the shadow, not the route, decides.
         let route_after_death = Some(Route::Batch);
         let mut shadow = ShadowBuffer::new();
         shadow.append(100.0, &win(0.6, 1.0));
         assert!(should_batch_flush_on_stop(route_after_death));
         assert!(
-            !should_drain_vad_into_batch_on_stop(!shadow.is_empty()),
-            "shadow supersedes the VAD tail regardless of route"
+            !should_drain_vad_into_batch_on_stop(route_after_death, !shadow.is_empty()),
+            "a pending shadow supersedes the VAD tail even on the batch route"
         );
     }
 
