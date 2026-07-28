@@ -38,9 +38,19 @@ Two pacing modes (Phase 3 proved 4x gives WER identical to real pace):
   --pace real   250ms sleep per 250ms chunk  (REQUIRED for turnaround timing)
   --pace 4x     62.5ms per chunk             (cheaper WER re-runs)
 
+MULTI-CYCLE VALIDATION (added after QA): every clip is 60s, so a session reaches the
+server's uncommitted-audio auto-commit boundary AT MOST ONCE and any drift in the
+client's model of that boundary stays invisible. --make-multi concatenates clips
+11-16 into one ~6min stress clip (realtime_out/, git-ignored) that runs ~9-10
+consecutive auto-commit cycles per session, and --single-wav runs it against the
+concatenated reference. --cutoff / --resync tune the scheduler (see CommitScheduler).
+
 Run:
   .venv/Scripts/python.exe audio_testing/run_hybrid_realtime_wer.py --interval 10 --pace 4x
   .venv/Scripts/python.exe audio_testing/run_hybrid_realtime_wer.py --interval 15 --pace 4x --clips clip_11
+  .venv/Scripts/python.exe audio_testing/run_hybrid_realtime_wer.py --make-multi
+  .venv/Scripts/python.exe audio_testing/run_hybrid_realtime_wer.py --interval 30 --cutoff 32 \
+      --resync --pace 4x --single-wav audio_testing/realtime_out/multi6.wav --tag 30c32rs
 """
 import argparse
 import asyncio
@@ -48,6 +58,7 @@ import json
 import statistics
 import sys
 import time
+import wave
 from pathlib import Path
 
 import websockets
@@ -85,11 +96,58 @@ FINALIZE_MIN_GAP_SECS = 1.0
 # (AUTO_COMMIT - DANGER_GUARD) of uncommitted audio, we stop trying and fall back to
 # the server's auto-commit, keeping the interval clock in sync by treating the
 # predicted auto-commit as a commit-point.
-AUTO_COMMIT_AUDIO_SECS = 36.5   # server auto-commit boundary (uncommitted audio)
+AUTO_COMMIT_AUDIO_SECS = 36.5   # server auto-commit RECEIPT boundary (uncommitted audio)
 DANGER_GUARD_SECS = 3.0         # don't client-commit within this of the boundary
 FORCE_CUTOFF_SECS = AUTO_COMMIT_AUDIO_SECS - DANGER_GUARD_SECS  # 33.5s uncommitted
 
+# 36.5 is where the auto-commit RECEIPT lands, not where the server TRIGGERS. Event
+# logs put the receipt at ~36.25-36.5s fed while client commits are healthy at 34.5s
+# uncommitted and stall at 35.0s (3/3), so the true trigger is ~35.5-36s. Two
+# consequences the original constants missed, both invisible on 60s clips (at most
+# ONE auto-commit cycle ever fired):
+#   1) FORCE_CUTOFF 33.5 leaves only ~1.0-1.5s of real margin, not 3.0s.
+#   2) The predictive reset (advance the clock by 36.5 at the cutoff crossing)
+#      under-counts by (36.5 - true_trigger) EVERY cycle and never re-syncs, so the
+#      model drifts later and later until a "safe" commit lands inside the danger
+#      band. --resync fixes that by re-anchoring on real receipts.
+RESYNC_MARGIN = 1.5             # audio-seconds assumed still uncommitted at a receipt
+
 NEW_CLIPS = [f"clip_{n:02d}" for n in (11, 12, 13, 14, 15, 16)]
+MULTI_STEM = "multi6"           # concatenated clip_11..16 stress clip (in realtime_out/)
+
+
+# ──────────────── multi-cycle stress clip (clips 11-16 concatenated) ────────────
+
+def build_multi_clip(stems=NEW_CLIPS, stem=MULTI_STEM):
+    """Concatenate the 60s clips into one ~6min WAV + one concatenated reference.
+
+    Why: every clip in the suite is 60s, so a session can only ever reach the
+    server's ~36.5s uncommitted boundary ONCE. Any drift in the client's model of
+    that boundary is therefore invisible per clip. Six clips back to back give
+    ~9-10 consecutive auto-commit/commit cycles in a single session, which is what
+    actually exercises the scheduler.
+
+    Outputs land in realtime_out/ (git-ignored); nothing here is committed.
+    """
+    wav_out = OUT_DIR / f"{stem}.wav"
+    ref_out = OUT_DIR / f"{stem}.txt"
+    frames, params = [], None
+    for s in stems:
+        with wave.open(str(CLIPS_DIR / f"{s}.wav"), "rb") as w:
+            p = w.getparams()
+            assert (p.framerate, p.nchannels, p.sampwidth) == (SAMPLE_RATE, 1, 2), \
+                f"{s}: expected 16k mono 16-bit, got {p}"
+            params = params or p
+            frames.append(w.readframes(p.nframes))
+    with wave.open(str(wav_out), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SAMPLE_RATE)
+        w.writeframes(b"".join(frames))
+    ref = " ".join((REF_DIR / f"{s}.txt").read_text(encoding="utf-8").strip()
+                   for s in stems)
+    ref_out.write_text(" ".join(ref.split()), encoding="utf-8")
+    return wav_out, ref_out
 
 
 # ───────────────────────── VAD gaps + commit schedule ─────────────────────────
@@ -101,93 +159,139 @@ def kept_segments_secs(samples):
             if len(sm) >= MIN_SEGMENT_SAMPLES]
 
 
-def build_schedule(int16, kept, interval):
-    """Whispering continuous feed with periodic commits placed SAFELY at VAD gaps.
+class CommitScheduler:
+    """Commit-decision state machine on the audio clock. ONE implementation, used
+    both offline (plan_commits, for the up-front prediction logged in the meta) and
+    LIVE inside the send loop, so plan and run can never diverge.
 
-    Returns (sched, n_full, n_remainder, client_commit_ats, server_commit_ats).
-    Each frame entry: dict(at=audio_avail_s, kind='frame', int16=<array>, commit=bool).
-    Plus a final dict for the sub-4000 remainder / finalize.
+    State: `last_commit_at`, the audio time the last commit-point is BELIEVED to
+    have happened; "uncommitted" = audio fed so far - last_commit_at.
 
-    Commit-point scheduling (audio clock; "uncommitted" = avail - last_commit_at,
-    where last_commit_at advances on BOTH client gap-commits AND the server's
-    predicted auto-commit):
       * ARMED once uncommitted >= interval. While armed, commit at the first VAD gap
-        chunk (silence -> safe), as long as uncommitted < FORCE_CUTOFF_SECS.
-      * DANGER BAND: if uncommitted reaches FORCE_CUTOFF_SECS (auto-commit - 3s) with
-        no gap-commit, we do NOT force a mid-speech commit (that stalls the server
-        near its ~36.5s boundary). Instead we fall back to the server auto-commit:
-        keep feeding commit:false and record a PREDICTED server commit-point at
-        last_commit_at + AUTO_COMMIT_AUDIO_SECS, resetting the interval clock from it.
-        (The server actually emits the committed_transcript; the recv loop counts it.)
+        chunk (silence -> safe), as long as uncommitted < cutoff.
+      * DANGER BAND: at uncommitted >= cutoff we never force a mid-speech commit
+        (that stalls the server near its auto-commit boundary). Instead we fall back
+        to the server's own auto-commit: keep feeding commit:false, record a
+        PREDICTED commit-point at last_commit_at + AUTO_COMMIT_AUDIO_SECS and
+        restart the interval clock from it. This predictive backstop is what a 60s
+        clip exercises at most once.
+      * RESYNC (opt-in, --resync): the backstop assumes the boundary is exactly
+        AUTO_COMMIT_AUDIO_SECS, but that is the RECEIPT time; the true trigger is
+        earlier, so every predicted cycle over-advances the clock and the error
+        accumulates unbounded. With resync on, EVERY committed_transcript receipt
+        re-anchors the model to reality:
+            uncommitted := max(RESYNC_MARGIN, uncommitted - AUTO_COMMIT_AUDIO_SECS)
+        Receipts caused by our own client commits clamp to RESYNC_MARGIN, a small
+        conservative OVER-estimate of the audio still in flight, so the model errs
+        early (safe) rather than late (stall).
+
     Gap test: a 250ms chunk [c0,c1] is a gap chunk iff it overlaps NO kept segment.
     """
-    n = len(int16)
-    n_full = n // CHUNK_SAMPLES
 
-    def in_gap(c0, c1):
-        return not any(c0 < e and s < c1 for (s, e) in kept)
+    def __init__(self, kept, interval, cutoff, resync, margin=RESYNC_MARGIN):
+        self.kept = kept
+        self.interval = interval
+        self.cutoff = cutoff
+        self.resync = resync
+        self.margin = margin
+        self.last_commit_at = 0.0
+        self.client_commits = []      # dict(at, uncommitted) per commit:true decision
+        self.server_predicted = []    # predicted server auto-commit audio times
+        self.resyncs = []             # dict(fed_at, unc_before, unc_after)
 
-    sched = []
-    client_commit_ats = []   # audio time of every CLIENT commit:true we send
-    server_commit_ats = []   # audio time of every PREDICTED server auto-commit
-    last_commit_at = 0.0     # last commit-point (client OR server), audio clock
-    for j in range(n_full):
-        chunk = int16[j * CHUNK_SAMPLES:(j + 1) * CHUNK_SAMPLES]
-        c0 = j * CHUNK_SECS
-        c1 = (j + 1) * CHUNK_SECS
+    def in_gap(self, c0, c1):
+        return not any(c0 < e and s < c1 for (s, e) in self.kept)
+
+    def uncommitted(self, fed_at):
+        return fed_at - self.last_commit_at
+
+    def decide(self, c0, c1):
+        """Decide commit:true for the 250ms chunk [c0,c1); advances the state."""
         avail = c1
-        uncommitted = avail - last_commit_at
-        do_commit = False
-        if interval <= uncommitted < FORCE_CUTOFF_SECS and in_gap(c0, c1):
-            do_commit = True          # safe: armed, still outside the danger band
-        elif uncommitted >= FORCE_CUTOFF_SECS:
-            # No gap found before the danger band -> fall back to the server's
-            # auto-commit rather than forcing a mid-speech commit. Predict it at
-            # last_commit_at + AUTO_COMMIT and reset the interval clock from there.
-            server_at = last_commit_at + AUTO_COMMIT_AUDIO_SECS
-            server_commit_ats.append(server_at)
-            last_commit_at = server_at
-            sched.append(dict(at=avail, kind="frame", int16=chunk, commit=False))
-            continue
-        if do_commit:
-            last_commit_at = avail
-            client_commit_ats.append(avail)
-        sched.append(dict(at=avail, kind="frame", int16=chunk, commit=do_commit))
+        unc = avail - self.last_commit_at
+        if self.interval <= unc < self.cutoff and self.in_gap(c0, c1):
+            self.last_commit_at = avail          # safe: armed, outside danger band
+            self.client_commits.append(dict(at=avail, uncommitted=unc))
+            return True
+        if unc >= self.cutoff:
+            server_at = self.last_commit_at + AUTO_COMMIT_AUDIO_SECS
+            self.server_predicted.append(server_at)
+            self.last_commit_at = server_at
+        return False
 
-    remainder = int16[n_full * CHUNK_SAMPLES:]
-    total_dur = n / SAMPLE_RATE
-    # finalize(): commit the remainder at clip end ONLY IF meaningful audio has been
-    # fed since the last commit-point (FINALIZE_MIN_GAP_SECS guard). last_commit_at
-    # here already accounts for a predicted server auto-commit, so a finalize right
-    # after one is suppressed (delivered as commit:false) to avoid a collision.
-    if total_dur - last_commit_at > FINALIZE_MIN_GAP_SECS:
-        sched.append(dict(at=total_dur, kind="commit", int16=remainder, commit=True))
-        client_commit_ats.append(total_dur)
-    elif len(remainder):
-        sched.append(dict(at=total_dur, kind="frame", int16=remainder, commit=False))
-    return sched, n_full, len(remainder), client_commit_ats, server_commit_ats
+    def on_committed(self, fed_at):
+        """Re-anchor on a committed_transcript receipt (no-op unless --resync)."""
+        if not self.resync:
+            return
+        unc = fed_at - self.last_commit_at
+        new_unc = max(self.margin, unc - AUTO_COMMIT_AUDIO_SECS)
+        self.last_commit_at = fed_at - new_unc
+        self.resyncs.append(dict(fed_at=round(fed_at, 3),
+                                 unc_before=round(unc, 3),
+                                 unc_after=round(new_unc, 3)))
+
+    def finalize_commits(self, total_dur):
+        """finalize(): commit the clip-end remainder ONLY IF meaningful audio has
+        been fed since the last commit-point (FINALIZE_MIN_GAP_SECS guard), so a
+        finalize landing right on top of a commit-point cannot collide."""
+        return total_dur - self.last_commit_at > FINALIZE_MIN_GAP_SECS
+
+
+def build_frames(int16):
+    """Slice into the Whispering 250ms frame sequence + trailing sub-4000 remainder.
+
+    Returns (frames, remainder, n_full); frame = dict(at=avail_s, c0, c1, int16).
+    """
+    n_full = len(int16) // CHUNK_SAMPLES
+    frames = [dict(at=(j + 1) * CHUNK_SECS,
+                   c0=j * CHUNK_SECS, c1=(j + 1) * CHUNK_SECS,
+                   int16=int16[j * CHUNK_SAMPLES:(j + 1) * CHUNK_SAMPLES])
+              for j in range(n_full)]
+    return frames, int16[n_full * CHUNK_SAMPLES:], n_full
+
+
+def plan_commits(frames, total_dur, kept, interval, cutoff):
+    """Dry-run the scheduler with NO receipts: the pure predictive model, logged as
+    the up-front prediction. Returns (client_commit_ats, server_predicted_ats)."""
+    sch = CommitScheduler(kept, interval, cutoff, resync=False)
+    client = [f["at"] for f in frames if sch.decide(f["c0"], f["c1"])]
+    if sch.finalize_commits(total_dur):
+        client.append(total_dur)
+    return client, list(sch.server_predicted)
 
 
 # ───────────────────────── WS session ─────────────────────────
 
 class HybridSession:
-    def __init__(self, stem, pace, interval, tag):
+    def __init__(self, stem, pace, interval, tag, cutoff=FORCE_CUTOFF_SECS,
+                 resync=False, margin=RESYNC_MARGIN, wav_path=None, ref_path=None):
         self.stem = stem
         self.pace = pace
         self.interval = interval
         self.tag = tag               # filename tag, e.g. "30fix" or "30"
+        self.cutoff = cutoff
+        self.resync = resync
+        self.margin = margin
+        self.wav_path = wav_path or (CLIPS_DIR / f"{stem}.wav")
+        self.ref_path = ref_path or (REF_DIR / f"{stem}.txt")
         self.div = 1.0 if pace == "real" else 4.0
         self.t0 = None
+        self.sched = None            # live CommitScheduler (built in run())
+        self.last_fed_at = 0.0       # audio seconds handed to the socket so far
         self.evlog = open(
             EVENTS_DIR / f"events_{stem}_hybrid{tag}_{pace}.jsonl", "w",
             encoding="utf-8")
         self.commits = []            # dict(text, recv_wall) — committed_transcript only
+        self.commit_recvs = []       # dict(t, fed_at, unc_model) per committed receipt
         self.n_partials = 0
+        self.partial_walls = []      # recv wall of every partial (stall detection)
         self.commit_sends = []       # (audio_at, send_wall) for each client commit:true
+        self.client_commit_log = []  # dict(at, uncommitted, t) per client commit sent
         self.server_commit_ats = []  # predicted server auto-commit audio times
         self.server_errors = []      # (message_type, wall)
         self.unexpected_types = {}
         self.saw_with_timestamps = 0
+        self.send_done_wall = None
 
     def _log(self, direction, obj, note=None):
         rec = {"t": round(time.monotonic() - self.t0, 4), "dir": direction}
@@ -221,16 +325,19 @@ class HybridSession:
                 mt = obj.get("message_type") or obj.get("type") or ""
                 if mt == "partial_transcript":
                     self.n_partials += 1
+                    self.partial_walls.append(wall)
                 elif mt == "committed_transcript":
                     txt = obj.get("text", "") or ""
                     if txt:
                         self.commits.append(dict(text=txt, recv_wall=wall))
+                    self._on_committed(wall)
                 elif mt == "committed_transcript_with_timestamps":
                     # We did NOT request include_timestamps; record + still capture.
                     self.saw_with_timestamps += 1
                     txt = obj.get("text", "") or ""
                     if txt:
                         self.commits.append(dict(text=txt, recv_wall=wall))
+                    self._on_committed(wall)
                 elif mt in SERVER_ERROR_TYPES:
                     self.server_errors.append((mt, wall))
                 elif mt not in ("session_started",):
@@ -239,33 +346,79 @@ class HybridSession:
             self._log("recv", {"closed": True, "code": e.code, "reason": str(e.reason)})
         stop_evt.set()
 
-    async def send_schedule(self, ws, sched):
-        for entry in sched:
-            target = self.t0 + entry["at"] / self.div
-            now = time.monotonic()
-            if target > now:
-                await asyncio.sleep(target - now)
+    def _on_committed(self, wall):
+        """Record a committed receipt and (if --resync) re-anchor the scheduler."""
+        fed = self.last_fed_at
+        unc = self.sched.uncommitted(fed) if self.sched else None
+        self.commit_recvs.append(dict(wall=wall, t=round(wall - self.t0, 3),
+                                      fed_at=round(fed, 3),
+                                      unc_model=None if unc is None else round(unc, 3)))
+        if self.sched:
+            self.sched.on_committed(fed)
+
+    async def _pace_to(self, at):
+        target = self.t0 + at / self.div
+        now = time.monotonic()
+        if target > now:
+            await asyncio.sleep(target - now)
+
+    async def send_schedule(self, ws, frames, remainder, total_dur):
+        """Feed the frames, deciding commit:true ONLINE so receipt-driven resyncs
+        (recv_loop -> sched.on_committed) affect the very next decision."""
+        for f in frames:
+            await self._pace_to(f["at"])
+            unc = self.sched.uncommitted(f["at"])
+            commit = self.sched.decide(f["c0"], f["c1"])
+            self.last_fed_at = f["at"]
+            await ws.send(encode_chunk(f["int16"], commit))
             wall = time.monotonic()
-            commit = bool(entry.get("commit"))
-            await ws.send(encode_chunk(entry["int16"], commit))
             if commit:
-                self.commit_sends.append((entry["at"], wall))
-            self._log("send", {"kind": entry["kind"], "at": round(entry["at"], 3),
-                               "commit": commit,
-                               "n_samples": int(len(entry["int16"]))})
+                self.commit_sends.append((f["at"], wall))
+                self.client_commit_log.append(dict(at=round(f["at"], 2),
+                                                   uncommitted=round(unc, 2),
+                                                   t=round(wall - self.t0, 3)))
+            self._log("send", {"kind": "frame", "at": round(f["at"], 3),
+                               "commit": commit, "uncommitted": round(unc, 2),
+                               "n_samples": int(len(f["int16"]))})
+
+        # finalize(): remainder (possibly empty marker) with the collision guard.
+        await self._pace_to(total_dur)
+        unc = self.sched.uncommitted(total_dur)
+        commit = self.sched.finalize_commits(total_dur)
+        if commit or len(remainder):
+            self.last_fed_at = total_dur
+            await ws.send(encode_chunk(remainder, commit))
+            wall = time.monotonic()
+            if commit:
+                self.commit_sends.append((total_dur, wall))
+                self.client_commit_log.append(dict(at=round(total_dur, 2),
+                                                   uncommitted=round(unc, 2),
+                                                   t=round(wall - self.t0, 3),
+                                                   finalize=True))
+            self._log("send", {"kind": "commit" if commit else "frame",
+                               "at": round(total_dur, 3), "commit": commit,
+                               "uncommitted": round(unc, 2),
+                               "n_samples": int(len(remainder))})
 
     async def run(self, int16, kept, hold_open=8.0):
-        sched, n_full, n_rem, commit_ats, server_ats = build_schedule(
-            int16, kept, self.interval)
-        self.server_commit_ats = server_ats
+        frames, remainder, n_full = build_frames(int16)
+        n_rem = len(remainder)
+        total_dur = len(int16) / SAMPLE_RATE
+        planned_client, planned_server = plan_commits(
+            frames, total_dur, kept, self.interval, self.cutoff)
+        self.server_commit_ats = planned_server   # replaced by the live model below
+        self.sched = CommitScheduler(kept, self.interval, self.cutoff,
+                                     self.resync, self.margin)
         url = build_url()
         self.t0 = time.monotonic()
         self._log("meta", {"stem": self.stem, "pace": self.pace,
                             "interval": self.interval, "tag": self.tag,
+                            "cutoff": self.cutoff, "resync": self.resync,
+                            "resync_margin": self.margin,
                             "n_full_chunks": n_full, "n_remainder_samples": n_rem,
-                            "n_client_commits_planned": len(commit_ats),
-                            "server_autocommits_predicted": [round(a, 2) for a in server_ats],
-                            "clip_dur_s": round(len(int16) / SAMPLE_RATE, 2),
+                            "n_client_commits_planned": len(planned_client),
+                            "server_autocommits_predicted": [round(a, 2) for a in planned_server],
+                            "clip_dur_s": round(total_dur, 2),
                             "url_no_key": url})
         try:
             async with websockets.connect(
@@ -273,9 +426,12 @@ class HybridSession:
                     max_size=None, ping_interval=None) as ws:
                 stop_evt = asyncio.Event()
                 recv_task = asyncio.create_task(self.recv_loop(ws, stop_evt))
-                await self.send_schedule(ws, sched)
-                send_done = time.monotonic() - self.t0
-                self._log("meta", {"send_done_t": round(send_done, 3)})
+                await self.send_schedule(ws, frames, remainder, total_dur)
+                self.send_done_wall = time.monotonic()
+                self._log("meta", {"send_done_t": round(self.send_done_wall - self.t0, 3),
+                                   "server_autocommits_live": [
+                                       round(a, 2) for a in self.sched.server_predicted],
+                                   "n_resyncs": len(self.sched.resyncs)})
                 try:
                     await asyncio.wait_for(stop_evt.wait(), timeout=hold_open)
                 except asyncio.TimeoutError:
@@ -286,13 +442,15 @@ class HybridSession:
             raise
         finally:
             self.evlog.close()
-        return n_full, n_rem, commit_ats
+        # The LIVE model's predicted auto-commits are what actually drove the run.
+        self.server_commit_ats = list(self.sched.server_predicted)
+        return n_full, n_rem, planned_client
 
 
 # ───────────────────────── metrics ─────────────────────────
 
 def score_clip(sess):
-    ref = normalize((REF_DIR / f"{sess.stem}.txt").read_text(encoding="utf-8"))
+    ref = normalize(sess.ref_path.read_text(encoding="utf-8"))
     hyp = " ".join(c["text"] for c in sess.commits)
     hyp = " ".join(hyp.split())
     (OUT_DIR / f"{sess.stem}.hybrid{sess.tag}.committed.txt").write_text(
@@ -356,17 +514,103 @@ def commit_analysis(sess):
     )
 
 
+# ── multi-cycle validation: drift of the client model vs observed receipts ──
+
+STALL_PARTIAL_GAP_SECS = 5.0     # wall gap with no partials while still feeding
+UNANSWERED_COMMIT_SECS = 5.0     # wall a client commit may go without a receipt
+
+
+def cycle_analysis(sess):
+    """Attribute every committed RECEIPT to a client commit or a server auto-commit,
+    then measure how far the client's predictive model drifts from reality.
+
+    Attribution is the same conservative rule as commit_analysis (consume one
+    unconsumed client send per receipt, in arrival order), applied to ALL receipts
+    (including empty-text ones, which still reset the server's uncommitted window).
+    Drift for the k-th server-attributed receipt = observed fed_at - the k-th
+    PREDICTED auto-commit time, i.e. how wrong the model's boundary assumption was.
+    """
+    client_walls = sorted(w for (_at, w) in sess.commit_sends)
+    consumed = [False] * len(client_walls)
+    server_recvs, client_recvs = [], []
+    for r in sess.commit_recvs:
+        idx = next((i for i, w in enumerate(client_walls)
+                    if not consumed[i] and w <= r["wall"]), None)
+        if idx is None:
+            server_recvs.append(r)
+        else:
+            consumed[idx] = True
+            client_recvs.append(r)
+
+    predicted = sorted(sess.server_commit_ats)
+    drifts = [round(r["fed_at"] - p, 2)
+              for r, p in zip(server_recvs, predicted)]
+
+    return dict(
+        n_cycles_predicted=len(predicted),
+        n_cycles_observed=len(server_recvs),
+        predicted_autocommit_fed=[round(p, 2) for p in predicted],
+        observed_autocommit_fed=[r["fed_at"] for r in server_recvs],
+        autocommit_unc_model=[r["unc_model"] for r in server_recvs],
+        drift_per_cycle=drifts,
+        drift_max_abs=max((abs(d) for d in drifts), default=None),
+        client_commits=list(sess.client_commit_log),
+        client_recv_fed=[r["fed_at"] for r in client_recvs],
+        n_resyncs=len(sess.sched.resyncs) if sess.sched else 0,
+        resyncs=(sess.sched.resyncs if sess.sched else []),
+    )
+
+
+def stall_analysis(sess):
+    """Stall = the server stops talking. Two independent detectors:
+      * partial_gap_max: biggest wall gap between successive partial_transcript
+        events while audio is still being fed (a stalled stream goes silent).
+      * unanswered client commits: a commit:true that never draws a committed
+        receipt within UNANSWERED_COMMIT_SECS (or before the session ends).
+    """
+    end = sess.send_done_wall or (sess.partial_walls[-1] if sess.partial_walls else sess.t0)
+    walls = [sess.t0] + sess.partial_walls + [end]
+    gaps = [b - a for a, b in zip(walls, walls[1:]) if b >= a]
+    gap_max = max(gaps) if gaps else None
+    gap_at = None
+    if gaps:
+        i = gaps.index(gap_max)
+        gap_at = round(walls[i] - sess.t0, 2)
+
+    recv_walls = [r["wall"] for r in sess.commit_recvs]
+    unanswered = []
+    used = [False] * len(recv_walls)
+    for (at, w) in sess.commit_sends:
+        idx = next((i for i, rw in enumerate(recv_walls)
+                    if not used[i] and rw >= w), None)
+        if idx is None:
+            unanswered.append(round(at, 2))
+        else:
+            used[idx] = True
+    return dict(
+        partial_gap_max=None if gap_max is None else round(gap_max, 2),
+        partial_gap_max_at=gap_at,
+        partial_silence_stall=(gap_max is not None and gap_max > STALL_PARTIAL_GAP_SECS),
+        unanswered_client_commits=unanswered,
+        stalled=bool(unanswered) or (gap_max is not None and gap_max > STALL_PARTIAL_GAP_SECS),
+    )
+
+
 # ───────────────────────── per-clip run ─────────────────────────
 
-async def run_clip_once(stem, pace, interval, tag):
-    samples = read_wav_16k_mono(CLIPS_DIR / f"{stem}.wav")
+async def run_clip_once(stem, pace, interval, tag, opts=None):
+    opts = dict(opts or {})
+    wav_path = opts.get("wav_path") or (CLIPS_DIR / f"{stem}.wav")
+    samples = read_wav_16k_mono(wav_path)
     int16 = float32_to_int16(samples)
     kept = kept_segments_secs(samples)
-    sess = HybridSession(stem, pace, interval, tag)
+    sess = HybridSession(stem, pace, interval, tag, **opts)
     n_full, n_rem, _ = await sess.run(int16, kept)
     wer = score_clip(sess)
     ca = commit_analysis(sess)
     return dict(stem=stem, pace=pace, interval=interval, tag=tag, wer=wer, commit=ca,
+                cycles=cycle_analysis(sess), stall=stall_analysis(sess),
+                cutoff=sess.cutoff, resync=sess.resync, resync_margin=sess.margin,
                 n_partials=sess.n_partials,
                 empty_hyp=(not wer["hyp"].strip()),
                 server_errors=[e[0] for e in sess.server_errors],
@@ -376,19 +620,26 @@ async def run_clip_once(stem, pace, interval, tag):
                 clip_dur=len(samples) / SAMPLE_RATE)
 
 
-def run_clip(stem, pace, interval, tag):
-    """Run one clip; retry ONCE on a transient WS failure or empty hypothesis."""
+def run_clip(stem, pace, interval, tag, opts=None, retry=True):
+    """Run one clip; retry ONCE on a transient WS failure or empty hypothesis.
+
+    --no-retry (retry=False) matters for the deliberately-stalling control runs:
+    a retry there would burn another paid session to reproduce a known failure.
+    """
     try:
-        r = asyncio.run(run_clip_once(stem, pace, interval, tag))
-        if r["empty_hyp"]:
+        r = asyncio.run(run_clip_once(stem, pace, interval, tag, opts))
+        if r["empty_hyp"] and retry:
             print(f"    [warn] {stem}: empty committed hypothesis, retrying once")
-            r2 = asyncio.run(run_clip_once(stem, pace, interval, tag))
+            r2 = asyncio.run(run_clip_once(stem, pace, interval, tag, opts))
             r2["retried"] = True
             return r2
         return r
     except Exception as e:
-        print(f"    [warn] {stem}: WS run failed ({type(e).__name__}), retrying once")
-        r = asyncio.run(run_clip_once(stem, pace, interval, tag))
+        print(f"    [warn] {stem}: WS run failed ({type(e).__name__})"
+              f"{'' if retry else ' (no retry)'}")
+        if not retry:
+            raise
+        r = asyncio.run(run_clip_once(stem, pace, interval, tag, opts))
         r["retried"] = True
         return r
 
@@ -408,7 +659,11 @@ def _f(x):
 def dump_entry(r):
     """Serialize one clip result dict to a JSON-safe dump record."""
     return dict(stem=r["stem"], pace=r["pace"], interval=r["interval"],
-                wer=r["wer"], commit=r["commit"], n_partials=r["n_partials"],
+                cutoff=r.get("cutoff"), resync=r.get("resync"),
+                resync_margin=r.get("resync_margin"),
+                wer=r["wer"], commit=r["commit"],
+                cycles=r.get("cycles"), stall=r.get("stall"),
+                n_partials=r["n_partials"],
                 empty_hyp=r["empty_hyp"], retried=r.get("retried", False),
                 server_errors=r["server_errors"],
                 unexpected_types=r["unexpected_types"],
@@ -438,8 +693,19 @@ def aggregate(dump, interval, pace):
         "strategy": "hybrid",
         "interval": interval,
         "pace": pace,
+        "cutoff": dump[0].get("cutoff") if dump else None,
+        "resync": dump[0].get("resync") if dump else None,
+        "resync_margin": dump[0].get("resync_margin") if dump else None,
         "pooled_wer": pm,
         "SDIN": [tS, tD, tI, tN],
+        "total_cycles_observed": sum((c.get("cycles") or {}).get("n_cycles_observed", 0)
+                                     for c in dump),
+        "total_cycles_predicted": sum((c.get("cycles") or {}).get("n_cycles_predicted", 0)
+                                      for c in dump),
+        "drift_max_abs": max((d for c in dump
+                              for d in [(c.get("cycles") or {}).get("drift_max_abs")]
+                              if d is not None), default=None),
+        "any_stall": any((c.get("stall") or {}).get("stalled") for c in dump),
         "mean_client_commits_per_clip": mean_client,
         "mean_server_autocommits_per_clip": mean_server,
         "total_server_autocommits": sum(c["commit"]["n_server_autocommits"] for c in dump),
@@ -454,7 +720,7 @@ def aggregate(dump, interval, pace):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--interval", type=float, required=True,
+    ap.add_argument("--interval", type=float,
                     help="audio-seconds between periodic commits")
     ap.add_argument("--pace", choices=["real", "4x"], default="4x")
     ap.add_argument("--clips", nargs="+", help="explicit stems (default clip_11..16)")
@@ -463,19 +729,57 @@ def main():
                          "matching stems, keep the rest), then recompute aggregates")
     ap.add_argument("--tag", help="filename tag for outputs (default = interval, "
                                   "e.g. --tag 30fix -> metrics_hybrid30fix_*.json)")
+    ap.add_argument("--cutoff", type=float, default=FORCE_CUTOFF_SECS,
+                    help=f"uncommitted-audio danger-band cutoff (default "
+                         f"{FORCE_CUTOFF_SECS}); no client commit is sent at or "
+                         f"above this")
+    ap.add_argument("--resync", action="store_true",
+                    help="re-anchor the uncommitted model on every committed "
+                         "receipt instead of trusting the predictive backstop")
+    ap.add_argument("--resync-margin", type=float, default=RESYNC_MARGIN,
+                    help=f"audio-seconds assumed still uncommitted at a receipt "
+                         f"(default {RESYNC_MARGIN})")
+    ap.add_argument("--single-wav", help="run ONE wav (e.g. the concatenated "
+                                         "multi-cycle stress clip) instead of clips/")
+    ap.add_argument("--single-ref", help="ground-truth text for --single-wav "
+                                         "(default: sibling .txt)")
+    ap.add_argument("--no-retry", action="store_true",
+                    help="never re-run a failed/empty session (control runs that "
+                         "are EXPECTED to stall)")
+    ap.add_argument("--make-multi", action="store_true",
+                    help="build the multi-cycle stress clip (clip_11..16 "
+                         "concatenated) into realtime_out/ and exit")
     args = ap.parse_args()
-    stems = args.clips or NEW_CLIPS
+
+    if args.make_multi:
+        wav, ref = build_multi_clip()
+        print(f"Multi-cycle stress clip -> {wav}\nReference -> {ref}")
+        return 0
+    if args.interval is None:
+        ap.error("--interval is required (unless --make-multi)")
+
+    opts = dict(cutoff=args.cutoff, resync=args.resync, margin=args.resync_margin)
+    if args.single_wav:
+        wav = Path(args.single_wav)
+        opts["wav_path"] = wav
+        opts["ref_path"] = Path(args.single_ref) if args.single_ref \
+            else wav.with_suffix(".txt")
+        stems = [wav.stem]
+    else:
+        stems = args.clips or NEW_CLIPS
     interval = args.interval
     itag = args.tag or (int(interval) if float(interval).is_integer() else interval)
 
     print(f"Hybrid-strategy realtime WER harness  interval={interval}s  "
-          f"tag={itag}  pace={args.pace}  clips={stems}")
+          f"cutoff={args.cutoff}s  resync={args.resync} "
+          f"(margin={args.resync_margin}s)  tag={itag}  pace={args.pace}  "
+          f"clips={stems}")
     print(f"Events -> {EVENTS_DIR}")
     rows = []
     for stem in stems:
-        r = run_clip(stem, args.pace, interval, itag)
+        r = run_clip(stem, args.pace, interval, itag, opts, retry=not args.no_retry)
         rows.append(r)
-        w, cm = r["wer"], r["commit"]
+        w, cm, cy, st = r["wer"], r["commit"], r["cycles"], r["stall"]
         errs = ("  ERR:" + ",".join(r["server_errors"])) if r["server_errors"] else ""
         print(f"=== {stem} === WER={w['wer']*100:5.2f}% "
               f"(S{w['S']}/D{w['D']}/I{w['I']}/N{w['N']}) | "
@@ -486,6 +790,14 @@ def main():
               f"max={_f(cm['turnaround_max'])}s | "
               f"cadence med={_f(cm['cadence_med'])}s max={_f(cm['cadence_max'])}s"
               f"{errs}")
+        print(f"    cycles pred={cy['n_cycles_predicted']} obs={cy['n_cycles_observed']} "
+              f"drift={cy['drift_per_cycle']} max|drift|={_f(cy['drift_max_abs'])}s "
+              f"resyncs={cy['n_resyncs']}")
+        print(f"    STALL={st['stalled']} partial_gap_max={_f(st['partial_gap_max'])}s "
+              f"@t={st['partial_gap_max_at']} "
+              f"unanswered_commits={st['unanswered_client_commits']}")
+        print(f"    client commits (audio_at, uncommitted): "
+              f"{[(c['at'], c['uncommitted']) for c in cy['client_commits']]}")
 
     dump = [dump_entry(r) for r in rows]
     path = OUT_DIR / f"metrics_hybrid{itag}_{args.pace}.json"
@@ -510,6 +822,10 @@ def main():
     print(f"POOLED committed WER (hybrid{itag}, {args.pace}): "
           f"{pm*100:.2f}%  (S{S}/D{D}/I{I}/N{N})  over {len(dump)} clips")
     print(f"Mean client commits/clip: {out['mean_client_commits_per_clip']:.1f}")
+    print(f"Auto-commit cycles: predicted={out['total_cycles_predicted']} "
+          f"observed={out['total_cycles_observed']}  "
+          f"max|drift|={_f(out['drift_max_abs'])}s  "
+          f"any_stall={out['any_stall']}")
     if out["cadence_audio_median"] is not None:
         print(f"Audio-time commit cadence: median={out['cadence_audio_median']:.2f}s  "
               f"max={out['cadence_audio_max']:.2f}s")
