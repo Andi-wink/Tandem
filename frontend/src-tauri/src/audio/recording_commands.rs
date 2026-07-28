@@ -417,8 +417,10 @@ async fn maybe_start_realtime_session<R: Runtime>(
     Some(session)
 }
 
-/// Close and clear the active realtime session + bridge (called on stop). Sends a
-/// final commit and shuts the WS connections. Safe to call when none is active.
+/// Close and clear the active realtime session + bridge (called on stop). Shuts
+/// the WS connections down without sending any commit. Safe to call when none is
+/// active, and safe to call without a prior `begin_shutdown` (close_all sets the
+/// flag itself as a backstop).
 async fn teardown_realtime_session() {
     let session = { REALTIME_SESSION.lock().await.take() };
     if let Some(session) = session {
@@ -976,6 +978,20 @@ pub async fn stop_recording<R: Runtime>(
         }),
     );
 
+    // Step 0: silence the realtime session's transcript emission BEFORE the
+    // force-flush below. The pipeline's stop flush batch-transcribes the shadow
+    // buffer (all speech the server has not confirmed committing) — that is the
+    // authoritative tail now that there is no safe WS finalize commit. Any commit
+    // reply still in flight covers the same audio, so it must not also be emitted.
+    // The sockets themselves are closed later, in teardown_realtime_session().
+    {
+        let session = REALTIME_SESSION.lock().await;
+        if let Some(session) = session.as_ref() {
+            info!("🎧 Realtime session entering shutdown (suppressing further transcript events)");
+            session.begin_shutdown();
+        }
+    }
+
     // Step 1: Stop audio capture immediately (no more new chunks).
     // IMPORTANT: the manager stays in the global RECORDING_MANAGER (we do NOT take() it
     // here). The transcript-update listener writes tail segments produced during the
@@ -1007,10 +1023,10 @@ pub async fn stop_recording<R: Runtime>(
         }
     }
 
-    // Close the realtime streaming session (if any). Sends a final commit so an
-    // open segment at stop is still transcribed, then shuts the WS connections.
-    // Done after capture stops (no more feeds) but before the transcription drain
-    // so any committed tail still persists via the transcript-update listener.
+    // Close the realtime streaming session (if any). Sends NO commit: the tail was
+    // already handed to the batch path by the force-flush above (the shadow buffer
+    // holds everything the server never confirmed), and a commit here could land
+    // inside the server's auto-commit danger band and stall the session.
     teardown_realtime_session().await;
 
     // Capture has stopped: flip IS_RECORDING to false immediately so is_recording()/tray
