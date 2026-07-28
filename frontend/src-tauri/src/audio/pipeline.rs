@@ -1303,10 +1303,10 @@ impl AudioPipeline {
         // When the socket is up, forward EVERY window of this stream's audio live
         // in ~250ms frames — silence included, no VAD gating and no pre-roll. The
         // server's cross-utterance context is what buys the accuracy (pooled WER
-        // 4.68% vs 6.31% for the old VAD-gated per-segment-commit feed). VAD
-        // segment ends become GAP SIGNALS; the session's CommitScheduler decides
-        // which gap actually commits (>= 30s uncommitted, outside the server's
-        // ~36.5s auto-commit danger band).
+        // 4.68% vs 6.31% for the old VAD-gated per-segment-commit feed). Silent
+        // windows become GAP SIGNALS; the session's CommitScheduler decides which
+        // gap actually commits (>= 27s uncommitted, below the 32s cutoff that
+        // keeps clear of the measured ~34.5s stall edge).
         //
         // The fed audio is still shadowed for disconnect catch-up (MAJOR-1), but
         // only the SPEECH windows (feeding silence into the batch path would just
@@ -1357,8 +1357,16 @@ impl AudioPipeline {
                 session.mark_onset(&device_type, window_start);
             }
 
-            // CONTINUOUS FEED: everything goes to the socket.
-            session.feed(&device_type, &frame16, window_start);
+            // MINOR-5: a segment that opened+closed within one window has no live
+            // in-speech flag but its audio still belongs in the shadow.
+            let has_committable_segment =
+                speech_segments.iter().any(|s| s.samples.len() >= 800);
+            let window_has_speech = now_in_speech || was_in_speech || has_committable_segment;
+
+            // CONTINUOUS FEED: everything goes to the socket, speech or not. The
+            // speech flag rides along only for the engine's stall watchdog, which
+            // must not read an ordinary quiet stretch as a dead server.
+            session.feed(&device_type, &frame16, window_start, window_has_speech);
 
             // Drop only the shadow windows an EMITTED commit covered. Clearing
             // everything on a commit lost the speech fed while it was in flight;
@@ -1366,11 +1374,7 @@ impl AudioPipeline {
             // socket then died.
             self.sync_commit_progress(session, &device_type);
 
-            // MINOR-5: a segment that opened+closed within one window has no live
-            // in-speech flag but its audio still belongs in the shadow.
-            let has_committable_segment =
-                speech_segments.iter().any(|s| s.samples.len() >= 800);
-            if now_in_speech || was_in_speech || has_committable_segment {
+            if window_has_speech {
                 // MAJOR-1 shadow: keep the SPEECH audio so a route flip to Batch,
                 // or recording stop, can flush the uncovered tail (catch-up).
                 self.shadow_append(&device_type, &frame16, window_start);
@@ -1517,6 +1521,13 @@ impl AudioPipeline {
         }
     }
 
+    fn shadow_has_audio(&self, device_type: &DeviceType) -> bool {
+        match device_type {
+            DeviceType::Microphone => !self.mic_shadow.is_empty(),
+            DeviceType::System => !self.system_shadow.is_empty(),
+        }
+    }
+
     /// Hand the shadow's remaining windows to the batch path as ONE concatenated
     /// chunk, exactly the shape the batch provider already receives. The windows
     /// are speech-only and non-contiguous (silence between them was never stored),
@@ -1524,12 +1535,21 @@ impl AudioPipeline {
     /// batch worker treats the block as one utterance run, which is what the
     /// ordinary VAD-accumulated batch buffer is too.
     fn flush_shadow(&mut self, device_type: &DeviceType) {
+        if self.shadow_has_audio(device_type) && !self.stream_buffer_is_empty(device_type) {
+            // M1b: never concatenate the shadow onto leftover batch audio. They
+            // are different runs with different start timestamps, so the leftover
+            // goes out as its own chunk first.
+            info!(
+                "📤 {:?} has both a leftover batch buffer and shadow windows — flushing the buffer as its own chunk first",
+                device_type
+            );
+            self.flush_transcription_buffer(device_type.clone());
+        }
         let Some((first_start, data)) = self.shadow_for(device_type).drain_concatenated() else {
             return;
         };
-        // Stage into the stream's batch buffer (always empty on a Realtime stream:
-        // the realtime branch returns before the batch accumulation) and reuse the
-        // ordinary flush, so overlap handling and chunk shape stay identical.
+        // Stage into the (now empty) batch buffer and reuse the ordinary flush, so
+        // overlap handling and chunk shape stay identical.
         let (buffer, start, last_activity) = self.buffer_for(device_type);
         if buffer.is_empty() {
             *start = first_start;
@@ -1657,47 +1677,51 @@ impl AudioPipeline {
                 continue;
             }
 
-            if !should_drain_vad_into_batch_on_stop(route) {
-                // M3: the VAD's open segment is ALREADY in the shadow (the realtime
-                // tap shadows every speech window, in-speech ones included), so
-                // appending vad.flush()'s segments on top transcribed the closing
-                // sentence TWICE inside one chunk. Flush the processor to reset it,
-                // then discard the result, exactly as the Realtime->Batch flip does.
-                let _ = match device_type {
-                    DeviceType::Microphone => self.vad_mic.flush(),
-                    DeviceType::System => self.vad_system.flush(),
-                };
-                self.flush_shadow(&device_type);
-                continue;
-            }
-
+            // The VAD processor is ALWAYS flushed, to reset it. Whether its
+            // segments are USED depends on the shadow, not on the route: a socket
+            // that died in the last window already reads Batch while the shadow
+            // still holds the closing speech (M1a).
+            let shadow_has_audio = self.shadow_has_audio(&device_type);
             let vad_result = match device_type {
                 DeviceType::Microphone => self.vad_mic.flush(),
                 DeviceType::System => self.vad_system.flush(),
             };
 
-            match vad_result {
-                Ok(final_segments) => {
-                    for segment in final_segments {
-                        let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
-                        if segment.samples.len() < 800 {
-                            info!("⏭️ Skipping short final {:?} segment: {:.1}ms ({} samples < 800)",
+            if should_drain_vad_into_batch_on_stop(shadow_has_audio) {
+                match vad_result {
+                    Ok(final_segments) => {
+                        for segment in final_segments {
+                            let duration_ms =
+                                segment.end_timestamp_ms - segment.start_timestamp_ms;
+                            if segment.samples.len() < 800 {
+                                info!("⏭️ Skipping short final {:?} segment: {:.1}ms ({} samples < 800)",
+                                      device_type, duration_ms, segment.samples.len());
+                                continue;
+                            }
+                            info!("🎤 Buffering final {:?} VAD segment: {:.1}ms duration, {} samples",
                                   device_type, duration_ms, segment.samples.len());
-                            continue;
-                        }
-                        info!("🎤 Buffering final {:?} VAD segment: {:.1}ms duration, {} samples",
-                              device_type, duration_ms, segment.samples.len());
 
-                        let (buffer, start_ts, _) = self.buffer_for(&device_type);
-                        if buffer.is_empty() {
-                            *start_ts = segment.start_timestamp_ms / 1000.0;
+                            let (buffer, start_ts, _) = self.buffer_for(&device_type);
+                            if buffer.is_empty() {
+                                *start_ts = segment.start_timestamp_ms / 1000.0;
+                            }
+                            buffer.extend_from_slice(&segment.samples);
                         }
-                        buffer.extend_from_slice(&segment.samples);
                     }
+                    Err(e) => warn!("Failed to flush {:?} VAD processor: {}", device_type, e),
                 }
-                Err(e) => warn!("Failed to flush {:?} VAD processor: {}", device_type, e),
+            } else {
+                info!(
+                    "🎧 {:?} stop: shadow holds the closing speech — discarding the VAD flush to avoid transcribing it twice",
+                    device_type
+                );
             }
 
+            // M1b: the leftover batch buffer and the shadow are SEPARATE chunks,
+            // each with its own start timestamp. A stream can hold both when a
+            // Batch->Realtime flip went unobserved (up to ~12s of batch-accumulated
+            // speech that would otherwise never be flushed), and concatenating them
+            // would stamp the whole block with one of the two start times.
             let buffer_len = match device_type {
                 DeviceType::Microphone => self.mic_transcription_buffer.len(),
                 DeviceType::System => self.system_transcription_buffer.len(),
@@ -1707,8 +1731,6 @@ impl AudioPipeline {
                       device_type, buffer_len, buffer_len as f64 / 16000.0);
                 self.flush_transcription_buffer(device_type.clone());
             }
-            // A stream that was on Realtime earlier in the recording may still hold
-            // shadow windows from before its route flipped; flush them too.
             self.flush_shadow(&device_type);
         }
 
@@ -1980,12 +2002,50 @@ mod shadow_tests {
     }
 
     #[test]
-    fn stop_must_not_drain_the_vad_into_the_batch_for_realtime_streams() {
-        // M3: the open segment is already in the shadow, so draining the VAD on
-        // top transcribed the closing sentence twice inside one chunk.
-        assert!(!should_drain_vad_into_batch_on_stop(Some(Route::Realtime)));
-        assert!(should_drain_vad_into_batch_on_stop(Some(Route::Batch)));
-        assert!(should_drain_vad_into_batch_on_stop(None));
+    fn stop_must_not_drain_the_vad_when_the_shadow_holds_the_speech() {
+        // M3 + M1a: the open segment is already in the shadow, so draining the VAD
+        // on top transcribed the closing sentence twice inside one chunk. Keyed on
+        // the SHADOW rather than the route, because a socket that dies in the last
+        // window flips the route to Batch while the shadow still holds that speech.
+        let shadow_has_audio = true;
+        assert!(!should_drain_vad_into_batch_on_stop(shadow_has_audio));
+        // Nothing shadowed (pure batch stream, or a realtime stream that had no
+        // speech since its last confirmed commit): the VAD tail is all there is.
+        assert!(should_drain_vad_into_batch_on_stop(false));
+    }
+
+    #[test]
+    fn a_dead_socket_in_the_last_window_still_defers_to_the_shadow() {
+        // M1a, concretely: route reads Batch (the socket just died) but the shadow
+        // holds the closing speech. Draining the VAD as well would duplicate it.
+        let route_after_death = Some(Route::Batch);
+        let mut shadow = ShadowBuffer::new();
+        shadow.append(100.0, &win(0.6, 1.0));
+        assert!(should_batch_flush_on_stop(route_after_death));
+        assert!(
+            !should_drain_vad_into_batch_on_stop(!shadow.is_empty()),
+            "shadow supersedes the VAD tail regardless of route"
+        );
+    }
+
+    #[test]
+    fn leftover_batch_buffer_and_shadow_are_separate_chunks() {
+        // M1b: an unobserved Batch->Realtime flip leaves a stream holding BOTH a
+        // batch buffer (older speech, its own start_ts) and shadow windows. They
+        // must go out as two chunks; concatenating them stamped the whole block
+        // with one of the two start times, and the older buffer used to be dropped
+        // entirely (up to ~12s lost).
+        let mut shadow = ShadowBuffer::new();
+        shadow.append(50.0, &win(0.6, 2.0));
+        // Stand-in for the leftover batch buffer's own start.
+        let batch_start = 20.0f64;
+        let (shadow_start, shadow_data) = shadow.drain_concatenated().unwrap();
+        assert_eq!(shadow_start, 50.0);
+        assert!(
+            (shadow_start - batch_start).abs() > 1.0,
+            "the two runs have genuinely different starts, so one chunk cannot carry both"
+        );
+        assert_eq!(shadow_data.len(), (0.6 * 16000.0) as usize);
     }
 
     #[test]

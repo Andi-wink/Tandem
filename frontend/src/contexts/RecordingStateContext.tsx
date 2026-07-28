@@ -228,6 +228,19 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
         if (cancelled) { unlistenResumed(); return; }
         unsubscribers.push(unlistenResumed);
 
+        // Transcription degraded (live path fell back to batch, or the realtime
+        // catch-up buffer hit its cap). The recording is fine and continues, so
+        // this is a warning rather than an error. The backend emits each of these
+        // at most once per recording, so no de-duplication is needed here.
+        const unlistenTranscriptionWarning = await recordingService.onTranscriptionWarning(
+          (message) => {
+            console.warn('[RecordingStateContext] Transcription warning:', message);
+            toast.warning(message, { duration: 8000 });
+          }
+        );
+        if (cancelled) { unlistenTranscriptionWarning(); return; }
+        unsubscribers.push(unlistenTranscriptionWarning);
+
         console.log('[RecordingStateContext] Event listeners set up successfully');
       } catch (error) {
         console.error('[RecordingStateContext] Failed to set up event listeners:', error);

@@ -149,6 +149,24 @@ export class RecordingService {
   }
 
   /**
+   * Listen for transcription-warning events.
+   *
+   * Emitted by the transcription layer when live transcription degrades but the
+   * recording continues: the realtime session fell back to the slower batch
+   * path, or its catch-up buffer hit its cap because no transcript confirmed the
+   * audio. Both were previously emitted with no listener at all, so the user saw
+   * nothing while quality quietly dropped.
+   *
+   * @param callback - Function to call with the human-readable message
+   * @returns Promise that resolves to unlisten function
+   */
+  async onTranscriptionWarning(callback: (warning: string) => void): Promise<UnlistenFn> {
+    return listen<string>('transcription-warning', (event) => {
+      callback(event.payload);
+    });
+  }
+
+  /**
    * Listen for chunk-drop-warning event (audio buffer overflow)
    * @param callback - Function to call when chunks are dropped
    * @returns Promise that resolves to unlisten function

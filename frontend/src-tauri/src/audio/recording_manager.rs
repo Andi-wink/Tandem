@@ -297,6 +297,17 @@ impl RecordingManager {
         Ok(())
     }
 
+    /// Write any pending transcripts.json mirror to disk immediately.
+    ///
+    /// The mirror is debounced (a lazy write on the next segment), so the burst of
+    /// segments produced during the stop drain is still pending when teardown
+    /// starts. `stop_and_save` flushes too, but this lets the stop path put the
+    /// transcripts on disk BEFORE the long, fallible save so a timeout or error in
+    /// there cannot lose them.
+    pub fn flush_transcripts_now(&self) {
+        self.recording_saver.flush_transcripts_now();
+    }
+
     /// Save recording after transcription is complete
     pub async fn save_recording_only<R: tauri::Runtime>(&mut self, app: &tauri::AppHandle<R>) -> Result<()> {
         debug!("Saving recording with transcript chunks");

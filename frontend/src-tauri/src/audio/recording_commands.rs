@@ -156,6 +156,29 @@ impl Drop for CleanupGuard {
     }
 }
 
+/// RAII backstop: once the realtime session has been told to shut down, its
+/// sockets and bridge MUST be torn down no matter how `stop_recording` exits.
+///
+/// Several error returns sit between `begin_shutdown` and the in-line teardown
+/// (stream-stop failure, the defensive no-manager bail). Taking any of them left
+/// a suppressed session and its bridge alive into the NEXT recording, where the
+/// stale bridge still held an AppHandle and the stale sockets still sent
+/// keepalives.
+struct RealtimeTeardownGuard;
+
+impl Drop for RealtimeTeardownGuard {
+    fn drop(&mut self) {
+        // Teardown is async and Drop is not, so run it detached. It take()s the
+        // globals, so it is idempotent: the normal in-line call and this backstop
+        // cannot double-free anything.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async {
+                teardown_realtime_session().await;
+            });
+        }
+    }
+}
+
 // Tracks when recording started (for screenshot elapsed-time calculation)
 static RECORDING_START_TIME: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
@@ -164,6 +187,16 @@ static RECORDING_START_TIME: Mutex<Option<std::time::Instant>> = Mutex::new(None
 // so their timestamps align with transcripts instead of drifting on wall-clock.
 // AtomicU64 is used to allow lock-free reads from the audio hot path.
 static AUDIO_ELAPSED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+// Total time (milliseconds) the current recording has spent PAUSED, mirrored from
+// RecordingManager::get_total_pause_duration on every resume.
+//
+// `RECORDING_START_TIME` is a wall-clock anchor but the AUDIO clock freezes while
+// paused, so the two diverge by exactly this much. Without it a segment recorded
+// after a 10-minute pause was stamped 10 minutes early, and that wrong timestamp
+// reached transcripts.json, the meeting-details UI, and search's ORDER BY.
+// An atomic because the event bridge reads it without the manager lock.
+static TOTAL_PAUSED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Update the latest audio-elapsed time. Called by the audio pipeline as it processes audio.
 pub fn update_audio_elapsed_secs(secs: f64) {
@@ -301,13 +334,23 @@ async fn resolve_flush_profile<R: Runtime>(app: &AppHandle<R>) -> super::pipelin
     profile
 }
 
-/// Wall-clock `HH:MM:SS` for a recording-relative audio offset.
+/// Wall-clock `HH:MM:SS` for a recording-relative AUDIO offset.
 ///
-/// `RECORDING_START_TIME` is monotonic (an `Instant`), so the recording's
-/// wall-clock start is reconstructed as `now - start.elapsed()`; the segment's
-/// display time is that plus its audio offset. Without a live recording (or if
-/// the arithmetic would overflow) this degrades to the current time, which is the
-/// old behaviour.
+/// The audio clock (what `audio_start_time` is measured on) freezes while the
+/// recording is paused; wall-clock time does not. So the conversion is
+///
+///   `audio_elapsed_now = RECORDING_START_TIME.elapsed() - total_paused`
+///   `display = now - (audio_elapsed_now - audio_start_time)`
+///
+/// ACCURACY: exact for every segment recorded after the last resume. A segment
+/// recorded BEFORE a pause is stamped late by the pauses that came after it,
+/// because `TOTAL_PAUSED_MS` is a running total rather than a per-segment
+/// history. Bounding it properly would mean storing pause intervals; the common
+/// case (no pause, or segments after the last resume) is exact, and the previous
+/// behaviour was wrong by the pause duration for EVERY later segment.
+///
+/// Without a live recording, or if the arithmetic would overflow, this degrades
+/// to the current time.
 fn wall_clock_for_audio_time(audio_start_time: f64) -> String {
     let now = chrono::Local::now();
     let elapsed = RECORDING_START_TIME
@@ -315,16 +358,33 @@ fn wall_clock_for_audio_time(audio_start_time: f64) -> String {
         .ok()
         .and_then(|g| *g)
         .map(|start| start.elapsed().as_secs_f64());
-    let stamp = match elapsed {
-        Some(elapsed) if audio_start_time.is_finite() && audio_start_time >= 0.0 => {
-            let back_secs = (elapsed - audio_start_time).max(0.0);
-            chrono::Duration::try_milliseconds((back_secs * 1000.0) as i64)
-                .and_then(|d| now.checked_sub_signed(d))
-                .unwrap_or(now)
-        }
-        _ => now,
+    let paused = TOTAL_PAUSED_MS.load(Ordering::Relaxed) as f64 / 1000.0;
+    let stamp = match elapsed.and_then(|e| seconds_back_for_audio_time(e, paused, audio_start_time))
+    {
+        Some(back_secs) => chrono::Duration::try_milliseconds((back_secs * 1000.0) as i64)
+            .and_then(|d| now.checked_sub_signed(d))
+            .unwrap_or(now),
+        None => now,
     };
     stamp.format("%H:%M:%S").to_string()
+}
+
+/// How far BACK from now a segment starting at `audio_start_time` was recorded.
+///
+/// Split out from [`wall_clock_for_audio_time`] so the pause arithmetic is
+/// testable without touching the process-wide clocks. `None` means "no usable
+/// answer, fall back to now".
+fn seconds_back_for_audio_time(
+    wall_elapsed_secs: f64,
+    total_paused_secs: f64,
+    audio_start_time: f64,
+) -> Option<f64> {
+    if !audio_start_time.is_finite() || audio_start_time < 0.0 {
+        return None;
+    }
+    // The AUDIO clock stops while paused; the wall clock does not.
+    let audio_elapsed_now = (wall_elapsed_secs - total_paused_secs.max(0.0)).max(0.0);
+    Some((audio_elapsed_now - audio_start_time).max(0.0))
 }
 
 /// Bridge the realtime session's `RealtimeEvent` stream to Tauri events. Runs
@@ -400,6 +460,13 @@ fn spawn_realtime_bridge<R: Runtime>(
 async fn maybe_start_realtime_session<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Option<Arc<ElevenLabsRealtimeSession>> {
+    // Defensive teardown FIRST, before any early return. A session left over from
+    // a previous recording must die even when THIS recording is not going to use
+    // one: sitting after the model check meant switching to a non-realtime model
+    // (or losing the API key) leaked the old session and its bridge, which kept
+    // feeding keepalives and holding an AppHandle for the rest of the process.
+    teardown_realtime_session().await;
+
     let config = match crate::api::api::api_get_transcript_config(
         app.clone(),
         app.clone().state(),
@@ -413,10 +480,6 @@ async fn maybe_start_realtime_session<R: Runtime>(
     if !transcription::is_realtime_model(&config.provider, &config.model) {
         return None;
     }
-
-    // Defensive: close any lingering session from a prior recording before starting
-    // a new one, so stale WS keepalives can't accumulate.
-    teardown_realtime_session().await;
 
     let pool = app.state::<crate::state::AppState>().db_manager.pool().clone();
     let api_key = match crate::database::repositories::setting::SettingsRepository::get_transcript_api_key(
@@ -476,11 +539,19 @@ async fn teardown_realtime_session() {
     {
         // Let the bridge DRAIN: aborting it immediately discards events that were
         // already emitted and are still sitting in the channel, silently losing
-        // transcript text that had been produced successfully. Only abort if it
-        // somehow fails to finish in time.
-        match tokio::time::timeout(std::time::Duration::from_millis(1500), bridge).await {
-            Ok(_) => info!("🎧 Realtime bridge drained cleanly"),
-            Err(_) => warn!("🎧 Realtime bridge did not drain within 1.5s"),
+        // transcript text that had been produced successfully.
+        //
+        // `timeout` takes the JoinHandle by value, so on the timeout branch it is
+        // dropped, and a dropped JoinHandle DETACHES the task rather than stopping
+        // it: the bridge would live on holding an AppHandle. Re-create a handle to
+        // abort by keeping the future's own handle via `tokio::select!` instead.
+        let mut bridge = bridge;
+        tokio::select! {
+            _ = &mut bridge => info!("🎧 Realtime bridge drained cleanly"),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(1500)) => {
+                warn!("🎧 Realtime bridge did not drain within 1.5s — aborting it");
+                bridge.abort();
+            }
         }
     }
 }
@@ -693,6 +764,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         *start_time = Some(std::time::Instant::now());
     }
     AUDIO_ELAPSED_MS.store(0, Ordering::Relaxed);
+    TOTAL_PAUSED_MS.store(0, Ordering::Relaxed);
     reset_speech_detected_flag(); // Reset for new recording session
 
     // Start optimized parallel transcription task and store handle
@@ -893,6 +965,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         *start_time = Some(std::time::Instant::now());
     }
     AUDIO_ELAPSED_MS.store(0, Ordering::Relaxed);
+    TOTAL_PAUSED_MS.store(0, Ordering::Relaxed);
     reset_speech_detected_flag(); // Reset for new recording session
 
     // Start optimized parallel transcription task and store handle
@@ -1042,7 +1115,13 @@ pub async fn stop_recording<R: Runtime>(
     //       overlap: emitted commits remove exactly their own windows.
     //
     // Both steps run before the capture force-flush below. The sockets themselves
-    // are closed later, in teardown_realtime_session().
+    // are closed later, in teardown_realtime_session(); `_realtime_guard` makes
+    // sure that happens even if an error return below skips the in-line call.
+    //
+    // The wait is bounded but usually instant: a stream that declines the finalize
+    // (inside the danger band, nothing real outstanding, degraded, or mid-backoff)
+    // resolves immediately rather than burning the whole timeout.
+    let _realtime_guard = RealtimeTeardownGuard;
     {
         let session = { REALTIME_SESSION.lock().await.clone() };
         if let Some(session) = session {
@@ -1099,6 +1178,7 @@ pub async fn stop_recording<R: Runtime>(
         *start_time = None;
     }
     AUDIO_ELAPSED_MS.store(0, Ordering::Relaxed);
+    TOTAL_PAUSED_MS.store(0, Ordering::Relaxed);
 
     // NOTE: the transcript-update listener is intentionally NOT removed here. It must stay
     // registered through the drain below so the final force-flush transcript segments are
@@ -1186,7 +1266,9 @@ pub async fn stop_recording<R: Runtime>(
     }
 
     // Step 2.5: The drain is complete, so all tail transcript segments have now been
-    // written into the manager (and transcripts.json) by the listener. Remove the
+    // written into the manager by the listener. (transcripts.json lags: the mirror
+    // is debounced and is flushed for real by RecordingSaver::flush_transcripts_now
+    // at the start of stop_and_save.) Remove the
     // transcript-update listener to release the microphone reference, then take the
     // manager out of the global for the final analytics + save below.
     {
@@ -1428,6 +1510,11 @@ pub async fn stop_recording<R: Runtime>(
         let meeting_folder = manager.get_meeting_folder();
         let meeting_name = manager.get_meeting_name();
 
+        // R1: get the debounced transcripts.json mirror onto disk BEFORE the long,
+        // fallible save below, so a timeout or error in there cannot lose the
+        // closing segments.
+        manager.flush_transcripts_now();
+
         match tokio::time::timeout(
             tokio::time::Duration::from_secs(300), // 5 minutes max for file I/O
             manager.save_recording_only(&app)
@@ -1567,6 +1654,12 @@ pub async fn resume_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), Strin
     let manager_guard = RECORDING_MANAGER.lock().await;
     if let Some(manager) = manager_guard.as_ref() {
         manager.resume_recording().map_err(|e| e.to_string())?;
+        // R3: the pause total only advances on resume, so mirror it here for the
+        // realtime bridge's wall-clock conversion.
+        TOTAL_PAUSED_MS.store(
+            (manager.get_total_pause_duration() * 1000.0).max(0.0) as u64,
+            Ordering::Relaxed,
+        );
 
         // Emit resume event to frontend
         app.emit(
@@ -1893,6 +1986,37 @@ pub async fn get_recordings_base_dir() -> Result<Option<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_time_accounts_for_paused_duration() {
+        // R3: the AUDIO clock freezes while paused, the wall clock does not. A
+        // segment recorded just after a 10-minute pause has a small audio offset
+        // but happened only moments ago; without subtracting the pause it was
+        // stamped ~10 minutes early, and that reached transcripts.json, the
+        // meeting-details UI and search's ORDER BY timestamp.
+        //
+        // Scenario: 700s of wall time, 600s of it paused, so the audio clock reads
+        // 100s. A segment at audio 95s was recorded 5s ago.
+        let back = seconds_back_for_audio_time(700.0, 600.0, 95.0).unwrap();
+        assert!((back - 5.0).abs() < 1e-9, "expected 5s ago, got {}", back);
+
+        // The old, pause-blind arithmetic would have claimed it was 605s ago.
+        let pause_blind = seconds_back_for_audio_time(700.0, 0.0, 95.0).unwrap();
+        assert!((pause_blind - 605.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn display_time_without_a_pause_is_unchanged() {
+        let back = seconds_back_for_audio_time(120.0, 0.0, 100.0).unwrap();
+        assert!((back - 20.0).abs() < 1e-9);
+        // A segment "in the future" (clock skew) clamps to now rather than going
+        // negative, which chrono could not represent as a subtraction anyway.
+        let clamped = seconds_back_for_audio_time(10.0, 0.0, 50.0).unwrap();
+        assert_eq!(clamped, 0.0);
+        // Nonsense offsets fall back to now.
+        assert!(seconds_back_for_audio_time(10.0, 0.0, f64::NAN).is_none());
+        assert!(seconds_back_for_audio_time(10.0, 0.0, -1.0).is_none());
+    }
 
     /// Regression for the start_recording TOCTOU (B017) and the stop/start decoupling.
     /// Both concerns share the module-level IS_RECORDING / CLEANUP_IN_PROGRESS atomics,
