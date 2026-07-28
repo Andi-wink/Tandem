@@ -231,6 +231,7 @@ pub fn start_transcription_task<R: Runtime>(
                             let chunk_timestamp = chunk.timestamp;
                             let chunk_duration = chunk.data.len() as f64 / chunk.sample_rate as f64;
                             let chunk_device_type = chunk.device_type.clone();
+                            let chunk_overlap_samples = chunk.overlap_samples;
 
                             // Transcribe with provider-agnostic approach
                             match transcribe_chunk_with_provider(
@@ -316,7 +317,15 @@ pub fn start_transcription_task<R: Runtime>(
                                             crate::audio::recording_state::DeviceType::Microphone => &prev_mic_tail,
                                             crate::audio::recording_state::DeviceType::System => &prev_system_tail,
                                         };
-                                        let transcript = dedup_overlap_prefix(prev_tail, &transcript);
+                                        // Chunks flushed with no overlap (e.g. the realtime
+                                        // shadow flush) carry no repeated prefix; deduping
+                                        // them would delete a genuinely spoken word on an
+                                        // exact boundary-token match.
+                                        let transcript = if chunk_overlap_samples > 0 {
+                                            dedup_overlap_prefix(prev_tail, &transcript)
+                                        } else {
+                                            transcript
+                                        };
                                         // Update the tail for next iteration: keep up to
                                         // OVERLAP_TAIL_WORDS of the emitted transcript.
                                         let new_tail: Vec<String> = transcript
