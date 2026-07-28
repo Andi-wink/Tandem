@@ -1,0 +1,5 @@
+# Confidential client-derived data — never commit (privacy-first).
+# Ground-truth speaker transcripts and eval reports contain verbatim client
+# speech. Only the harness *code* is tracked.
+refs/
+results/

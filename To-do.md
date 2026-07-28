@@ -2,6 +2,20 @@
 
 ## Open
 
+### Solo mode: typed note added INTO the transcript (F062) — BUILT, gates green (2026-07-23), on `feature/solo-transcript-notes` (uncommitted)
+Andrew's intent (delivered): while recording, type a quick note or link and have it appear in the transcript itself as an entry alongside the spoken text, so it lands everywhere the transcript goes. Implemented as a compact keyboard-first input in the live recording view ([TranscriptNoteInput.tsx](frontend/src/components/TranscriptNoteInput.tsx), Enter adds, shown while recording/paused) that injects a transcript segment marked `source: "note"` into TranscriptContext via a new `addNote()`. Marker mechanism reuses the existing `source` field (persisted to the DB `speaker` column, no schema change), so the note flows with zero new plumbing into: the live view, the saved meeting transcript (stop-save reads the same state → api_save_transcript), [live-transcript.md](frontend/src/services/handoffService.ts) (rendered `Note: ...`), @code task files, and LLM summaries. Distinct indigo "Note" badge + verbatim text (no filler-word stripping, links survive) in both the live view and meeting-details via the shared [VirtualizedTranscriptView.tsx](frontend/src/components/VirtualizedTranscriptView.tsx). Pure logic (marker/timestamp/ordering) in [transcriptNotes.ts](frontend/src/lib/transcriptNotes.ts). Summary builder + anonymizer verified to not reference speaker/source, so notes read as plain text there (no crash). Gates: tsc clean, vitest 146/146 (14 new in [transcriptNotes.test.ts](frontend/src/lib/transcriptNotes.test.ts)), cargo check clean (no Rust touched). Not committed.
+- [ ] LIVE-RUNTIME needed: real recording → type a note + a URL mid-call → confirm the "Note" badge in the live view, the note persists into the saved meeting transcript on stop, appears as `Note: ...` in `.tandem/live-transcript.md`, survives a reload of meeting-details, and shows verbatim (URL intact) in the generated summary.
+- [ ] Note timestamp is derived on the frontend from the max `audio_end_time` of existing segments (transcription lags live audio, so this attaches the note just after the most recent speech) rather than the true wall-clock elapsed. `get_recording_elapsed_secs()` exists in Rust but is not exposed as a Tauri command; expose + use it if exact live-audio alignment is ever wanted.
+- [ ] Notes are input-only in the live view for now: no edit/delete of an added note before stop (spoken segments have inline double-click edit; notes could reuse it — they carry a real segment id). Add if requested.
+
+### Session-aware HUD merged to main + readable session folders (DONE 2026-07-23)
+`feature/f061-session-aware-hud` is fully merged into main (merges 8689719 + e613fcd, pushed). Session folders now use `sessions/HH.MM, DD.MM - <Session name>` (commit fb5aab8, timestamp from the project row's stable `created_at`, Windows-safe sanitization, empty-name fallback to short id) and screenshots are copied into the per-session `screenshots/` subfolder with a relative index. Gates on merged main: tsc clean, vitest 132/132. The two spoken intents from the 2026-07-23 solo sessions (per-session screenshots subfolder, session name instead of UUID) are both delivered.
+- [ ] Rebuild/restart the Tandem app so the running build picks this up; the folders created today still used the old UUID naming.
+- [ ] Tandem-main env note: pnpm skips the optional `@rolldown/binding-win32-x64-msvc` there (lockfile-level pnpm optional-deps issue), which breaks vitest startup until it is added manually; binding is installed on disk now but a future clean reinstall will hit it again.
+
+### Voxtral worktree is stale, do not merge (verified 2026-07-23)
+All uncommitted work in `D:\Dev-projects\Tandem-voxtral` (Mistral/Voxtral provider, solo HUD, notification system, Lightbox/Mermaid, LanguagePicker) was already recovered onto main (55fa649, 9a42d80, ed63952) and has evolved further there; the worktree copies are older versions (emit-based HUD, outdated CSP, test bundle identifier `com.tandem.ai.voxtral`). Merging would regress main. Safe to discard the worktree's local changes / remove the worktree once confirmed nothing personal is in it.
+
 ### Bug-hunt 5-iteration loop — DONE, committed 5438c86 (2026-07-17)
 24 bugs found across 5 risk zones (stop pipeline, calendar stack, routing/filing, Rust core, UI surfaces), 21 fixed at the root with regression tests, each iteration adversarially verified (round-2 fix passes in I1/I2/I4; I4's concurrency fix independently re-verified with a full interleaving trace). Closed long-standing To-do items: start_recording TOCTOU (atomic reservation guard), frecency-not-unlearned-on-Undo, non-atomic move+DB divergence, double-rendered action items (read-only exclusion path, save payload intact), summary-polling teardown. Gates: tsc clean, vitest 367/367, Playwright 62/62, cargo test 145 pass.
 - [ ] Residual (safe direction): stop_recording reads manager_populated and IS_RECORDING as two sequential reads; a stop landing exactly as a start finishes populating can get a spurious no-op and need a second stop click. Rare UX miss, never corruption ([recording_commands.rs](frontend/src-tauri/src/audio/recording_commands.rs)).
@@ -16,14 +30,20 @@ Spec: [research/enhance-my-notes-plan.md](research/enhance-my-notes-plan.md). Li
 - [x] ~~Regenerate used the paginated transcript subset~~ — fixed in the same feature's round-2 QA pass (collectAllTranscripts pages through the full transcript, unit-tested).
 - [ ] Pre-existing, NOT caused by this feature: [command-palette.spec.ts](frontend/e2e/tests/command-palette.spec.ts) "two same-title rows are individually selectable" fails deterministically at HEAD (cmdk `data-selected` never set on duplicate rows), independent of these changes.
 
-### Optional video capture during meetings (F061, 2026-07-13) — BUILT + adversarially reviewed, on `feature/video-capture`
-Opt-in continuous screen + webcam recording alongside audio, using the ffmpeg sidecar already bundled for audio encoding. Built in worktree `D:\Dev-projects\Tandem-video-capture`. Plan: [dynamic-dazzling-bachman.md](C:\Users\andre\.claude\plans\dynamic-dazzling-bachman.md). Two independent adversarial review passes (real ffmpeg smoke tests, not just code reading) both initially FAILED; all confirmed blockers fixed (CSP `media-src` gap, dshow colon device-name corruption, orphaned-ffmpeg-on-force-kill via Windows Job Object, verified with a real negative-control test). Committed at `4271a46`, not merged/pushed.
-- [ ] No live "recording video" indicator during the call — `get_video_recording_status` command exists but has no frontend caller yet; video state is only visible post-hoc in meeting review.
-- [ ] `webcam_device_name` in settings isn't reconciled if the previously selected camera disconnects/changes — stale name silently persists until the user re-picks.
+### Optional video capture during meetings (F061, 2026-07-13, review round 2 2026-07-23) — BUILT + two adversarial review rounds, on `feature/video-capture`
+Opt-in continuous screen + webcam recording alongside audio, using the ffmpeg sidecar already bundled for audio encoding. Built in worktree `D:\Dev-projects\Tandem-video-capture`. Plan: [dynamic-dazzling-bachman.md](C:\Users\andre\.claude\plans\dynamic-dazzling-bachman.md). Round 1 (commit `4271a46`): CSP `media-src` gap, dshow colon device-name corruption, orphaned-ffmpeg-on-force-kill (Windows Job Object, verified with a real negative-control test). Round 2 (commits `9aff6c6` + `835952a`, four parallel fixer subagents then a skeptic that FAILED the round's own first fixes before two more fixes closed it): live in-call video indicator (polls `get_video_recording_status`, one-shot death toasts, shutdown-progress suppression so tray/wake-word stops do not false-alarm), stale-webcam warning + semantic destructive/warning tokens in settings, branch-blocking 15 E0433s root-caused to tauri-macros 2.6's new `__tauri_command_name_*` items vs explicit re-export lists (glob re-exports fix), start TOCTOU closed with an RAII compare_exchange claim guard, and stop-vs-start claim clobber closed (manager `take()` = sole teardown ownership token). Gates: cargo 0 errors, tsc clean, vitest 174/174. Not merged/pushed.
+- [x] Live "recording video" indicator during the call ([VideoCaptureIndicator.tsx](frontend/src/components/VideoCaptureIndicator.tsx), round 2).
+- [x] Stale `webcam_device_name` reconciliation warning in settings (round 2).
+- [x] Branch-blocking summary/summary_engine E0433s (round 2, `9aff6c6`).
+- [x] `start_recording` TOCTOU + `stop_recording` claim clobber (round 2, `835952a`).
+- [ ] MERGE CAUTION: `main` independently fixed the same start TOCTOU in the bug-hunt loop (commit `5438c86`, "atomic reservation guard"); merging `feature/video-capture` into `main` will need reconciling the two guards in [recording_commands.rs](frontend/src-tauri/src/audio/recording_commands.rs), keep exactly one claim mechanism.
 - [ ] macOS avfoundation capture path is unverified — no Mac available in this dev environment; screen device index defaults to `"1:none"` which isn't guaranteed across machines.
 - [ ] No retention/disk-usage policy or UI (explicitly deferred per user decision) — revisit once real usage data exists, video is far larger than audio.
-- [ ] Pre-existing, NOT caused by this feature but blocks building the branch: 15 baseline `cargo check` errors (`E0433` in `summary`/`summary_engine` Tauri command macros), confirmed via `git stash` isolation to predate this work.
-- [ ] Pre-existing, NOT caused by this feature: a `start_recording` TOCTOU race (two near-simultaneous start calls can both pass the `IS_RECORDING` check before it's set) already existed for audio; video capture doubles the number of stray ffmpeg processes a race hit would spawn.
+- [ ] LIVE-RUNTIME pass still needed: real recording with both toggles on, confirm screen.mp4/webcam.mp4 land in the meeting folder, play back in meeting-details, indicator shows/hides correctly, and a denied-camera error surfaces cleanly.
+- [ ] Residuals from round 2 skeptic (logged, accepted): `is_recording` reports true during the sub-second start claim window (cosmetic flicker on refresh-during-start); errors after claim disarm but before the `recording-started` emit leave a live recording behind an `Err` (pre-existing behavior, unchanged).
+- [x] Capture-mode selector (commit `abef9a9`): Off / Screen only / Screen + webcam / Webcam only radio cards replacing the two switches, mapped onto the existing booleans, no Rust change. Adversarial QA PASS with a real 8-test Playwright run (mapping round-trips incl. legacy prefs, full-object save with no field clobber, webcam block gating + stale warning, arrow-key a11y, rapid double-click consistency).
+- [ ] E2E INFRA (found by QA, affects ALL worktrees): [playwright.config.ts](frontend/playwright.config.ts) has `reuseExistingServer: !CI` and a fixed port 3118, so with parallel worktree sessions the suite silently tests whichever worktree grabbed 3118 first (QA's first run tested the f055 worktree's code). Fix: per-worktree port or `reuseExistingServer: false`.
+- [ ] Nice-to-haves from capture-mode QA: no explicit `:focus-visible` token ring on the new radio cards (same debt as the AudioBackendSelector precedent); shared save toast says "Device preferences saved: Microphone ..." even for video-mode changes; e2e base mock lacks `list_webcams` and returns partial `get_recording_preferences` (future webcam-mode specs would crash on the stock mock).
 
 ### Main-driver 4-iteration loop (2026-07-12) — PAUSED AFTER I2 (user: plan only for now)
 Goal: make Tandem the daily main driver; headline feature = calendar integration (build on [research/proton-mail-calendar-integration/](research/proton-mail-calendar-integration/)).
@@ -157,16 +177,37 @@ then latency profile: median block wait 16.7s -> 7.7s for +0.71pp (5.6% -> 6.3%)
 Retry + timeouts added to the ElevenLabs provider (a failed POST used to silently
 drop a 12-35s chunk — likely the user-perceived word drops). Research report:
 [stt-improvement-ideas.md](research/stt-improvement-ideas.md).
-- [ ] **ElevenLabs Scribe v2 Realtime WebSocket** (top lever, M effort): partial +
-  committed transcripts at ~100-150ms; kills both remaining latency (VAD-segment
-  floor: a 35s monologue still arrives as one block) and boundary artifacts.
-  Needs a frontend partial/volatile rendering layer (TranscriptContext is
-  append-only by sequence_id) + live-mic runtime testing.
-  **PLANNED 2026-07-12**: full 4-phase implementation plan in
-  [scribe-realtime-ws-plan.md](research/scribe-realtime-ws-plan.md) (Phase 0 API
-  spike + pricing gate, Phase 1 frontend partial layer, Phase 2 Rust WS session
-  engine behind a `scribe_v2_realtime` model setting, Phase 3 harness
-  measurement with keep-or-kill gates, Phase 4 manual runtime pass). Not started.
+- [x] **ElevenLabs Scribe v2 Realtime WebSocket — BUILT through Phase 3** (2026-07-12,
+  plan [scribe-realtime-ws-plan.md](research/scribe-realtime-ws-plan.md)). Worktree
+  `Tandem-scribe-rt`, branch `feature/scribe-realtime-ws` (milestone 45137ff +
+  close_all fix), opt-in via elevenLabs model `scribe_v2_realtime` in settings;
+  batch stays default. Phase 0 spike GO (contract confirmed live; $0.39/audio-hr
+  vs $0.22 batch, billed per audio-hour; 15.7s idle socket timeout -> keepalives).
+  Phase 1 partial tail rendering (QA'd, seq-restart-safe, partials provably never
+  persisted). Phase 2 per-stream WS engine + pipeline tap with disconnect
+  catch-up shadow + never-0.0 timeline anchoring (2 adversarial fix rounds; the
+  re-QA caught a stop-path double-transcription regression before commit).
+  Phase 3 gates on clips 11-16: committed WER 6.00% (gate <=6.8% PASS, batch
+  5.9-6.3%), commit latency median 0.34s vs batch 7.7s (22x), TTFP 2.6s once
+  then ~1.0s/utterance; word timestamps are session-cumulative-over-fed-audio
+  (TimelineMapper design confirmed). Main-repo harness commits: 62db60d (spike),
+  27868fd (Phase 3 harness).
+- [ ] **Phase 4 — manual live-mic runtime pass (NEEDS ANDREW at the machine)**,
+  in worktree Tandem-scribe-rt: (1) select ElevenLabs / "Scribe v2 Realtime" in
+  transcription settings; record a real call: partial tail appears in ~1-2s,
+  updates in place, locks into committed lines; Local/Remote attribution correct.
+  (2) Kill the network mid-call ~30s, restore: warning toast once, transcript
+  continues (degraded batch), no duplicated/lost text vs the saved audio.
+  (3) Stop while speaking: closing utterance appears exactly once. (4) Check
+  meeting-details ordering, summary, live-transcript.md/@code see only committed
+  text. (5) Long call >1h: session survives (rotation unverified headless).
+  Then decide default-on vs opt-in + reconcile To-do follow-ups.
+- [ ] Realtime residuals (accepted, documented): commit-sent vs server-committed
+  ~0.4s race can lose that window's text on a drop at exactly that moment;
+  final-commit loss if close_all's 2s grace expires on a dead network; TTFP
+  session warmup 2.6s (first utterance of a call feels slower than the rest);
+  same-window multi-segment shadow edge (redemption 800ms > window 600ms makes
+  it near-unreachable).
 - [ ] VAD-level mid-segment partial emit: silero holds a monologue as one 13-35s
   segment; no buffer knob can subdivide it. Needed if we stay on batch HTTP.
 - [ ] Consider min 5s instead of 4s for the CLOUD profile (QA: 6.21% @ 9.1s median
@@ -199,10 +240,25 @@ Iteration 1 done (phrase-level "n a n" -> n8n fix, pooled WER 22.03% -> 21.54%, 
 - [ ] #8 Evaluate the installed Canary models (canary-qwen-2.5b, canary-1b) through the same harness for an accuracy comparison.
 - [ ] #9 Optional second-pass LLM transcript cleanup (Ollama/Claude already configured).
 
-### Security
-- [ ] Anthropic API key is stored in plaintext in the Rust `settings` table (meeting_minutes.sqlite), contradicting CLAUDE.md's "localStorage only / never stored server-side" claim. Decide on encryption-at-rest or removal.
+### Channel-based speaker labels (you / Client) — shipped on feature/speaker-diarization
+The simple 1:1-call approach: mic channel = your name (default "Andrew", set in Preferences), system channel = "Client". Surfaced as transcript badges + in summaries + AI/@code context, reusing the `source` label already on every segment. Pyannote stays optional (takes precedence when present). Commit 9733d49; `tsc` + `cargo check` clean. Adversarial QA done (3 skeptics). Follow-ups / known limits:
+- [ ] Echo bleed (the #1 real-world accuracy risk): on open speakers the client's voice re-enters your mic and can be labelled as you. AEC runs but is undercut by ring-buffer drift + no `set_stream_delay_ms` hint. Options: feed AEC a delay hint / align channels before AEC; detect headphones and nudge the user; add a "use headphones for best speaker accuracy" note near recording. Headphones eliminate it today.
+- [ ] Device-role validation: if the mic slot is a loopback / "Stereo Mix" / virtual cable / the same device as system, "your" channel is poisoned with client audio. Warn when the mic device looks like a loopback or duplicates the system device.
+- [ ] Multiple remote speakers all show as "Client" (inherent). Layer pyannote-on-system (the eval harness already supports `--mode channels`) if per-remote-speaker splitting is ever needed.
+- [ ] pyannote `speaker_label` is not persisted (no column), so its precedence only applies to a freshly-diarized, still-open meeting. Add a column + model/API field if pyannote labels should survive a reload.
+- [ ] "Client" label is fixed (not per-meeting editable). Add a remote-name setting if desired.
+
+### Speaker Diarization (F022) — recovered onto main, harness built
+Recovered the orphaned F022 work onto `feature/speaker-diarization` (rebased off main) and built an eval harness in [audio_testing/diarization/](audio_testing/diarization/). Approach chosen: **channel split + pyannote on the system channel** (mic = local speaker, trusted). Remaining:
+- [ ] Phase 5.5 runtime: `pip install pyannote.audio torchaudio scipy requests`, accept the `pyannote/speaker-diarization-community-1` terms on HuggingFace, set `HF_TOKEN`. (torch already installed; pyannote is NOT.)
+- [ ] Bootstrap ground truth: `ELEVENLABS_API_KEY` set, run [fetch_elevenlabs_refs.py](audio_testing/diarization/fetch_elevenlabs_refs.py), then hand-correct `refs/<clip>.diar.json` into the perfect examples.
+- [ ] Run the loop ([run_diarization.py](audio_testing/diarization/run_diarization.py)) in `--mode mixed`, iterate `CONFIGS`, push pooled WSA toward ~100%.
+- [ ] Channel-split (`--mode channels`) needs split-track clips `clips/<clip>_mic.wav` + `clips/<clip>_system.wav`. Record a few short calls with `TANDEM_SAVE_RAW_TRACKS=1` (the audio-aec worktree saves raw tracks) to unlock the production-target evaluation.
+- [ ] End-to-end product test: install deps, download model via Settings, diarize a real recording, verify speaker badges render (recovered UI compiles; not yet runtime-tested).
+- [ ] Cleanup: once recovery is confirmed good, delete the stale `D:/Dev-projects/Tandem-f022-orphan` directory (kept as the recovery source).
 
 ## Done
+- Security: the Anthropic/Claude API key no longer sits in plaintext in the `settings` table. It now lives in the OS credential store (Windows Credential Manager / macOS Keychain via the `keyring` crate); `save`/`get`/`delete` for the `claude` provider delegate to [secure_store.rs](frontend/src-tauri/src/database/secure_store.rs). On startup, any pre-existing plaintext `anthropicApiKey` is migrated into the secure store and the column is blanked ([manager.rs](frontend/src-tauri/src/database/manager.rs)). `cargo check --lib` clean; secure_store + settings repository tests pass. Other provider keys (Groq, OpenAI, etc.) remain in SQLite, matching CLAUDE.md.
 - Established transcription WER baseline for the current engine (Parakeet TDT v3 int8) vs ElevenLabs ground truth: 31.4% pooled (exact meeting pipeline).
 - Implemented engine improvements #1 (de-stutter), #3 (domain correction), #4 (sensitive VAD, ~99.5% word coverage), #5 (12s context window): pooled WER 31.4% -> 26.0%. `cargo check` passes.
 - Built the WER measurement harness (real Silero VAD + buffer assembly + Parakeet replica) and the local regression gate.

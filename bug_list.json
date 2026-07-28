@@ -38,7 +38,7 @@
       "severity": "critical",
       "name": "Dual recording state flags can diverge",
       "description": "Two independent AtomicBool flags track recording state: RECORDING_FLAG in lib.rs (line 66) and IS_RECORDING in recording_commands.rs (line 39). start_recording checks one flag then sets the other after success. If recording init partially fails between those two points, the flags diverge permanently. UI thinks recording is active while backend is idle (or vice versa). Only recovery is app restart.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src-tauri/src/lib.rs",
       "lines": [
         66,
@@ -134,7 +134,7 @@
       "severity": "high",
       "name": "Mutex poisoning from .unwrap() on all lock calls",
       "description": "RecordingState has 20+ .lock().unwrap() calls. If any thread panics while holding a mutex lock, the mutex becomes poisoned and ALL subsequent lock attempts will panic. This is especially dangerous in the error callback path (line 312-315) where a panicking callback poisons the error_callback mutex, preventing all future error recovery.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src-tauri/src/audio/recording_state.rs",
       "lines": [
         154,
@@ -164,7 +164,7 @@
       "severity": "high",
       "name": "Progress task infinite loop with no exit condition",
       "description": "The progress_task spawned at line 571 runs an infinite loop emitting events every 500ms. Only cancelled via .abort() after the transcription timeout. If transcription completes quickly, the progress task keeps running until the full timeout. Can emit stale events for 10+ minutes.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src-tauri/src/audio/recording_commands.rs",
       "lines": [
         571,
@@ -197,7 +197,7 @@
       "severity": "high",
       "name": "Event listener cleanup race condition in layout.tsx",
       "description": "Uses .then(fn => fn()) pattern for Tauri unlisten cleanup. The cleanup function can execute before the listener promise resolves, meaning the listener is never unsubscribed and leaks memory.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src/app/layout.tsx",
       "lines": [
         91,
@@ -213,7 +213,7 @@
       "severity": "high",
       "name": "Dynamic SQL column names via f-strings",
       "description": "Column names are interpolated directly into SQL queries using f-strings in save_api_key, save_transcript_api_key, and related methods. Currently validated against a whitelist, but the pattern is fragile. Any future change that bypasses or extends the whitelist opens a SQL injection vulnerability.",
-      "status": "open",
+      "status": "fixed",
       "file": "backend/app/db.py",
       "lines": [
         607,
@@ -236,7 +236,7 @@
       "severity": "medium",
       "name": "Async listener setup race in RecordingStateContext",
       "description": "setupListeners() is async but not awaited. If the component unmounts before listeners are set up, the cleanup function runs but unsubscribers array is incomplete, leaking event listeners.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src/contexts/RecordingStateContext.tsx",
       "lines": [
         210
@@ -251,7 +251,7 @@
       "severity": "medium",
       "name": "Stale closure in setStatus callback",
       "description": "setStatus useCallback depends on state.status, state.isRecording, state.isPaused, causing a new callback reference on every state change. This triggers unnecessary re-renders in all consumers and creates timing windows where the callback captures stale values.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src/contexts/RecordingStateContext.tsx",
       "lines": [
         73,
@@ -274,7 +274,7 @@
       "severity": "medium",
       "name": "Unnecessary router dependency in useRecordingStop",
       "description": "The useEffect has [router] as dependency, but useRouter() can return a new reference on re-renders. This causes the Tauri event listener to be unregistered and re-registered unnecessarily.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src/hooks/useRecordingStop.ts",
       "lines": [
         114
@@ -289,7 +289,7 @@
       "severity": "medium",
       "name": "Async cleanup race in ConfigContext",
       "description": "Cleanup variable is set via .then() callback but may still be undefined when component unmounts before setup completes. The cleanup function runs, finds undefined, and the event listener leaks.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src/contexts/ConfigContext.tsx",
       "lines": [
         313
@@ -304,7 +304,7 @@
       "severity": "medium",
       "name": "Missing recordingState dependency in TranscriptContext useEffect",
       "description": "useEffect at line 178 depends on [currentMeetingId] but uses recordingState.isRecording inside the sync logic. When recording state changes, the effect does not re-run, causing stale sync behavior.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src/contexts/TranscriptContext.tsx",
       "lines": [
         178
@@ -319,7 +319,7 @@
       "severity": "medium",
       "name": "Dangling event listeners from rapid start calls",
       "description": "Two rapid start_recording calls without an intervening stop_recording will overwrite TRANSCRIPT_LISTENER_ID with the second listener ID, leaking the first. The first listener continues receiving transcript-update events and storing transcripts, causing memory bloat.",
-      "status": "open",
+      "status": "fixed",
       "file": "frontend/src-tauri/src/audio/recording_commands.rs",
       "lines": [
         291,
@@ -353,7 +353,7 @@
       "severity": "medium",
       "name": "IS_RECORDING flag updated too late during stop",
       "description": "IS_RECORDING is set to false at line 854, after 600+ lines of cleanup including transcription wait, model unload, and analytics. During this time, commands like pause_recording and get_recording_state see IS_RECORDING=true but the manager may already be released, risking crashes.",
-      "status": "open",
+      "status": "obsolete",
       "file": "frontend/src-tauri/src/audio/recording_commands.rs",
       "lines": [
         854
@@ -405,7 +405,7 @@
       "severity": "medium",
       "name": "Race condition in concurrent process creation",
       "description": "create_process() uses a non-atomic read-then-write pattern (UPDATE then INSERT if 0 rows). Two concurrent requests for the same meeting_id can both see 0 rows from UPDATE, then both attempt INSERT, causing a PRIMARY KEY constraint violation.",
-      "status": "open",
+      "status": "fixed",
       "file": "backend/app/db.py",
       "lines": [
         170,

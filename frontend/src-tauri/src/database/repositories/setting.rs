@@ -89,6 +89,13 @@ impl SettingsRepository {
             ));
         }
 
+        // The Anthropic/Claude key is kept in the OS credential store, never in
+        // plaintext SQLite (see database::secure_store).
+        if provider == "claude" {
+            return crate::database::secure_store::set_anthropic_key(api_key)
+                .map_err(|e| sqlx::Error::Protocol(e.into()));
+        }
+
         let api_key_column = match provider {
             "openai" => "openaiApiKey",
             "claude" => "anthropicApiKey",
@@ -125,6 +132,12 @@ impl SettingsRepository {
         if provider == "custom-openai" {
             let config = Self::get_custom_openai_config(pool).await?;
             return Ok(config.and_then(|c| c.api_key));
+        }
+
+        // The Anthropic/Claude key lives in the OS credential store, not SQLite.
+        if provider == "claude" {
+            return crate::database::secure_store::get_anthropic_key()
+                .map_err(|e| sqlx::Error::Protocol(e.into()));
         }
 
         let api_key_column = match provider {
@@ -253,6 +266,12 @@ impl SettingsRepository {
                 .execute(pool)
                 .await?;
             return Ok(());
+        }
+
+        // The Anthropic/Claude key lives in the OS credential store, not SQLite.
+        if provider == "claude" {
+            return crate::database::secure_store::delete_anthropic_key()
+                .map_err(|e| sqlx::Error::Protocol(e.into()));
         }
 
         let api_key_column = match provider {
@@ -526,6 +545,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_save_and_get_api_key_claude() {
+        // The claude key routes through the OS credential store (mocked in tests);
+        // serialize with other tests that touch the shared Anthropic account.
+        let _guard = crate::database::secure_store::anthropic_test_guard()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let pool = create_test_pool(dir.path()).await;
 
@@ -537,6 +561,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(key.as_deref(), Some("sk-ant-test"));
+
+        // Clean up so the shared mock store does not leak into other tests.
+        SettingsRepository::delete_api_key(&pool, "claude")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

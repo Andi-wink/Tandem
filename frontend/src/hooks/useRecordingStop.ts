@@ -26,6 +26,7 @@ import {
   shouldNavigateAfterStop,
   clearLastRecordingKeys,
 } from '@/lib/recordingStopFlow';
+import { startDiarization, getDiarizationHealth } from '@/services/diarizationService';
 import Analytics from '@/lib/analytics';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
@@ -302,9 +303,11 @@ export function useRecordingStop(
         unlistenFn();
       }
     };
-    // Registered once (empty deps): the listener body only writes sessionStorage from the event
-    // payload and never reads `router`, so re-registering on router identity changes (B014) only
-    // opened a teardown gap where a `recording-stopped` event could be dropped and folder_path lost.
+    // B014: register the listener ONCE (empty deps). The listener body only writes sessionStorage
+    // from the event payload and never reads `router`, so the former [router] dependency was
+    // spurious: it churned the Tauri listener (tear down + re-register on every router reference
+    // change) and opened a teardown gap where a `recording-stopped` event could be dropped and
+    // folder_path lost.
   }, []);
 
   // Main recording stop handler
@@ -664,6 +667,19 @@ export function useRecordingStop(
 
           // Mark as completed
           setStatus(RecordingStatus.COMPLETED);
+
+          // F022: Auto-trigger speaker diarization if enabled
+          if (folderPath && localStorage.getItem('tandem_auto_diarize') === 'true') {
+            getDiarizationHealth().then(h => {
+              if (h.available) {
+                startDiarization(meetingId, `${folderPath}/audio.mp4`).then(() => {
+                  toast.info('Speaker diarization started in background');
+                }).catch(err => {
+                  console.warn('Auto-diarization failed to start:', err);
+                });
+              }
+            }).catch(() => {});
+          }
 
           // I4: kick off the summary now that transcripts are persisted — works for tray/hotkey
           // stops that never navigate through the meeting-details page. Idempotent per meeting id.

@@ -51,6 +51,10 @@ export function discoveredAsProjectStubs(
       path: f.path,
       aliases: [],
       auto_discovered: true,
+      // F061: discovered folders are plain projects, not chat-session sub-projects,
+      // and have no DB row yet (created_at is filled in once they are registered).
+      session_id: null,
+      created_at: '',
     });
   }
   return stubs;

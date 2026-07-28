@@ -3,7 +3,7 @@
   "description": "AI co-pilot for every call — work in tandem with AI to capture, collaborate, and act. Fork of Meetily (Zackriya-Solutions/meeting-minutes) with screenshots, clipboard integration, PII sanitization, and real-time AI collaboration",
   "base_branch": "main",
   "working_branch": "main",
-  "last_updated": "2026-03-11",
+  "last_updated": "2026-07-23",
   "features": [
     {
       "id": "F001",
@@ -929,7 +929,9 @@
         "✅ Phase 3 — Alignment: Built into diarizer.align_with_transcripts() — midpoint matching with overlap fallback, UNKNOWN as last resort",
         "✅ Phase 4 — Frontend: Added speaker_label to types, color-coded speaker badges in VirtualizedTranscriptView, speaker prefix in transcript chunks for AI context, pass-through in usePaginatedTranscripts and TranscriptPanel",
         "✅ Phase 5 — Speaker naming UI + triggers: SpeakerNamingModal component, diarization settings in PreferenceSettings (HF token, model download, auto-diarize toggle), Identify Speakers button in meeting details, auto-trigger in useRecordingStop",
-        "⏳ Phase 5.5 — Runtime setup: Install pyannote.audio + torch CUDA deps, get HuggingFace token, download model via Settings UI, test end-to-end on a real recording",
+        "✅ Recovery (2026-07-01) — Recovered the orphaned Phase 1-5 work onto feature/speaker-diarization (rebased off main, 3-way merge). Frontend tsc passes; backend py-compiles.",
+        "✅ Eval harness (2026-07-01) — audio_testing/diarization/: Word Speaker Accuracy scorer w/ optimal label mapping (self-tested), ElevenLabs ground-truth bootstrap, pyannote config-sweep loop. Supports mixed + channel-split (mic=LOCAL) modes. Target approach: channel split + pyannote on system channel.",
+        "⏳ Phase 5.5 — Runtime setup: Install pyannote.audio + torchaudio (torch already present), get HuggingFace token + accept community-1 terms, ELEVENLABS_API_KEY to bootstrap ground truth, then run the harness loop and test end-to-end on a real recording",
         "Phase 6 — Voice fingerprinting: extract 192-dim embeddings via pyannote/embedding model, store in speaker_profiles table (BLOB). On new meetings, match unknown speakers against known profiles via cosine similarity (threshold ~0.75). Running average updates embedding over multiple meetings",
         "Phase 7 — Export: include speaker labels in all export formats (F010). Add speaker filter to transcript search"
       ],
@@ -2209,6 +2211,75 @@
         "F007"
       ],
       "passes": false
+    },
+    {
+      "id": "F061",
+      "category": "functional",
+      "name": "Session-Aware HUD + Branch Stamping",
+      "description": "Lower-friction project routing in solo mode. The solo HUD picker shows live Claude Code sessions (from the local ~/.claude/sessions registry) with project folder, current branch, and last-activity time; clicking one switches to that project, auto-registering unknown paths. Every project switch, session_start feed entry, and task handoff is stamped with the git branch (resolved from .git/HEAD incl. worktree indirection, no git spawn), and a calm warning fires when the checkout branch differs from the branch the Claude session sees. Privacy: only the last 64KB of a transcript is read and only gitBranch/cwd/type/timestamp keys are extracted; never auto-switches without a click. F061 addition (virtual sub-projects keyed by chat session): a project row gains an optional nullable session_id; picking a live session activates or creates a virtual sub-project with identity (path, session_id) named after the chat title, so several chats against ONE folder each become their own Tandem project. Its notes/transcripts/tasks/feed file under <path>/.tandem/sessions/<session_id>/ instead of the folder root, so filings from different chats never mix. A plain folder project may coexist at the same path. Uniqueness moved from path-unique to a (path, COALESCE(session_id,'')) unique index; the Rust candidate matcher prefers the session-specific project over the plain one. Filing tolerates the session folder being manually deleted (recreated on write); cleanup is manual.",
+      "priority": "high",
+      "status": "complete",
+      "branch": "feature/f061-session-aware-hud",
+      "commit": null,
+      "steps": [
+        "Rust module claude_sessions (registry reader, PID liveness, 64KB tail parse, branch resolver) + commands get_git_branch / list_claude_session_candidates",
+        "Frontend claudeSessionService + useClaudeSessionCandidates polling hook (15s, fail-silent)",
+        "Solo HUD Live sessions section with branch chips and mismatch indicator",
+        "Branch stamping in performProjectSwitch, session_start feed meta, ProjectHistoryEntry, and task handoff markdown",
+        "Auto-register unknown session cwds via ensureProjectForPath with normalized path dedupe",
+        "Adversarial QA: 2 skeptic passes incl. live-data run over 25 real sessions and real dead-worktree checks",
+        "F061 virtual sub-projects: migration adds nullable projects.session_id + (path, COALESCE(session_id,'')) unique index (rebuild drops path-unique); ProjectModel.session_id, create_project session_id arg, find_by_path_session, project_create_virtual command",
+        "F061 session-scoped filing: single derivation in performProjectSwitch sets sessionFolder to sessions/<session_id> for virtual sub-projects; tandemDirFor re-splits multi-segment folders on the project separator; response.md poll session-scoped; filing recreates a manually-deleted session folder on write",
+        "F061 HUD: live-session pick sends {cwd, sessionId, sessionName} and activates/creates the virtual sub-project via ensureVirtualProject; Rust match_project prefers the session-specific project over the plain path row; 'chat' badge on virtual sub-projects in the HUD picker and Settings > Projects table",
+        "F061 readable session folders: sessionScopeFolder derives sessions/<slug>-<shortid> (slug = display name slugified, max 40 chars; shortid = first 8 of session id; empty slug falls back to shortid alone) deterministically from the project row, no DB column",
+        "F061 session-scoped screenshots: set_active_solo_project gains a session_folder arg; the Rust screenshot routing (get_screenshots_dir) writes a virtual sub-project's captures to .tandem/sessions/<slug>-<shortid>/screenshots/ (create_dir_all on write); screenshots.md references the co-located screenshots/ dir; plain projects keep the shared .tandem/screenshots/",
+        "F061 session archival: when every task handed off from a virtual sub-project's chat is done (its tasks/ dir exists AND holds no .md files — Claude Code deletes each on completion), the session folder moves to .tandem/archive/<leaf> (-N on collision). Predicate allTasksDone (vitest) + orchestrator maybeArchiveSessionFolder append a session_archived feed line then call Rust list_dir_file_names / archive_session_folder (safe cross-dir rename, tolerates locked folder -> retry). Triggers: solo stop (ended project) and switch-away (previous project); never the active folder; sessions that never handed off a task are left for manual cleanup"
+      ],
+      "files": [
+        "frontend/src-tauri/src/claude_sessions/mod.rs",
+        "frontend/src-tauri/src/lib.rs",
+        "frontend/src-tauri/src/api/api.rs",
+        "frontend/src-tauri/src/database/models.rs",
+        "frontend/src-tauri/src/database/repositories/project.rs",
+        "frontend/src-tauri/migrations/20260723000000_add_project_session_id.sql",
+        "frontend/src/services/claudeSessionService.ts",
+        "frontend/src/hooks/useClaudeSessionCandidates.ts",
+        "frontend/src/app/solo-hud/page.tsx",
+        "frontend/src/hooks/useSoloModeRouter.ts",
+        "frontend/src/contexts/SoloModeContext.tsx",
+        "frontend/src/components/ProjectSettings.tsx",
+        "frontend/src/services/projectService.ts",
+        "frontend/src/services/handoffService.ts",
+        "frontend/src/services/screenshotService.ts",
+        "frontend/src-tauri/src/screenshot/commands.rs",
+        "frontend/src/types/solo.ts"
+      ]
+    },
+    {
+      "id": "F062",
+      "category": "functional",
+      "name": "Typed Transcript Notes (Solo Mode)",
+      "description": "A compact, keyboard-first note input in the recording view lets the user type a quick note or link that is injected INTO the live transcript as a first-class segment marked source=\"note\" (Enter to add, verbatim/link-safe). Because it lands in TranscriptContext state, it flows through every existing transcript consumer with no new plumbing: the live transcript view, the saved meeting transcript (Rust SQLite via api_save_transcript, source persisted to the speaker column, no schema change), the .tandem/live-transcript.md that Claude Code /loop reads (rendered as \"Note: ...\"), @code task files, and LLM summaries. Notes render with a distinct indigo \"Note\" badge (dark-mode variants) in both the live view and meeting-details (shared VirtualizedTranscriptView) and skip filler-word cleanup so links survive. Pure logic (marker/timestamp/ordering) in transcriptNotes.ts with 14 vitest cases; note sequence_ids live in a high namespace (>=1e9) so they never collide with the worker counter (which would drop a real segment via dedup).",
+      "priority": "medium",
+      "status": "complete",
+      "branch": "feature/solo-transcript-notes",
+      "commit": "uncommitted",
+      "steps": [
+        "Add pure note logic: createNoteTranscript/isNoteSegment/noteElapsedSecs/insertSegmentOrdered (lib/transcriptNotes.ts) + tests",
+        "Expose addNote() on TranscriptContext (insert time-then-sequence ordered, mirror to IndexedDB for crash recovery)",
+        "Add TranscriptNoteInput component and mount it in the live TranscriptPanel (shown while recording/paused)",
+        "Render a distinct \"Note\" badge + verbatim text in VirtualizedTranscriptView (covers live + meeting-details)",
+        "Mark notes as \"Note: ...\" in live-transcript.md / task files via handoffService.withSpeaker"
+      ],
+      "files": [
+        "frontend/src/lib/transcriptNotes.ts",
+        "frontend/src/lib/transcriptNotes.test.ts",
+        "frontend/src/components/TranscriptNoteInput.tsx",
+        "frontend/src/contexts/TranscriptContext.tsx",
+        "frontend/src/components/VirtualizedTranscriptView.tsx",
+        "frontend/src/app/_components/TranscriptPanel.tsx",
+        "frontend/src/services/handoffService.ts"
+      ]
     }
   ]
 }

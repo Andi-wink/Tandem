@@ -18,6 +18,7 @@ import claude_agent
 import anonymizer
 import document_parser
 import task_extractor
+import diarizer
 
 # Load environment variables
 load_dotenv()
@@ -1277,6 +1278,175 @@ async def extract_tasks_endpoint(req: ExtractTasksRequest):
     except Exception as e:
         logger.error("Task extraction failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Task extraction failed: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Speaker Diarization (F022)
+# ---------------------------------------------------------------------------
+
+
+class DiarizeRequest(BaseModel):
+    meeting_id: str
+    audio_path: str
+    num_speakers: Optional[int] = None
+    min_speakers: Optional[int] = None
+    max_speakers: Optional[int] = None
+
+
+class DiarizeSetupRequest(BaseModel):
+    hf_token: str
+
+
+class SpeakerNameUpdate(BaseModel):
+    meeting_id: str
+    speaker_names: dict  # {"SPEAKER_00": "Sarah", "SPEAKER_01": "John"}
+
+
+async def run_diarization_background(
+    meeting_id: str,
+    audio_path: str,
+    num_speakers: Optional[int],
+    min_speakers: Optional[int],
+    max_speakers: Optional[int],
+):
+    """Background task: run pyannote diarization and align with transcripts."""
+    try:
+        await db.update_diarization_process(meeting_id, status="processing", progress_pct=10)
+
+        start_time = time.time()
+        result = await diarizer.diarize_audio(
+            audio_path,
+            num_speakers=num_speakers,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+        )
+        processing_time = time.time() - start_time
+
+        await db.update_diarization_process(meeting_id, status="processing", progress_pct=80)
+
+        # Align with transcript segments from backend DB
+        meeting_data = await db.get_meeting(meeting_id)
+        aligned = []
+        if meeting_data and meeting_data.get("transcripts"):
+            aligned = diarizer.align_with_transcripts(
+                result["segments"], meeting_data["transcripts"]
+            )
+
+        await db.update_diarization_process(
+            meeting_id,
+            status="completed",
+            progress_pct=100,
+            result={
+                "raw_segments": result["segments"],
+                "aligned_segments": aligned,
+                "num_speakers": result["num_speakers"],
+                "duration": result["duration"],
+            },
+            num_speakers=result["num_speakers"],
+            processing_time=processing_time,
+        )
+        logger.info(
+            "Diarization completed for %s: %d speakers, %.1fs processing",
+            meeting_id, result["num_speakers"], processing_time,
+        )
+
+    except Exception as e:
+        logger.error("Diarization failed for %s: %s", meeting_id, e, exc_info=True)
+        await db.update_diarization_process(
+            meeting_id, status="failed", error=str(e)
+        )
+
+
+@app.post("/api/diarize")
+async def start_diarization(req: DiarizeRequest, background_tasks: BackgroundTasks):
+    """Start speaker diarization on a meeting's audio file."""
+    if not diarizer.is_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Diarization model not loaded. Call POST /api/diarize/setup first.",
+        )
+
+    await db.create_diarization_process(req.meeting_id)
+    background_tasks.add_task(
+        run_diarization_background,
+        req.meeting_id,
+        req.audio_path,
+        req.num_speakers,
+        req.min_speakers,
+        req.max_speakers,
+    )
+    return {"message": "Diarization started", "meeting_id": req.meeting_id}
+
+
+@app.get("/api/diarize/status/{meeting_id}")
+async def get_diarization_status(meeting_id: str):
+    """Poll diarization progress."""
+    status = await db.get_diarization_status(meeting_id)
+    if not status:
+        raise HTTPException(status_code=404, detail="No diarization process found")
+    return status
+
+
+@app.get("/api/diarize/result/{meeting_id}")
+async def get_diarization_result(meeting_id: str):
+    """Get completed diarization result with aligned speaker labels."""
+    result = await db.get_diarization_result(meeting_id)
+    if not result:
+        raise HTTPException(
+            status_code=404,
+            detail="No completed diarization result found",
+        )
+    # Merge in display names if any
+    speaker_names = await db.get_speaker_names(meeting_id)
+    if speaker_names:
+        for seg in result.get("aligned_segments", []):
+            label = seg.get("speaker_label", "")
+            if label in speaker_names:
+                seg["speaker_display_name"] = speaker_names[label]
+    result["speaker_names"] = speaker_names
+    return result
+
+
+@app.post("/api/diarize/setup")
+async def setup_diarization(req: DiarizeSetupRequest):
+    """Download and load the diarization model (one-time setup)."""
+    if not diarizer.is_installed():
+        raise HTTPException(
+            status_code=503,
+            detail="pyannote.audio is not installed. Run: pip install pyannote.audio>=3.3.0",
+        )
+    success = diarizer.load_model(req.hf_token)
+    if success:
+        return {
+            "status": "ok",
+            "message": "Diarization model loaded successfully",
+            "device": diarizer.get_device(),
+        }
+    raise HTTPException(status_code=500, detail="Failed to load diarization model")
+
+
+@app.get("/api/diarize/health")
+async def diarization_health():
+    """Check if the diarization service is available."""
+    return {
+        "installed": diarizer.is_installed(),
+        "available": diarizer.is_available(),
+        "device": diarizer.get_device() if diarizer.is_available() else None,
+    }
+
+
+@app.post("/api/diarize/speakers")
+async def update_speaker_names(req: SpeakerNameUpdate):
+    """Update speaker display names for a meeting."""
+    await db.save_speaker_names(req.meeting_id, req.speaker_names)
+    return {"status": "ok"}
+
+
+@app.get("/api/diarize/speakers/{meeting_id}")
+async def get_speaker_names(meeting_id: str):
+    """Get speaker display names for a meeting."""
+    names = await db.get_speaker_names(meeting_id)
+    return {"speaker_names": names}
 
 
 # ---------------------------------------------------------------------------

@@ -17,6 +17,9 @@ export interface Transcript {
   audio_end_time?: number;   // Seconds from recording start (e.g., 128.6)
   duration?: number;          // Segment duration in seconds (e.g., 3.3)
   source?: string;            // "Local" (mic) or "Remote" (system audio)
+  speaker?: string;           // DB `speaker` column: holds "Local"/"Remote" from the audio channel
+  // F022: Speaker diarization
+  speaker_label?: string;    // Pyannote label (e.g., "SPEAKER_00") or user-assigned name
 }
 
 export interface TranscriptUpdate {
@@ -117,6 +120,9 @@ export interface TranscriptSegmentData {
   endTime?: number; // audio_end_time in seconds
   text: string;
   confidence?: number;
+  source?: string;           // Audio-channel source: "Local"/"Remote" (from DB `speaker`)
+  // F022: Speaker diarization
+  speaker_label?: string;
 }
 
 // Screenshot capture types

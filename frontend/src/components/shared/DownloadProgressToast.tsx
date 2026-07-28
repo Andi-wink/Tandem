@@ -218,7 +218,10 @@ export function useDownloadProgressToast() {
 
   // Listen to Parakeet download events
   useEffect(() => {
-    const unlistenProgress = listen<{
+    let cancelled = false;
+    const unlistens: Array<() => void> = [];
+
+    listen<{
       modelName: string;
       progress: number;
       downloaded_mb?: number;
@@ -249,9 +252,9 @@ export function useDownloadProgressToast() {
         cleanupDownload(modelName, 6000); // 5s toast + 1s buffer
       }
       // Removed direct showDownloadToast call here, handled by effect
-    });
+    }).then((fn) => (cancelled ? fn() : unlistens.push(fn)));
 
-    const unlistenComplete = listen<{ modelName: string }>(
+    listen<{ modelName: string }>(
       'parakeet-model-download-complete',
       (event) => {
         const { modelName } = event.payload;
@@ -268,9 +271,9 @@ export function useDownloadProgressToast() {
         // Clean up after 4 seconds (completion toast duration is 3s + 1s buffer)
         cleanupDownload(modelName, 4000);
       }
-    );
+    ).then((fn) => (cancelled ? fn() : unlistens.push(fn)));
 
-    const unlistenError = listen<{ modelName: string; error: string }>(
+    listen<{ modelName: string; error: string }>(
       'parakeet-model-download-error',
       (event) => {
         const { modelName, error } = event.payload;
@@ -288,18 +291,20 @@ export function useDownloadProgressToast() {
         // Clean up after 11 seconds (error toast duration is 10s + 1s buffer)
         cleanupDownload(modelName, 11000);
       }
-    );
+    ).then((fn) => (cancelled ? fn() : unlistens.push(fn)));
 
     return () => {
-      unlistenProgress.then((fn) => fn());
-      unlistenComplete.then((fn) => fn());
-      unlistenError.then((fn) => fn());
+      cancelled = true;
+      unlistens.forEach((fn) => fn());
     };
   }, [updateDownload, cleanupDownload]);
 
   // Listen to Built-in AI (Gemma) download events
   useEffect(() => {
-    const unlisten = listen<{
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    listen<{
       model: string;
       progress: number;
       downloaded_mb?: number;
@@ -337,10 +342,11 @@ export function useDownloadProgressToast() {
       } else if (downloadData.status === 'cancelled') {
         cleanupDownload(model, 6000);  // 5s toast + 1s buffer
       }
-    });
+    }).then((fn) => (cancelled ? fn() : (unlisten = fn)));
 
     return () => {
-      unlisten.then((fn) => fn());
+      cancelled = true;
+      unlisten?.();
     };
   }, [updateDownload, cleanupDownload]);
 

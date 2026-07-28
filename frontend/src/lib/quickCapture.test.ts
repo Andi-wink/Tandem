@@ -123,7 +123,7 @@ describe('buildRouterInput', () => {
 });
 
 describe('orderRouteCandidates', () => {
-  const proj = (id: string, name: string): Project => ({ id, name, path: `/p/${id}`, aliases: [], auto_discovered: false });
+  const proj = (id: string, name: string): Project => ({ id, name, path: `/p/${id}`, aliases: [], auto_discovered: false, session_id: null, created_at: '' });
   const pool = [proj('acme', 'Acme'), proj('globex', 'Globex'), proj('aro', 'ARO'), proj('n8n', 'n8n')];
 
   it('puts the routed project first, then the rest, capped', () => {

@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback, ReactNode, MutableRefObject } from 'react';
 import { Transcript, TranscriptUpdate, TranscriptPartial } from '@/types';
+import { createNoteTranscript, insertSegmentOrdered } from '@/lib/transcriptNotes';
 import { toast } from 'sonner';
 import { useRecordingState } from './RecordingStateContext';
 import { transcriptService } from '@/services/transcriptService';
@@ -17,6 +18,7 @@ interface TranscriptContextType {
   pendingBySource: Record<string, string>;
   transcriptsRef: MutableRefObject<Transcript[]>
   addTranscript: (update: TranscriptUpdate) => void;
+  addNote: (text: string) => boolean;
   updateTranscriptText: (transcriptId: string, newText: string) => void;
   copyTranscript: () => void;
   flushBuffer: () => void;
@@ -132,6 +134,12 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const finalFlushRef = useRef<(() => void) | null>(null);
 
+  // B016: keep currentMeetingId in a ref (updated each render) so the
+  // recording-listeners effect can read the latest value WITHOUT re-subscribing
+  // the Tauri listeners every time the meeting id changes.
+  const currentMeetingIdRef = useRef(currentMeetingId);
+  currentMeetingIdRef.current = currentMeetingId;
+
   // Keep ref updated with current transcripts
   useEffect(() => {
     transcriptsRef.current = transcripts;
@@ -244,9 +252,12 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
           try {
             // Recording ended: no more partials will arrive; drop any live tails.
             clearAllPending();
-            if (currentMeetingId) {
+            // B016: read latest meeting id from ref to avoid a stale capture
+            // without re-subscribing this listener on every id change.
+            const activeMeetingId = currentMeetingIdRef.current;
+            if (activeMeetingId) {
               // Update folder path in IndexedDB
-              const metadata = await indexedDBService.getMeetingMetadata(currentMeetingId);
+              const metadata = await indexedDBService.getMeetingMetadata(activeMeetingId);
 
               if (metadata && payload.folder_path) {
                 metadata.folderPath = payload.folder_path;
@@ -277,7 +288,10 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         console.log('🧹 Recording stopped listener cleaned up');
       }
     };
-  }, [currentMeetingId]);
+    // B016: register the recording listeners ONCE. currentMeetingId is read via
+    // currentMeetingIdRef.current inside the handlers, so it is not a dependency
+    // and the Tauri listeners are not torn down / re-subscribed on every change.
+  }, []);
 
   // Main transcript buffering logic with sequence_id ordering
   useEffect(() => {
@@ -414,6 +428,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             chunk_start_time: update.chunk_start_time,
             is_partial: update.is_partial,
             confidence: update.confidence,
+            source: update.source,
             // NEW: Recording-relative timestamps for playback sync
             audio_start_time: update.audio_start_time,
             audio_end_time: update.audio_end_time,
@@ -568,6 +583,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       chunk_start_time: update.chunk_start_time,
       is_partial: update.is_partial,
       confidence: update.confidence,
+      source: update.source,
       audio_start_time: update.audio_start_time,
       audio_end_time: update.audio_end_time,
       duration: update.duration,
@@ -599,6 +615,27 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       return sorted;
     });
   }, []);
+
+  // Add a typed note INTO the transcript as a first-class segment. The note is
+  // marked (source = "note") and stamped at the current recording position, then
+  // inserted in the same time-then-sequence order the live buffered path uses,
+  // so it flows into the live view, the saved meeting transcript (via the stop
+  // save that reads this state), live-transcript.md, and summaries. Returns true
+  // when a note was added (false for empty input).
+  const addNote = useCallback((text: string): boolean => {
+    const note = createNoteTranscript(text, transcriptsRef.current);
+    if (!note) return false;
+
+    setTranscripts(prev => insertSegmentOrdered(prev, note));
+
+    // Mirror into IndexedDB for crash recovery, matching the spoken-segment path.
+    const meetingId = currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id');
+    if (meetingId) {
+      indexedDBService.saveTranscript(meetingId, note)
+        .catch(err => console.warn('IndexedDB note save failed:', err));
+    }
+    return true;
+  }, [currentMeetingId]);
 
   // Update transcript text in-place (for inline editing)
   const updateTranscriptText = useCallback((transcriptId: string, newText: string) => {
@@ -669,6 +706,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     pendingBySource,
     transcriptsRef,
     addTranscript,
+    addNote,
     updateTranscriptText,
     copyTranscript,
     flushBuffer,

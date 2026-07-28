@@ -176,6 +176,21 @@ static RECORDING_MANAGER: Lazy<tokio::sync::Mutex<Option<RecordingManager>>> =
     Lazy::new(|| tokio::sync::Mutex::new(None));
 static TRANSCRIPTION_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 
+/// B002: Single source of truth for "is recording".
+/// Derives recording state from the RecordingManager itself rather than a
+/// separate AtomicBool, so the UI/tray and the audio backend can never diverge.
+/// The manager is only present in RECORDING_MANAGER after start_recording fully
+/// succeeds and is taken back out on stop, so its presence plus its own
+/// is_recording() flag is authoritative.
+async fn recording_active() -> bool {
+    RECORDING_MANAGER
+        .lock()
+        .await
+        .as_ref()
+        .map(|m| m.is_recording())
+        .unwrap_or(false)
+}
+
 // Listener ID for proper cleanup - prevents microphone from staying active after recording stops
 static TRANSCRIPT_LISTENER_ID: Mutex<Option<tauri::EventId>> = Mutex::new(None);
 
@@ -441,6 +456,9 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     // TOCTOU window where two near-simultaneous starts both read IS_RECORDING=false
     // and each spawned a full audio pipeline (B017). The guard releases the slot on
     // any early-return error path below; it is disarmed only once recording is live.
+    // (This reservation supersedes the plain recording_active() pre-check: the atomics
+    // are the write-side claim, while recording_active() stays the read-side single
+    // source of truth for status queries — B002.)
     let start_guard = try_reserve_recording_slot()?;
 
     // Validate that transcription models are available before starting recording
@@ -617,8 +635,9 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     }
 
     // Set start time and reset speech detection flag. IS_RECORDING was already
-    // reserved at the top via try_reserve_recording_slot (no late store needed).
-    info!("🔍 Recording live, resetting SPEECH_DETECTED_EMITTED");
+    // reserved at the top via try_reserve_recording_slot (no late store needed), and the
+    // manager is now stored so recording_active() also reports recording.
+    info!("🔍 Recording live (manager stored), resetting SPEECH_DETECTED_EMITTED");
     if let Ok(mut start_time) = RECORDING_START_TIME.lock() {
         *start_time = Some(std::time::Instant::now());
     }
@@ -662,6 +681,14 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
             }
         });
         let mut global_listener = TRANSCRIPT_LISTENER_ID.lock().map_err(|e| format!("Failed to lock transcript listener: {e}"))?;
+        // B017: if start_recording is called twice without an intervening stop_recording,
+        // unlisten any listener left over from the prior start before overwriting the stored
+        // id. Otherwise the stale listener keeps receiving transcript-update events and saving
+        // duplicate segments forever (leaked listener + memory bloat).
+        if let Some(previous_id) = global_listener.take() {
+            app.unlisten(previous_id);
+            info!("⚠️ Removed stale transcript-update listener from a prior start_recording");
+        }
         *global_listener = Some(listener_id);
         info!("✅ Transcript-update event listener registered for history persistence");
     }
@@ -808,8 +835,9 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     }
 
     // Set start time and reset speech detection flag. IS_RECORDING was already
-    // reserved at the top via try_reserve_recording_slot (no late store needed).
-    info!("🔍 Recording live, resetting SPEECH_DETECTED_EMITTED");
+    // reserved at the top via try_reserve_recording_slot (no late store needed), and the
+    // manager is now stored so recording_active() also reports recording.
+    info!("🔍 Recording live (manager stored), resetting SPEECH_DETECTED_EMITTED");
     if let Ok(mut start_time) = RECORDING_START_TIME.lock() {
         *start_time = Some(std::time::Instant::now());
     }
@@ -853,6 +881,14 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
             }
         });
         let mut global_listener = TRANSCRIPT_LISTENER_ID.lock().map_err(|e| format!("Failed to lock transcript listener: {e}"))?;
+        // B017: if start_recording is called twice without an intervening stop_recording,
+        // unlisten any listener left over from the prior start before overwriting the stored
+        // id. Otherwise the stale listener keeps receiving transcript-update events and saving
+        // duplicate segments forever (leaked listener + memory bloat).
+        if let Some(previous_id) = global_listener.take() {
+            app.unlisten(previous_id);
+            info!("⚠️ Removed stale transcript-update listener from a prior start_recording");
+        }
         *global_listener = Some(listener_id);
         info!("✅ Transcript-update event listener registered for history persistence");
     }
@@ -1010,26 +1046,36 @@ pub async fn stop_recording<R: Runtime>(
     if let Some(task_handle) = transcription_task {
         info!("⏳ Waiting for ALL transcription chunks to be processed (no timeout - preserving every chunk)");
 
-        // Enhanced progress monitoring during shutdown
+        // Enhanced progress monitoring during shutdown.
+        // A watch channel lets the progress loop exit promptly once transcription
+        // finishes, instead of relying solely on the outer .abort() below.
         let progress_app = app.clone();
+        let (done_tx, mut done_rx) = tokio::sync::watch::channel(false);
         let progress_task = tokio::spawn(async move {
             let last_update = std::time::Instant::now();
 
             loop {
-                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-                // Emit periodic progress updates during shutdown
-                let elapsed = last_update.elapsed().as_secs();
-                let _ = progress_app.emit(
-                    "recording-shutdown-progress",
-                    serde_json::json!({
-                        "stage": "processing_transcripts",
-                        "message": format!("Processing transcripts... ({}s elapsed)", elapsed),
-                        "progress": 40,
-                        "detailed": true,
-                        "elapsed_seconds": elapsed
-                    }),
-                );
+                tokio::select! {
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => {
+                        // Emit periodic progress updates during shutdown
+                        let elapsed = last_update.elapsed().as_secs();
+                        let _ = progress_app.emit(
+                            "recording-shutdown-progress",
+                            serde_json::json!({
+                                "stage": "processing_transcripts",
+                                "message": format!("Processing transcripts... ({}s elapsed)", elapsed),
+                                "progress": 40,
+                                "detailed": true,
+                                "elapsed_seconds": elapsed
+                            }),
+                        );
+                    }
+                    // Exit as soon as transcription is done (success, error, or timeout),
+                    // or if the sender is dropped, so no stale progress events leak out.
+                    _ = done_rx.changed() => {
+                        break;
+                    }
+                }
             }
         });
 
@@ -1051,7 +1097,12 @@ pub async fn stop_recording<R: Runtime>(
             }
         }
 
-        // Stop progress monitoring
+        // Signal the progress loop to stop now that transcription has finished.
+        // This runs on all paths above (success, error, and timeout), so the task
+        // exits within one tick instead of lingering until a later abort/timeout.
+        let _ = done_tx.send(true);
+
+        // Backstop: ensure the task is fully stopped even if the signal was missed.
         progress_task.abort();
     } else {
         info!("ℹ️ No transcription task found to wait for");
@@ -1327,8 +1378,9 @@ pub async fn stop_recording<R: Runtime>(
     };
 
     // NOTE: IS_RECORDING / RECORDING_START_TIME / AUDIO_ELAPSED_MS were already reset
-    // right after capture stopped (Step 1). CLEANUP_IN_PROGRESS is cleared by the
-    // _cleanup_guard when this function returns.
+    // right after capture stopped (Step 1), and the manager has been taken out of
+    // RECORDING_MANAGER above so recording_active() also reads "stopped".
+    // CLEANUP_IN_PROGRESS is cleared by the _cleanup_guard when this function returns.
 
     // Step 4.5: Prepare metadata for frontend (NO database save)
     // NOTE: We do NOT save to database here. The frontend will save after all transcripts are displayed.
@@ -1378,14 +1430,14 @@ pub async fn stop_recording<R: Runtime>(
 
 /// Check if recording is active
 pub async fn is_recording() -> bool {
-    IS_RECORDING.load(Ordering::SeqCst)
+    recording_active().await
 }
 
 /// Get recording statistics
 pub async fn get_transcription_status() -> TranscriptionStatus {
     TranscriptionStatus {
         chunks_in_queue: 0,
-        is_processing: IS_RECORDING.load(Ordering::SeqCst),
+        is_processing: recording_active().await,
         last_activity_ms: 0,
     }
 }
@@ -1395,8 +1447,8 @@ pub async fn get_transcription_status() -> TranscriptionStatus {
 pub async fn pause_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     info!("Pausing recording");
 
-    // Check if currently recording
-    if !IS_RECORDING.load(Ordering::SeqCst) {
+    // Check if currently recording (single source of truth: the RecordingManager)
+    if !recording_active().await {
         return Err("No recording is currently active".to_string());
     }
 
@@ -1429,8 +1481,8 @@ pub async fn pause_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String
 pub async fn resume_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     info!("Resuming recording");
 
-    // Check if currently recording
-    if !IS_RECORDING.load(Ordering::SeqCst) {
+    // Check if currently recording (single source of truth: the RecordingManager)
+    if !recording_active().await {
         return Err("No recording is currently active".to_string());
     }
 
@@ -1472,8 +1524,9 @@ pub async fn is_recording_paused() -> Result<bool, String> {
 /// Get detailed recording state
 #[tauri::command]
 pub async fn get_recording_state() -> Result<serde_json::Value, String> {
-    let is_recording = IS_RECORDING.load(Ordering::SeqCst);
+    // Single source of truth: derive recording state from the manager itself.
     let manager_guard = RECORDING_MANAGER.lock().await;
+    let is_recording = manager_guard.as_ref().map(|m| m.is_recording()).unwrap_or(false);
 
     if let Some(manager) = manager_guard.as_ref() {
         Ok(serde_json::json!({
@@ -1699,7 +1752,14 @@ pub async fn attempt_device_reconnect(
 
 /// Get elapsed seconds since recording started, or None if not recording.
 pub fn get_recording_elapsed_secs() -> Option<f64> {
-    if !IS_RECORDING.load(Ordering::Relaxed) {
+    // Single source of truth: derive from the RecordingManager. Uses a non-blocking
+    // try_lock since this is a sync helper on the screenshot/clipboard path.
+    let recording = RECORDING_MANAGER
+        .try_lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|m| m.is_recording()))
+        .unwrap_or(false);
+    if !recording {
         return None;
     }
     // Use audio-elapsed time so screenshot/clipboard timestamps align with

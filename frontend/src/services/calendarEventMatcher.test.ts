@@ -23,7 +23,7 @@ function ev(partial: Partial<CalendarEvent>): CalendarEvent {
 }
 
 function proj(name: string, path: string, aliases: string[] = []): Project {
-  return { id: name.toLowerCase(), name, path, aliases, auto_discovered: false };
+  return { id: name.toLowerCase(), name, path, aliases, auto_discovered: false, session_id: null, created_at: '' };
 }
 
 const ACME = proj('Acme', 'C:/clients/acme');

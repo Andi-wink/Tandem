@@ -94,6 +94,9 @@ export default function CapturePage() {
       path: defaultDir,
       aliases: [],
       auto_discovered: false,
+      // F061: plain (non-session) stub — no chat session scope, no DB row timestamp.
+      session_id: null,
+      created_at: '',
     };
     if (pool.length === 0) {
       setCandidates([unfiled]);

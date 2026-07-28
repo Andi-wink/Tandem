@@ -35,6 +35,8 @@ pub struct Transcript {
     pub audio_start_time: Option<f64>,
     pub audio_end_time: Option<f64>,
     pub duration: Option<f64>,
+    // Audio-channel speaker source: "Local" (user's mic) or "Remote" (system audio / client)
+    pub speaker: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -114,6 +116,9 @@ pub struct ProjectModel {
     pub path: String,
     pub aliases: String,
     pub auto_discovered: i64,
+    /// F061: NULL for a plain folder project; the chat session id for a virtual
+    /// sub-project. Identity is (path, session_id).
+    pub session_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

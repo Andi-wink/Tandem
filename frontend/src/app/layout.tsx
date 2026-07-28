@@ -103,7 +103,9 @@ export default function RootLayout({
   }, []);
   useEffect(() => {
     // Listen for tray recording toggle request
-    const unlisten = listen('request-recording-toggle', () => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listen('request-recording-toggle', () => {
       logger.log('[Layout] Received request-recording-toggle from tray');
 
       if (showOnboarding) {
@@ -115,10 +117,19 @@ export default function RootLayout({
         logger.log('[Layout] Forwarding to start-recording-from-sidebar');
         window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'));
       }
+    }).then((fn) => {
+      // If the effect was already cleaned up before this resolved, unsubscribe
+      // immediately so the listener does not leak. Otherwise store it for cleanup.
+      if (cancelled) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
     });
 
     return () => {
-      unlisten.then(fn => fn());
+      cancelled = true;
+      unlisten?.();
     };
   }, [showOnboarding]);
 

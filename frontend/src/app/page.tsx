@@ -419,6 +419,9 @@ export default function Home() {
               path: seed.projectPath,
               aliases: [],
               auto_discovered: false,
+              // F061: calendar-seeded stub is a plain folder project (no chat session scope).
+              session_id: null,
+              created_at: '',
             };
             // R3 issue-2: the folder is created directly under <project>/.tandem via the Rust base
             // override, so we skip the deferred relocation here. But that override can SILENTLY fall

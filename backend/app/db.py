@@ -17,28 +17,73 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Provider → column name mappings (single source of truth for SQL column resolution)
-_MODEL_API_KEY_COLUMNS: dict[str, str] = {
-    "openai": "openaiApiKey",
-    "claude": "anthropicApiKey",
-    "groq": "groqApiKey",
-    "ollama": "ollamaApiKey",
+# Provider -> fixed, fully literal SQL statements (single source of truth for API key SQL).
+#
+# B011: column/identifier names are NEVER interpolated from a runtime variable. Each
+# statement is a hardcoded string constant with the column name baked in, so there is no
+# path by which a provider value can become part of the SQL identifier text. Only the API
+# key VALUE (and INSERT defaults) are bound via ? placeholders.
+_MODEL_API_KEY_SQL: dict[str, dict[str, str]] = {
+    "openai": {
+        "select": "SELECT openaiApiKey FROM settings WHERE id = '1'",
+        "update": "UPDATE settings SET openaiApiKey = ? WHERE id = '1'",
+        "insert": "INSERT INTO settings (id, provider, model, whisperModel, openaiApiKey) VALUES (?, ?, ?, ?, ?)",
+        "clear": "UPDATE settings SET openaiApiKey = NULL WHERE id = '1'",
+    },
+    "claude": {
+        "select": "SELECT anthropicApiKey FROM settings WHERE id = '1'",
+        "update": "UPDATE settings SET anthropicApiKey = ? WHERE id = '1'",
+        "insert": "INSERT INTO settings (id, provider, model, whisperModel, anthropicApiKey) VALUES (?, ?, ?, ?, ?)",
+        "clear": "UPDATE settings SET anthropicApiKey = NULL WHERE id = '1'",
+    },
+    "groq": {
+        "select": "SELECT groqApiKey FROM settings WHERE id = '1'",
+        "update": "UPDATE settings SET groqApiKey = ? WHERE id = '1'",
+        "insert": "INSERT INTO settings (id, provider, model, whisperModel, groqApiKey) VALUES (?, ?, ?, ?, ?)",
+        "clear": "UPDATE settings SET groqApiKey = NULL WHERE id = '1'",
+    },
+    "ollama": {
+        "select": "SELECT ollamaApiKey FROM settings WHERE id = '1'",
+        "update": "UPDATE settings SET ollamaApiKey = ? WHERE id = '1'",
+        "insert": "INSERT INTO settings (id, provider, model, whisperModel, ollamaApiKey) VALUES (?, ?, ?, ?, ?)",
+        "clear": "UPDATE settings SET ollamaApiKey = NULL WHERE id = '1'",
+    },
 }
 
-_TRANSCRIPT_API_KEY_COLUMNS: dict[str, str] = {
-    "localWhisper": "whisperApiKey",
-    "deepgram": "deepgramApiKey",
-    "elevenLabs": "elevenLabsApiKey",
-    "groq": "groqApiKey",
-    "openai": "openaiApiKey",
+_TRANSCRIPT_API_KEY_SQL: dict[str, dict[str, str]] = {
+    "localWhisper": {
+        "select": "SELECT whisperApiKey FROM transcript_settings WHERE id = '1'",
+        "update": "UPDATE transcript_settings SET whisperApiKey = ? WHERE id = '1'",
+        "insert": "INSERT INTO transcript_settings (id, provider, model, whisperApiKey) VALUES (?, ?, ?, ?)",
+    },
+    "deepgram": {
+        "select": "SELECT deepgramApiKey FROM transcript_settings WHERE id = '1'",
+        "update": "UPDATE transcript_settings SET deepgramApiKey = ? WHERE id = '1'",
+        "insert": "INSERT INTO transcript_settings (id, provider, model, deepgramApiKey) VALUES (?, ?, ?, ?)",
+    },
+    "elevenLabs": {
+        "select": "SELECT elevenLabsApiKey FROM transcript_settings WHERE id = '1'",
+        "update": "UPDATE transcript_settings SET elevenLabsApiKey = ? WHERE id = '1'",
+        "insert": "INSERT INTO transcript_settings (id, provider, model, elevenLabsApiKey) VALUES (?, ?, ?, ?)",
+    },
+    "groq": {
+        "select": "SELECT groqApiKey FROM transcript_settings WHERE id = '1'",
+        "update": "UPDATE transcript_settings SET groqApiKey = ? WHERE id = '1'",
+        "insert": "INSERT INTO transcript_settings (id, provider, model, groqApiKey) VALUES (?, ?, ?, ?)",
+    },
+    "openai": {
+        "select": "SELECT openaiApiKey FROM transcript_settings WHERE id = '1'",
+        "update": "UPDATE transcript_settings SET openaiApiKey = ? WHERE id = '1'",
+        "insert": "INSERT INTO transcript_settings (id, provider, model, openaiApiKey) VALUES (?, ?, ?, ?)",
+    },
 }
 
-def _resolve_api_key_column(provider: str, mapping: dict[str, str]) -> str:
-    """Resolve provider name to its API key column. Raises ValueError if invalid."""
-    col = mapping.get(provider)
-    if col is None:
+def _resolve_api_key_sql(provider: str, mapping: dict[str, dict[str, str]]) -> dict[str, str]:
+    """Resolve provider name to its fixed API key SQL statements. Raises ValueError if invalid."""
+    stmts = mapping.get(provider)
+    if stmts is None:
         raise ValueError(f"Invalid provider: {provider}")
-    return col
+    return stmts
 
 class DatabaseManager:
     def __init__(self, db_path: str = None):
@@ -179,6 +224,57 @@ class DatabaseManager:
                 )
             """)
 
+            # F022: Speaker Diarization tables
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS diarization_processes (
+                    meeting_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    progress_pct INTEGER DEFAULT 0,
+                    num_speakers INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    error TEXT,
+                    result TEXT,
+                    processing_time REAL DEFAULT 0.0,
+                    FOREIGN KEY (meeting_id) REFERENCES meetings(id)
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS speaker_names (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    meeting_id TEXT NOT NULL,
+                    speaker_label TEXT NOT NULL,
+                    display_name TEXT,
+                    FOREIGN KEY (meeting_id) REFERENCES meetings(id),
+                    UNIQUE(meeting_id, speaker_label)
+                )
+            """)
+
+            # Phase 6 future tables (schema only, not populated yet)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS speaker_profiles (
+                    id TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL,
+                    embedding BLOB,
+                    sample_count INTEGER DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS meeting_speakers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    meeting_id TEXT NOT NULL,
+                    speaker_label TEXT NOT NULL,
+                    speaker_profile_id TEXT,
+                    confidence REAL,
+                    FOREIGN KEY (meeting_id) REFERENCES meetings(id),
+                    FOREIGN KEY (speaker_profile_id) REFERENCES speaker_profiles(id)
+                )
+            """)
+
             conn.commit()
 
     @asynccontextmanager
@@ -200,23 +296,27 @@ class DatabaseManager:
                 await conn.execute("BEGIN TRANSACTION")
                 
                 try:
-                    # First try to update existing process
-                    cursor = await conn.execute(
+                    # B022: atomic upsert keyed on the meeting_id PRIMARY KEY. A single
+                    # statement avoids the previous non-atomic read-then-write, where two
+                    # concurrent requests for the same meeting_id could both see 0 updated
+                    # rows and both INSERT, causing a PRIMARY KEY constraint violation.
+                    # The DO UPDATE branch sets exactly the columns the old UPDATE set
+                    # (status, updated_at, start_time, error=NULL, result=NULL) and leaves
+                    # created_at untouched so an existing row keeps its original timestamp.
+                    await conn.execute(
                         """
-                        UPDATE summary_processes
-                        SET status = ?, updated_at = ?, start_time = ?, error = NULL, result = NULL
-                        WHERE meeting_id = ?
+                        INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, start_time)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(meeting_id) DO UPDATE SET
+                            status = excluded.status,
+                            updated_at = excluded.updated_at,
+                            start_time = excluded.start_time,
+                            error = NULL,
+                            result = NULL
                         """,
-                        ("PENDING", now, now, meeting_id)
+                        (meeting_id, "PENDING", now, now, now)
                     )
 
-                    # If no rows were updated, insert a new one
-                    if cursor.rowcount == 0:
-                        await conn.execute(
-                            "INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, start_time) VALUES (?, ?, ?, ?, ?)",
-                            (meeting_id, "PENDING", now, now, now)
-                        )
-                    
                     await conn.commit()
                     logger.info(f"Successfully created/updated process for meeting_id: {meeting_id}")
                     
@@ -519,12 +619,17 @@ class DatabaseManager:
                     # Delete in proper order to respect foreign key constraints
                     # Delete from transcript_chunks
                     await conn.execute("DELETE FROM transcript_chunks WHERE meeting_id = ?", (meeting_id,))
-                    
+
                     # Delete from summary_processes
                     await conn.execute("DELETE FROM summary_processes WHERE meeting_id = ?", (meeting_id,))
-                    
+
                     # Delete from transcripts
                     await conn.execute("DELETE FROM transcripts WHERE meeting_id = ?", (meeting_id,))
+
+                    # F022: Delete diarization data
+                    await conn.execute("DELETE FROM diarization_processes WHERE meeting_id = ?", (meeting_id,))
+                    await conn.execute("DELETE FROM speaker_names WHERE meeting_id = ?", (meeting_id,))
+                    await conn.execute("DELETE FROM meeting_speakers WHERE meeting_id = ?", (meeting_id,))
                     
                     # Delete from meetings
                     cursor = await conn.execute("DELETE FROM meetings WHERE id = ?", (meeting_id,))
@@ -601,26 +706,23 @@ class DatabaseManager:
 
     async def save_api_key(self, api_key: str, provider: str):
         """Save the API key"""
-        api_key_name = _resolve_api_key_column(provider, _MODEL_API_KEY_COLUMNS)
-            
+        stmts = _resolve_api_key_sql(provider, _MODEL_API_KEY_SQL)
+
         try:
             async with self._get_connection() as conn:
                 await conn.execute("BEGIN TRANSACTION")
-                
+
                 try:
                     # Check if settings row exists
                     cursor = await conn.execute("SELECT id FROM settings WHERE id = '1'")
                     existing_config = await cursor.fetchone()
-                    
+
                     if existing_config:
                         # Update existing configuration
-                        await conn.execute(f"UPDATE settings SET {api_key_name} = ? WHERE id = '1'", (api_key,))
+                        await conn.execute(stmts["update"], (api_key,))
                     else:
                         # Insert new configuration with default values and the API key
-                        await conn.execute(f"""
-                            INSERT INTO settings (id, provider, model, whisperModel, {api_key_name})
-                            VALUES (?, ?, ?, ?, ?)
-                        """, ('1', 'openai', 'gpt-4o-2024-11-20', 'large-v3', api_key))
+                        await conn.execute(stmts["insert"], ('1', 'openai', 'gpt-4o-2024-11-20', 'large-v3', api_key))
                         
                     await conn.commit()
                     logger.info(f"Successfully saved API key for provider: {provider}")
@@ -636,9 +738,9 @@ class DatabaseManager:
 
     async def get_api_key(self, provider: str):
         """Get the API key"""
-        api_key_name = _resolve_api_key_column(provider, _MODEL_API_KEY_COLUMNS)
+        stmts = _resolve_api_key_sql(provider, _MODEL_API_KEY_SQL)
         async with self._get_connection() as conn:
-            cursor = await conn.execute(f"SELECT {api_key_name} FROM settings WHERE id = '1'")
+            cursor = await conn.execute(stmts["select"])
             row = await cursor.fetchone()
             return row[0] if row and row[0] else ""
 
@@ -700,26 +802,23 @@ class DatabaseManager:
 
     async def save_transcript_api_key(self, api_key: str, provider: str):
         """Save the transcript API key"""
-        api_key_name = _resolve_api_key_column(provider, _TRANSCRIPT_API_KEY_COLUMNS)
-            
+        stmts = _resolve_api_key_sql(provider, _TRANSCRIPT_API_KEY_SQL)
+
         try:
             async with self._get_connection() as conn:
                 await conn.execute("BEGIN TRANSACTION")
-                
+
                 try:
                     # Check if transcript settings row exists
                     cursor = await conn.execute("SELECT id FROM transcript_settings WHERE id = '1'")
                     existing_config = await cursor.fetchone()
-                    
+
                     if existing_config:
                         # Update existing configuration
-                        await conn.execute(f"UPDATE transcript_settings SET {api_key_name} = ? WHERE id = '1'", (api_key,))
+                        await conn.execute(stmts["update"], (api_key,))
                     else:
                         # Insert new configuration with default values and the API key
-                        await conn.execute(f"""
-                            INSERT INTO transcript_settings (id, provider, model, {api_key_name})
-                            VALUES (?, ?, ?, ?)
-                        """, ('1', 'localWhisper', 'large-v3', api_key))
+                        await conn.execute(stmts["insert"], ('1', 'localWhisper', 'large-v3', api_key))
                         
                     await conn.commit()
                     logger.info(f"Successfully saved transcript API key for provider: {provider}")
@@ -736,9 +835,9 @@ class DatabaseManager:
 
     async def get_transcript_api_key(self, provider: str):
         """Get the transcript API key"""
-        api_key_name = _resolve_api_key_column(provider, _TRANSCRIPT_API_KEY_COLUMNS)
+        stmts = _resolve_api_key_sql(provider, _TRANSCRIPT_API_KEY_SQL)
         async with self._get_connection() as conn:
-            cursor = await conn.execute(f"SELECT {api_key_name} FROM transcript_settings WHERE id = '1'")
+            cursor = await conn.execute(stmts["select"])
             row = await cursor.fetchone()
             return row[0] if row and row[0] else ""
 
@@ -838,11 +937,123 @@ class DatabaseManager:
         
     async def delete_api_key(self, provider: str):
         """Delete the API key"""
-        api_key_name = _resolve_api_key_column(provider, _MODEL_API_KEY_COLUMNS)
+        stmts = _resolve_api_key_sql(provider, _MODEL_API_KEY_SQL)
         async with self._get_connection() as conn:
-            await conn.execute(f"UPDATE settings SET {api_key_name} = NULL WHERE id = '1'")
+            await conn.execute(stmts["clear"])
             await conn.commit()
     
+    # ------------------------------------------------------------------
+    # F022: Speaker Diarization CRUD
+    # ------------------------------------------------------------------
+
+    async def create_diarization_process(self, meeting_id: str) -> str:
+        """Create or reset a diarization process entry."""
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                "UPDATE diarization_processes SET status = 'pending', progress_pct = 0, "
+                "error = NULL, result = NULL, updated_at = ? WHERE meeting_id = ?",
+                (now, meeting_id),
+            )
+            if cursor.rowcount == 0:
+                await conn.execute(
+                    "INSERT INTO diarization_processes (meeting_id, status, progress_pct, created_at, updated_at) "
+                    "VALUES (?, 'pending', 0, ?, ?)",
+                    (meeting_id, now, now),
+                )
+            await conn.commit()
+        return meeting_id
+
+    async def update_diarization_process(
+        self,
+        meeting_id: str,
+        status: str,
+        progress_pct: int = 0,
+        result: Optional[Dict] = None,
+        error: Optional[str] = None,
+        num_speakers: Optional[int] = None,
+        processing_time: Optional[float] = None,
+    ):
+        """Update diarization process status."""
+        now = datetime.now(timezone.utc).isoformat()
+        fields = ["status = ?", "progress_pct = ?", "updated_at = ?"]
+        params: list = [status, progress_pct, now]
+
+        if result is not None:
+            fields.append("result = ?")
+            params.append(json.dumps(result))
+        if error is not None:
+            fields.append("error = ?")
+            params.append(str(error)[:1000])
+        if num_speakers is not None:
+            fields.append("num_speakers = ?")
+            params.append(num_speakers)
+        if processing_time is not None:
+            fields.append("processing_time = ?")
+            params.append(processing_time)
+
+        params.append(meeting_id)
+        async with self._get_connection() as conn:
+            await conn.execute(
+                f"UPDATE diarization_processes SET {', '.join(fields)} WHERE meeting_id = ?",
+                params,
+            )
+            await conn.commit()
+
+    async def get_diarization_status(self, meeting_id: str) -> Optional[Dict]:
+        """Get diarization process status for a meeting."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT meeting_id, status, progress_pct, num_speakers, error, processing_time "
+                "FROM diarization_processes WHERE meeting_id = ?",
+                (meeting_id,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "meeting_id": row[0],
+                "status": row[1],
+                "progress_pct": row[2],
+                "num_speakers": row[3],
+                "error": row[4],
+                "processing_time": row[5],
+            }
+
+    async def get_diarization_result(self, meeting_id: str) -> Optional[Dict]:
+        """Get full diarization result JSON for a meeting."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT result FROM diarization_processes WHERE meeting_id = ? AND status = 'completed'",
+                (meeting_id,),
+            )
+            row = await cursor.fetchone()
+            if row and row[0]:
+                return json.loads(row[0])
+            return None
+
+    async def save_speaker_names(self, meeting_id: str, speaker_names: Dict[str, str]):
+        """Save or update speaker display names for a meeting."""
+        async with self._get_connection() as conn:
+            for label, name in speaker_names.items():
+                await conn.execute(
+                    "INSERT INTO speaker_names (meeting_id, speaker_label, display_name) "
+                    "VALUES (?, ?, ?) ON CONFLICT(meeting_id, speaker_label) "
+                    "DO UPDATE SET display_name = ?",
+                    (meeting_id, label, name, name),
+                )
+            await conn.commit()
+
+    async def get_speaker_names(self, meeting_id: str) -> Dict[str, str]:
+        """Get speaker display names for a meeting."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT speaker_label, display_name FROM speaker_names WHERE meeting_id = ?",
+                (meeting_id,),
+            )
+            rows = await cursor.fetchall()
+            return {row[0]: row[1] for row in rows if row[1]}
+
     async def update_meeting_summary(self, meeting_id: str, summary: dict):
         """Update a meeting's summary"""
         now = datetime.now(timezone.utc).isoformat()

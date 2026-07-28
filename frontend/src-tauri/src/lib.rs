@@ -39,6 +39,7 @@ pub mod api;
 pub mod audio;
 pub mod calendar_ics;
 pub mod canvas;
+pub mod claude_sessions;
 pub mod clipboard;
 pub mod console_utils;
 pub mod quick_capture;
@@ -1269,6 +1270,7 @@ pub fn run() {
             // Project management commands (Solo Mode)
             api::project_list,
             api::project_create,
+            api::project_create_virtual,
             api::project_update,
             api::project_delete,
             api::project_import_scanned,
@@ -1280,6 +1282,12 @@ pub fn run() {
             api::list_client_folders,
             // Deferred meeting-folder relocation (R3)
             relocate_meeting_folder,
+            // F061: session archival (virtual sub-projects)
+            api::list_dir_file_names,
+            api::archive_session_folder,
+            // F055: session-aware HUD + branch stamping
+            claude_sessions::get_git_branch,
+            claude_sessions::list_claude_session_candidates,
             // Summary commands
             summary::api_process_transcript,
             summary::api_get_summary,

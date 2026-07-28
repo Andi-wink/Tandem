@@ -32,6 +32,7 @@ impl ProjectRepository {
         path: &str,
         aliases: &str,
         auto_discovered: bool,
+        session_id: Option<&str>,
     ) -> std::result::Result<ProjectModel, sqlx::Error> {
         if let Some(existing) = Self::find_by_path(pool, path).await? {
             return Ok(existing);
@@ -42,8 +43,8 @@ impl ProjectRepository {
 
         sqlx::query(
             r#"
-            INSERT INTO projects (id, name, path, aliases, auto_discovered)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO projects (id, name, path, aliases, auto_discovered, session_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
             "#,
         )
         .bind(&id)
@@ -51,6 +52,7 @@ impl ProjectRepository {
         .bind(path)
         .bind(aliases)
         .bind(auto_disc)
+        .bind(session_id)
         .execute(pool)
         .await?;
 
@@ -108,6 +110,25 @@ impl ProjectRepository {
             "SELECT * FROM projects WHERE path = $1 LIMIT 1",
         )
         .bind(path)
+        .fetch_optional(pool)
+        .await?;
+        Ok(project)
+    }
+
+    /// F061: find a project by (path, session_id) identity. `session_id = None`
+    /// matches a plain folder project (NULL session_id); `Some(id)` matches the
+    /// virtual sub-project for that chat session. Uses `IS` so a NULL bind
+    /// compares against NULL rows correctly.
+    pub async fn find_by_path_session(
+        pool: &SqlitePool,
+        path: &str,
+        session_id: Option<&str>,
+    ) -> std::result::Result<Option<ProjectModel>, sqlx::Error> {
+        let project = sqlx::query_as::<_, ProjectModel>(
+            "SELECT * FROM projects WHERE path = $1 AND session_id IS $2 LIMIT 1",
+        )
+        .bind(path)
+        .bind(session_id)
         .fetch_optional(pool)
         .await?;
         Ok(project)

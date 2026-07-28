@@ -8,8 +8,10 @@ const mkProject = (overrides: Partial<Project> = {}): Project => ({
   path: 'D:/Dev-projects/Tandem',
   aliases: [],
   auto_discovered: false,
+  session_id: null,
+  created_at: '',
   ...overrides,
-});
+} as Project);
 
 const projects: Project[] = [
   mkProject({ id: '1', name: 'Tandem', aliases: ['the meeting app'] }),
