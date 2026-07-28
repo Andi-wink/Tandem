@@ -192,22 +192,40 @@ drop a 12-35s chunk — likely the user-perceived word drops). Research report:
   then ~1.0s/utterance; word timestamps are session-cumulative-over-fed-audio
   (TimelineMapper design confirmed). Main-repo harness commits: 62db60d (spike),
   27868fd (Phase 3 harness).
+- [x] **Realtime engine MERGED TO MAIN (2026-07-28, main @ 4ea6dae)** with the
+  commit-cadence strategy from the 2026-07-27 WER study: continuous feed +
+  dual-bound danger-band scheduler (interval 27s, cutoff 32s, receipt re-anchor
+  with 5s max lag; server auto-commit trigger measured ~35.5s, stall edge 34.5s).
+  Harness 4.58-5.29% pooled WER vs 6.31% per-VAD-segment. Hardened through five
+  adversarial QA rounds (3+2+2+1+1 skeptics; rounds 1-4 each FAILed and were
+  fixed: stop-path stall commit, timeline drift from ring shedding, scheduler
+  lapping/dead re-sync, watchdog silence flapping, debounce data loss, teardown
+  generation race). Live multi-cycle stress validation: harness commit d8c8dd3,
+  9-10 auto-commit cycles at 4x AND real pace, zero stalls/throttles. Still
+  opt-in via model `scribe_v2_realtime`; batch stays default until Phase 4.
 - [ ] **Phase 4 — manual live-mic runtime pass (NEEDS ANDREW at the machine)**,
-  in worktree Tandem-scribe-rt: (1) select ElevenLabs / "Scribe v2 Realtime" in
-  transcription settings; record a real call: partial tail appears in ~1-2s,
-  updates in place, locks into committed lines; Local/Remote attribution correct.
-  (2) Kill the network mid-call ~30s, restore: warning toast once, transcript
-  continues (degraded batch), no duplicated/lost text vs the saved audio.
-  (3) Stop while speaking: closing utterance appears exactly once. (4) Check
-  meeting-details ordering, summary, live-transcript.md/@code see only committed
-  text. (5) Long call >1h: session survives (rotation unverified headless).
-  Then decide default-on vs opt-in + reconcile To-do follow-ups.
-- [ ] Realtime residuals (accepted, documented): commit-sent vs server-committed
-  ~0.4s race can lose that window's text on a drop at exactly that moment;
-  final-commit loss if close_all's 2s grace expires on a dead network; TTFP
-  session warmup 2.6s (first utterance of a call feels slower than the rest);
-  same-window multi-segment shadow edge (redemption 800ms > window 600ms makes
-  it near-unreachable).
+  now on main: (1) select ElevenLabs / "Scribe v2 Realtime" in transcription
+  settings; record a real call: partial tail appears in ~1-2s and locks into
+  committed lines every ~27-35s (this is by design now; partials carry the
+  live feel); Local/Remote attribution correct. (2) Kill the network mid-call
+  ~30s, restore: warning toast once, transcript continues (degraded batch), no
+  duplicated/lost text vs the saved audio. (3) Stop while speaking: closing
+  utterance appears exactly once (staged finalize or batch shadow flush).
+  (4) Check meeting-details ordering (utterance-split blocks interleave), summary,
+  live-transcript.md/@code see only committed text. (5) Long call >1h: watch for
+  stall-watchdog reconnects in logs. Then decide default-on vs opt-in.
+- [ ] Realtime follow-ups from QA round 5 (all MINOR, documented in code):
+  pre-existing transcript text at info! in worker.rs L220/L228 (violates the
+  debug!-only rule, also on main before this branch); realtime session leak on
+  one start-error path (pre-existing, recording_commands.rs ~L880); pack the
+  pause mirror's two atomics into one AtomicU64 (~1e-8 read race); add a
+  regression test that the predictive backstop keys off point_late not
+  point_early; untimed-commit tail (~2s) not rescued by VAD drain on a rare
+  path; no integration test constructs AudioPipeline::flush_remaining_audio.
+- [ ] Realtime residuals (accepted, documented): TTFP session warmup 2.6s;
+  first persisted text ~27-35s in (partials cover the gap); continuous feed
+  bills ~wall-clock x2 streams (~3-5x vs VAD-gated batch); tail-at-stop batch
+  fallback can fail after retries (warning shown, .wav survives).
 - [ ] VAD-level mid-segment partial emit: silero holds a monologue as one 13-35s
   segment; no buffer knob can subdivide it. Needed if we stay on batch HTTP.
 - [ ] Consider min 5s instead of 4s for the CLOUD profile (QA: 6.21% @ 9.1s median
