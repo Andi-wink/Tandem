@@ -301,6 +301,32 @@ async fn resolve_flush_profile<R: Runtime>(app: &AppHandle<R>) -> super::pipelin
     profile
 }
 
+/// Wall-clock `HH:MM:SS` for a recording-relative audio offset.
+///
+/// `RECORDING_START_TIME` is monotonic (an `Instant`), so the recording's
+/// wall-clock start is reconstructed as `now - start.elapsed()`; the segment's
+/// display time is that plus its audio offset. Without a live recording (or if
+/// the arithmetic would overflow) this degrades to the current time, which is the
+/// old behaviour.
+fn wall_clock_for_audio_time(audio_start_time: f64) -> String {
+    let now = chrono::Local::now();
+    let elapsed = RECORDING_START_TIME
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .map(|start| start.elapsed().as_secs_f64());
+    let stamp = match elapsed {
+        Some(elapsed) if audio_start_time.is_finite() && audio_start_time >= 0.0 => {
+            let back_secs = (elapsed - audio_start_time).max(0.0);
+            chrono::Duration::try_milliseconds((back_secs * 1000.0) as i64)
+                .and_then(|d| now.checked_sub_signed(d))
+                .unwrap_or(now)
+        }
+        _ => now,
+    };
+    stamp.format("%H:%M:%S").to_string()
+}
+
 /// Bridge the realtime session's `RealtimeEvent` stream to Tauri events. Runs
 /// until the session drops all event senders (on close/degrade). Keeps the
 /// session free of Tauri generics and makes it unit-testable without a runtime.
@@ -336,9 +362,16 @@ fn spawn_realtime_bridge<R: Runtime>(
                     // Existing commit event: same downstream persistence path as the
                     // batch worker (recording_commands transcript-update listener).
                     // Shares the worker's monotonic sequence_id space.
+                    // Display time from the AUDIO clock, not arrival time. A
+                    // commit can land up to ~36s after the words were spoken, and
+                    // one commit fans out into several utterance segments, so
+                    // arrival time would stamp a whole turn with one late,
+                    // identical clock value. Derive the recording's wall-clock
+                    // start from the monotonic start Instant and add the segment's
+                    // audio offset. Falls back to now() before/after a recording.
                     let update = TranscriptUpdate {
                         text,
-                        timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                        timestamp: wall_clock_for_audio_time(audio_start_time),
                         source,
                         sequence_id: transcription::next_sequence_id(),
                         chunk_start_time: audio_start_time,
@@ -417,14 +450,23 @@ async fn maybe_start_realtime_session<R: Runtime>(
     Some(session)
 }
 
+/// How long the staged stop waits for the finalize commits' replies before
+/// falling back to the batch flush of the remaining shadow windows. Long enough
+/// for a slow-network round trip, short enough not to stall the stop UI.
+const REALTIME_FINALIZE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Close and clear the active realtime session + bridge (called on stop). Shuts
-/// the WS connections down without sending any commit. Safe to call when none is
-/// active, and safe to call without a prior `begin_shutdown` (close_all sets the
-/// flag itself as a backstop).
+/// the WS connections down without sending any commit of its own (the staged stop
+/// already had its finalize chance). Safe to call when none is active, and safe
+/// to call without a prior `begin_shutdown` (close_all sets the flag itself as a
+/// backstop).
 async fn teardown_realtime_session() {
     let session = { REALTIME_SESSION.lock().await.take() };
     if let Some(session) = session {
         info!("🎧 Closing realtime session");
+        // Dropping this Arc (and the session's own senders when its stream tasks
+        // end) closes the event channel, which is what lets the bridge drain and
+        // exit rather than being cut off mid-queue.
         session.close_all().await;
     }
     if let Some(bridge) = REALTIME_BRIDGE_TASK
@@ -432,7 +474,14 @@ async fn teardown_realtime_session() {
         .ok()
         .and_then(|mut g| g.take())
     {
-        bridge.abort();
+        // Let the bridge DRAIN: aborting it immediately discards events that were
+        // already emitted and are still sitting in the channel, silently losing
+        // transcript text that had been produced successfully. Only abort if it
+        // somehow fails to finish in time.
+        match tokio::time::timeout(std::time::Duration::from_millis(1500), bridge).await {
+            Ok(_) => info!("🎧 Realtime bridge drained cleanly"),
+            Err(_) => warn!("🎧 Realtime bridge did not drain within 1.5s"),
+        }
     }
 }
 
@@ -978,15 +1027,27 @@ pub async fn stop_recording<R: Runtime>(
         }),
     );
 
-    // Step 0: silence the realtime session's transcript emission BEFORE the
-    // force-flush below. The pipeline's stop flush batch-transcribes the shadow
-    // buffer (all speech the server has not confirmed committing) — that is the
-    // authoritative tail now that there is no safe WS finalize commit. Any commit
-    // reply still in flight covers the same audio, so it must not also be emitted.
-    // The sockets themselves are closed later, in teardown_realtime_session().
+    // Step 0: STAGED REALTIME STOP.
+    //
+    //   (a) ask both sockets for a FINALIZE commit and wait, bounded, for its
+    //       committed reply. The scheduler only sends one from OUTSIDE the
+    //       auto-commit danger band and with real audio outstanding, so this is
+    //       never the mid-band commit that stalls the session. When it does fire
+    //       the tail is transcribed by the accurate WS path, which is what the
+    //       4.68% harness configuration did at clip end;
+    //   (b) then suppress further emission. From here the pipeline's flush of the
+    //       remaining shadow windows owns whatever is left, so a late reply must
+    //       not also be emitted. Because the shadow clear is WINDOWED and driven
+    //       by what the finalize commit actually covered, the two paths cannot
+    //       overlap: emitted commits remove exactly their own windows.
+    //
+    // Both steps run before the capture force-flush below. The sockets themselves
+    // are closed later, in teardown_realtime_session().
     {
-        let session = REALTIME_SESSION.lock().await;
-        if let Some(session) = session.as_ref() {
+        let session = { REALTIME_SESSION.lock().await.clone() };
+        if let Some(session) = session {
+            info!("🎧 Realtime session: sending finalize commits and waiting for replies");
+            session.finalize_all(REALTIME_FINALIZE_TIMEOUT).await;
             info!("🎧 Realtime session entering shutdown (suppressing further transcript events)");
             session.begin_shutdown();
         }

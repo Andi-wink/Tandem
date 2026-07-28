@@ -15,7 +15,8 @@ use super::recording_state::{AudioChunk, AudioError, RecordingState, DeviceType}
 use super::audio_processing::{audio_to_mono, LoudnessNormalizer, NoiseSuppressionProcessor, HighPassFilter};
 use super::vad::{ContinuousVadProcessor};
 use super::transcription::elevenlabs_realtime::{
-    is_realtime_to_batch_flip, should_batch_flush_on_stop, should_remark_onset_on_resume,
+    is_realtime_to_batch_flip, should_batch_flush_on_stop,
+    should_drain_vad_into_batch_on_stop, should_remark_onset_on_resume,
     ElevenLabsRealtimeSession, Route, FEED_SAMPLE_RATE,
 };
 
@@ -808,15 +809,125 @@ pub struct AudioPipeline {
     mic_prev_route: Option<Route>,
     system_prev_route: Option<Route>,
     // Last commit-epoch observed per stream. The realtime session bumps its epoch
-    // on every CONFIRMED commit (a committed transcript received); the shadow
-    // catch-up buffer is cleared when it moves (see `sync_commit_epoch`). Under
-    // the continuous feed the unconfirmed window is up to ~36.5s, so the old
-    // "clear at each VAD segment end" rule would have thrown away audio the
-    // server had not committed yet.
+    // once per EMITTED committed transcript; the shadow windows that commit
+    // covered are dropped when it moves (see `sync_commit_progress`).
     mic_commit_epoch: u64,
     system_commit_epoch: u64,
+    // MAJOR-1 shadow, windowed: speech fed to the realtime socket that no emitted
+    // transcript covers yet. See [`ShadowBuffer`].
+    mic_shadow: ShadowBuffer,
+    system_shadow: ShadowBuffer,
     // One-shot guard for the shadow-cap warning (see `shadow_append`).
     shadow_cap_warned: bool,
+}
+
+/// One window of realtime-fed speech held for catch-up, in recording time.
+/// Windows are speech-only, so consecutive windows are NOT contiguous.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShadowWindow {
+    pub rec_start: f64,
+    pub samples: Vec<f32>,
+}
+
+/// Catch-up store for realtime-fed speech that no EMITTED transcript covers yet.
+///
+/// A queue of windows rather than one flat buffer, for three reasons a flat
+/// buffer got wrong:
+///   * a confirmed commit must drop only what it COVERED, keeping the speech fed
+///     while it was in flight (a flat clear lost 0.3-1.2s of the tail at stop);
+///   * the windows are speech-only and therefore NON-CONTIGUOUS, so trimming
+///     samples off the front to enforce a cap silently invalidated the start
+///     timestamp of everything that remained;
+///   * capping by draining a multi-megabyte Vec memmoved the whole buffer on
+///     every append once full.
+#[derive(Debug, Default)]
+pub struct ShadowBuffer {
+    windows: VecDeque<ShadowWindow>,
+    samples: usize,
+}
+
+impl ShadowBuffer {
+    /// Cap: 60s of speech at 16kHz. The shadow is normally bounded by the commit
+    /// cadence, but only while commits keep arriving; this is the backstop for
+    /// when they stop (the engine's stall watchdog is the primary defence).
+    pub const CAP_SAMPLES: usize = 60 * 16000;
+
+    pub fn new() -> Self {
+        Self {
+            windows: VecDeque::new(),
+            samples: 0,
+        }
+    }
+
+    /// Record one speech window. Returns true if the cap forced older windows out.
+    pub fn append(&mut self, rec_start: f64, samples: &[f32]) -> bool {
+        if samples.is_empty() {
+            return false;
+        }
+        self.windows.push_back(ShadowWindow {
+            rec_start,
+            samples: samples.to_vec(),
+        });
+        self.samples += samples.len();
+        let mut overflowed = false;
+        while self.samples > Self::CAP_SAMPLES && self.windows.len() > 1 {
+            if let Some(dropped) = self.windows.pop_front() {
+                self.samples -= dropped.samples.len();
+                overflowed = true;
+            }
+        }
+        overflowed
+    }
+
+    /// Drop every window fully covered by a commit reaching `through_secs` of
+    /// recording time. Windows after it are KEPT: nothing has transcribed them.
+    /// The tolerance absorbs the one-VAD-window granularity of the mapped end.
+    pub fn drop_through(&mut self, through_secs: f64) {
+        while let Some(front) = self.windows.front() {
+            let end = front.rec_start + front.samples.len() as f64 / 16000.0;
+            if end <= through_secs + 0.05 {
+                let dropped = self.windows.pop_front().expect("front exists");
+                self.samples -= dropped.samples.len();
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Take everything as ONE concatenated block plus the first window's
+    /// recording start, leaving the buffer empty. `None` when there is nothing.
+    pub fn drain_concatenated(&mut self) -> Option<(f64, Vec<f32>)> {
+        let first_start = self.windows.front()?.rec_start;
+        let mut data: Vec<f32> = Vec::with_capacity(self.samples);
+        for w in self.windows.iter() {
+            data.extend_from_slice(&w.samples);
+        }
+        self.windows.clear();
+        self.samples = 0;
+        Some((first_start, data))
+    }
+
+    pub fn clear(&mut self) {
+        self.windows.clear();
+        self.samples = 0;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.windows.is_empty()
+    }
+
+    pub fn len_samples(&self) -> usize {
+        self.samples
+    }
+
+    pub fn window_count(&self) -> usize {
+        self.windows.len()
+    }
+
+    /// Recording start of the oldest retained window (diagnostics/tests).
+    pub fn first_start(&self) -> Option<f64> {
+        self.windows.front().map(|w| w.rec_start)
+    }
 }
 
 impl AudioPipeline {
@@ -942,6 +1053,8 @@ impl AudioPipeline {
             system_prev_route: None,
             mic_commit_epoch: 0,
             system_commit_epoch: 0,
+            mic_shadow: ShadowBuffer::new(),
+            system_shadow: ShadowBuffer::new(),
             shadow_cap_warned: false,
         })
     }
@@ -1148,14 +1261,13 @@ impl AudioPipeline {
         // catch-up audio with batch-accumulated segments.
         if session.is_some() && prev_route != realtime_route {
             if is_realtime_to_batch_flip(prev_route, realtime_route) {
-                // Realtime -> Batch (disconnect/degrade): flush the uncommitted
-                // audio shadowed during the open segment through the batch
-                // machinery (no words lost), then reset this stream's VAD so the
-                // still-open segment is not re-emitted and double-transcribed.
-                if !self.stream_buffer_is_empty(&device_type) {
-                    info!("🎧->📤 {:?} route flipped Realtime->Batch — flushing shadow catch-up buffer", device_type);
-                    self.flush_transcription_buffer(device_type.clone());
-                }
+                // Realtime -> Batch (disconnect/degrade, including a stall the
+                // engine's watchdog forced): flush the unconfirmed shadow windows
+                // through the batch machinery (no words lost), then reset this
+                // stream's VAD so the still-open segment is not re-emitted and
+                // double-transcribed.
+                info!("🎧->📤 {:?} route flipped Realtime->Batch — flushing shadow catch-up windows", device_type);
+                self.flush_shadow(&device_type);
                 let _ = match &device_type {
                     DeviceType::Microphone => self.vad_mic.flush(),
                     DeviceType::System => self.vad_system.flush(),
@@ -1196,16 +1308,23 @@ impl AudioPipeline {
         // which gap actually commits (>= 30s uncommitted, outside the server's
         // ~36.5s auto-commit danger band).
         //
-        // The fed audio is still shadowed into the batch buffer for disconnect
-        // catch-up (MAJOR-1), but only the SPEECH windows (feeding silence into
-        // the batch path would just waste a transcription pass), and it is now
-        // cleared only when the server CONFIRMS a commit. That makes the shadow
-        // mean "speech not yet confirmed transcribed", which is also what the
-        // stop path flushes.
+        // The fed audio is still shadowed for disconnect catch-up (MAJOR-1), but
+        // only the SPEECH windows (feeding silence into the batch path would just
+        // waste a transcription pass), and windows leave the shadow only once an
+        // EMITTED commit covers them. That makes the shadow mean "speech no
+        // transcript covers yet", which is exactly what the stop path flushes.
         //
         // When the route is Batch (disconnected/degraded) we fall through to the
         // existing VAD-gated path so the stream keeps transcribing.
         if let (Some(session), Some(Route::Realtime)) = (session.as_ref(), realtime_route) {
+            // PRIVACY: never stream to the cloud while the user has paused. The
+            // upstream choke point (RecordingState::send_audio_chunk) already
+            // drops chunks when paused, so this is defence in depth at the point
+            // where the bytes would actually leave the machine. The batch path is
+            // unaffected either way.
+            if self.state.is_paused() {
+                return;
+            }
             let now_in_speech = match &device_type {
                 DeviceType::Microphone => self.vad_mic.is_in_speech(),
                 DeviceType::System => self.vad_system.is_in_speech(),
@@ -1241,21 +1360,19 @@ impl AudioPipeline {
             // CONTINUOUS FEED: everything goes to the socket.
             session.feed(&device_type, &frame16, window_start);
 
-            // Shadow clear on CONFIRMED commits only (the session bumps its epoch
-            // solely on receipt of a committed transcript). Clearing on a commit
-            // merely SENT would lose up to 30s if the socket died during the round
-            // trip, and clearing on both send and receipt cleared it twice, the
-            // second wiping genuinely unconfirmed audio fed in between.
-            self.sync_commit_epoch(session, &device_type);
+            // Drop only the shadow windows an EMITTED commit covered. Clearing
+            // everything on a commit lost the speech fed while it was in flight;
+            // clearing on a commit merely SENT lost the whole round trip if the
+            // socket then died.
+            self.sync_commit_progress(session, &device_type);
 
             // MINOR-5: a segment that opened+closed within one window has no live
             // in-speech flag but its audio still belongs in the shadow.
             let has_committable_segment =
                 speech_segments.iter().any(|s| s.samples.len() >= 800);
             if now_in_speech || was_in_speech || has_committable_segment {
-                // MAJOR-1 shadow: mirror the SPEECH audio into the batch buffer so
-                // a route flip to Batch, or recording stop, can flush the
-                // unconfirmed tail (catch-up).
+                // MAJOR-1 shadow: keep the SPEECH audio so a route flip to Batch,
+                // or recording stop, can flush the uncovered tail (catch-up).
                 self.shadow_append(&device_type, &frame16, window_start);
             }
 
@@ -1325,15 +1442,17 @@ impl AudioPipeline {
         }
     }
 
-    /// Clear the shadow buffer if the session has CONFIRMED a commit since the
-    /// last time this stream looked. Also called once at recording stop, right
-    /// before the final flush, so a commit confirmed during teardown does not get
+    /// Drop the shadow windows covered by any commit the session has EMITTED
+    /// since this stream last looked. Also called once at recording stop, right
+    /// before the final flush, so a commit emitted during teardown is not
     /// batch-transcribed a second time.
-    fn sync_commit_epoch(
+    fn sync_commit_progress(
         &mut self,
         session: &Arc<ElevenLabsRealtimeSession>,
         device_type: &DeviceType,
     ) {
+        // Acquire load; the paired Release bump publishes `committed_through`
+        // before the epoch, so a new epoch implies a visible coverage time.
         let epoch = session.commit_epoch(device_type);
         let seen = match device_type {
             DeviceType::Microphone => self.mic_commit_epoch,
@@ -1342,11 +1461,25 @@ impl AudioPipeline {
         if epoch == seen {
             return;
         }
+        let through = session.committed_through_secs(device_type);
         match device_type {
             DeviceType::Microphone => self.mic_commit_epoch = epoch,
             DeviceType::System => self.system_commit_epoch = epoch,
         }
-        self.shadow_clear(device_type);
+        self.shadow_for(device_type).drop_through(through);
+    }
+
+    /// Send a one-off transcription warning to the frontend through the same
+    /// channel the batch worker uses (the transcription sender carries audio, so
+    /// warnings ride the realtime session's event bridge instead when present).
+    fn emit_realtime_warning(&self, message: &str) {
+        // The pipeline has no AppHandle; the realtime session owns the warning
+        // channel, so route through it when a session exists.
+        if let Some(session) = self.realtime_session.as_ref() {
+            session.emit_warning(message);
+        } else {
+            warn!("⚠️ {}", message);
+        }
     }
 
     fn stream_buffer_is_empty(&self, device_type: &DeviceType) -> bool {
@@ -1356,58 +1489,61 @@ impl AudioPipeline {
         }
     }
 
-    /// Hard cap on the realtime shadow buffer: 60s of speech at 16kHz.
+    /// MAJOR-1 shadow: record one realtime-fed SPEECH window as catch-up audio.
     ///
-    /// The shadow is normally bounded by the commit cadence (<= ~36.5s of speech),
-    /// but ONLY if commits keep being confirmed. If the server goes silent (a
-    /// stalled session, a socket that never errors so the route never flips) the
-    /// epoch freezes and the buffer would grow for the whole recording, roughly
-    /// 230MB/hour/stream, and a later flip to Batch would re-transcribe the entire
-    /// recording. This cap is the backstop.
-    const SHADOW_CAP_SAMPLES: usize = 60 * 16000;
-
-    /// MAJOR-1 shadow: append realtime-fed speech into the batch buffer as a
-    /// catch-up store, holding everything not yet CONFIRMED as committed. Sets the
-    /// buffer start timestamp on first append so a later flip-to-Batch flush (or
-    /// the stop flush) carries a sane recording-relative timestamp. Never flushes
-    /// here (the silence-gap flush in `run` is guarded against Realtime streams and
-    /// the min/max checks live only in the batch branch), so a healthy realtime
-    /// stream never double-transcribes.
-    ///
-    /// Drops the OLDEST audio past [`Self::SHADOW_CAP_SAMPLES`], advancing the
-    /// buffer's start timestamp to match, and warns once per recording.
-    fn shadow_append(&mut self, device_type: &DeviceType, samples: &[f32], start_ts: f64) {
-        let cap = Self::SHADOW_CAP_SAMPLES;
-        let (buffer, start, last_activity) = self.buffer_for(device_type);
-        if buffer.is_empty() {
-            *start = start_ts;
-        }
-        buffer.extend_from_slice(samples);
-        *last_activity = std::time::Instant::now();
-        let mut overflowed = 0usize;
-        if buffer.len() > cap {
-            overflowed = buffer.len() - cap;
-            buffer.drain(..overflowed);
-            *start += overflowed as f64 / 16000.0;
-        }
-        if overflowed > 0 && !self.shadow_cap_warned {
+    /// Nothing flushes here: the silence-gap flush in `run` is guarded against
+    /// Realtime streams and the min/max checks live only in the batch branch, so a
+    /// healthy realtime stream never double-transcribes.
+    fn shadow_append(&mut self, device_type: &DeviceType, samples: &[f32], rec_start: f64) {
+        let overflowed = self.shadow_for(device_type).append(rec_start, samples);
+        if overflowed && !self.shadow_cap_warned {
             self.shadow_cap_warned = true;
             warn!(
-                "⚠️ Realtime shadow buffer hit its {}s cap ({:?}) — the server has not confirmed a commit for that long; dropping oldest unconfirmed audio",
-                cap / 16000,
+                "⚠️ Realtime shadow buffer hit its {}s cap ({:?}) — no transcript has covered that audio; dropping the oldest unconfirmed windows",
+                ShadowBuffer::CAP_SAMPLES / 16000,
                 device_type
+            );
+            // Surface it: the user is losing tail coverage, not just a log line.
+            self.emit_realtime_warning(
+                "Live transcription is not confirming text; some audio may be transcribed late or not at all.",
             );
         }
     }
 
-    /// MAJOR-1 shadow: clear the batch buffer once the server CONFIRMS a commit
-    /// (see `sync_commit_epoch`). The remaining race is small and in the safe
-    /// direction: audio fed between the confirmation and this window's observation
-    /// of the epoch stays in the shadow one window longer than strictly needed.
-    fn shadow_clear(&mut self, device_type: &DeviceType) {
-        let (buffer, start, _) = self.buffer_for(device_type);
-        buffer.clear();
-        *start = 0.0;
+    fn shadow_for(&mut self, device_type: &DeviceType) -> &mut ShadowBuffer {
+        match device_type {
+            DeviceType::Microphone => &mut self.mic_shadow,
+            DeviceType::System => &mut self.system_shadow,
+        }
+    }
+
+    /// Hand the shadow's remaining windows to the batch path as ONE concatenated
+    /// chunk, exactly the shape the batch provider already receives. The windows
+    /// are speech-only and non-contiguous (silence between them was never stored),
+    /// so the chunk start timestamp is the FIRST window's recording start; the
+    /// batch worker treats the block as one utterance run, which is what the
+    /// ordinary VAD-accumulated batch buffer is too.
+    fn flush_shadow(&mut self, device_type: &DeviceType) {
+        let Some((first_start, data)) = self.shadow_for(device_type).drain_concatenated() else {
+            return;
+        };
+        // Stage into the stream's batch buffer (always empty on a Realtime stream:
+        // the realtime branch returns before the batch accumulation) and reuse the
+        // ordinary flush, so overlap handling and chunk shape stay identical.
+        let (buffer, start, last_activity) = self.buffer_for(device_type);
+        if buffer.is_empty() {
+            *start = first_start;
+        }
+        buffer.extend_from_slice(&data);
+        *last_activity = std::time::Instant::now();
+        info!(
+            "🎧->📤 Flushing {:?} realtime shadow: {} samples ({:.1}s) from {:.1}s",
+            device_type,
+            data.len(),
+            data.len() as f64 / 16000.0,
+            first_start
+        );
+        self.flush_transcription_buffer(device_type.clone());
     }
 
     /// Return mutable references to the per-stream buffer triple.
@@ -1504,23 +1640,34 @@ impl AudioPipeline {
         info!("Flushing remaining audio from pipeline (processed {} chunks)", self.processed_chunks);
 
         for device_type in [DeviceType::Microphone, DeviceType::System] {
-            // MAJOR-R1, revised: EVERY stream batch-flushes at stop, Realtime
-            // included. There is no safe WS finalize commit under the danger-band
-            // strategy (see should_batch_flush_on_stop), so the shadow buffer —
-            // all speech the server has not CONFIRMED committing — is the
-            // authoritative tail transcription. Duplicate emission is prevented by
-            // ElevenLabsRealtimeSession::begin_shutdown(), called before this
-            // flush, which drops any commit reply still in flight.
+            // MAJOR-R1, revised: EVERY stream flushes at stop, Realtime included.
+            // The staged stop already gave the WS path its chance (finalize commit
+            // outside the danger band), so what remains in the shadow is exactly
+            // the audio no emitted transcript covers. Duplicate emission is
+            // prevented by begin_shutdown(), called before this flush.
             //
-            // Take one last look at the commit epoch first: if the server confirmed
-            // a commit during teardown, that audio is already transcribed and must
-            // leave the shadow before we flush it.
+            // Take one last look at the commit progress first: a commit emitted
+            // during teardown must remove its windows before we flush the rest.
             let session = self.realtime_session.clone();
-            if let Some(session) = session.as_ref() {
-                self.sync_commit_epoch(session, &device_type);
-            }
             let route = session.as_ref().map(|s| s.route(&device_type));
+            if let Some(session) = session.as_ref() {
+                self.sync_commit_progress(session, &device_type);
+            }
             if !should_batch_flush_on_stop(route) {
+                continue;
+            }
+
+            if !should_drain_vad_into_batch_on_stop(route) {
+                // M3: the VAD's open segment is ALREADY in the shadow (the realtime
+                // tap shadows every speech window, in-speech ones included), so
+                // appending vad.flush()'s segments on top transcribed the closing
+                // sentence TWICE inside one chunk. Flush the processor to reset it,
+                // then discard the result, exactly as the Realtime->Batch flip does.
+                let _ = match device_type {
+                    DeviceType::Microphone => self.vad_mic.flush(),
+                    DeviceType::System => self.vad_system.flush(),
+                };
+                self.flush_shadow(&device_type);
                 continue;
             }
 
@@ -1558,8 +1705,11 @@ impl AudioPipeline {
             if buffer_len > 0 {
                 info!("📤 Flushing final {:?} transcription buffer: {} samples ({:.1}s)",
                       device_type, buffer_len, buffer_len as f64 / 16000.0);
-                self.flush_transcription_buffer(device_type);
+                self.flush_transcription_buffer(device_type.clone());
             }
+            // A stream that was on Realtime earlier in the recording may still hold
+            // shadow windows from before its route flipped; flush them too.
+            self.flush_shadow(&device_type);
         }
 
         if let Some(ref mut saver) = self.raw_track_saver {
@@ -1715,5 +1865,143 @@ impl AudioPipelineManager {
 impl Default for AudioPipelineManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+// ============================================================================
+// TESTS
+// ============================================================================
+
+#[cfg(test)]
+mod shadow_tests {
+    use super::*;
+    use crate::audio::transcription::elevenlabs_realtime::should_drain_vad_into_batch_on_stop;
+
+    /// `secs` of 16kHz samples marked with `v` so windows are distinguishable.
+    fn win(secs: f64, v: f32) -> Vec<f32> {
+        vec![v; (secs * 16000.0) as usize]
+    }
+
+    #[test]
+    fn shadow_keeps_windows_and_reports_the_first_start() {
+        let mut s = ShadowBuffer::new();
+        assert!(s.is_empty());
+        s.append(10.0, &win(0.6, 1.0));
+        s.append(20.0, &win(0.6, 2.0)); // non-contiguous: silence in between
+        assert_eq!(s.window_count(), 2);
+        assert_eq!(s.first_start(), Some(10.0));
+        let (start, data) = s.drain_concatenated().expect("non-empty");
+        assert_eq!(start, 10.0, "chunk start is the OLDEST window's start");
+        assert_eq!(data.len(), (0.6 * 16000.0) as usize * 2);
+        assert!(s.is_empty(), "draining empties the buffer");
+        assert!(s.drain_concatenated().is_none());
+    }
+
+    #[test]
+    fn shadow_append_of_empty_samples_is_a_noop() {
+        let mut s = ShadowBuffer::new();
+        assert!(!s.append(1.0, &[]));
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn commit_drops_only_the_windows_it_covered() {
+        // M4: a flat clear wiped the speech fed while the commit was in flight,
+        // losing 0.3-1.2s of the tail at stop. Only covered windows may go.
+        let mut s = ShadowBuffer::new();
+        s.append(10.0, &win(1.0, 1.0)); // covers 10.0..11.0
+        s.append(11.0, &win(1.0, 2.0)); // covers 11.0..12.0
+        s.append(12.0, &win(1.0, 3.0)); // in flight, NOT covered
+
+        s.drop_through(12.0); // commit reached recording second 12.0
+        assert_eq!(s.window_count(), 1, "only the two covered windows may go");
+        assert_eq!(s.first_start(), Some(12.0));
+        let (start, data) = s.drain_concatenated().unwrap();
+        assert_eq!(start, 12.0);
+        assert!(data.iter().all(|&v| v == 3.0), "the in-flight window survives");
+    }
+
+    #[test]
+    fn commit_that_covers_nothing_drops_nothing() {
+        let mut s = ShadowBuffer::new();
+        s.append(50.0, &win(1.0, 1.0));
+        s.drop_through(10.0); // an older commit
+        assert_eq!(s.window_count(), 1);
+    }
+
+    #[test]
+    fn commit_partially_covering_a_window_keeps_it_whole() {
+        // Half a window is not covered, so the window stays: better to
+        // re-transcribe a fragment than to lose speech.
+        let mut s = ShadowBuffer::new();
+        s.append(10.0, &win(1.0, 1.0)); // 10.0..11.0
+        s.drop_through(10.5);
+        assert_eq!(s.window_count(), 1);
+        // And the tolerance still absorbs VAD-window granularity at the edge.
+        s.drop_through(10.97);
+        assert_eq!(s.window_count(), 0, "within 50ms of the end counts as covered");
+    }
+
+    #[test]
+    fn cap_drops_whole_windows_and_keeps_start_times_honest() {
+        // The flat buffer trimmed a byte range and advanced start_ts as if the
+        // audio were contiguous. It is not: these windows are speech-only.
+        let mut s = ShadowBuffer::new();
+        let mut overflowed = false;
+        // 70 windows of 1s, each starting 10s apart in recording time.
+        for i in 0..70 {
+            overflowed |= s.append(i as f64 * 10.0, &win(1.0, i as f32));
+        }
+        assert!(overflowed, "70s of speech must trip the 60s cap");
+        assert!(
+            s.len_samples() <= ShadowBuffer::CAP_SAMPLES,
+            "capped, got {} samples",
+            s.len_samples()
+        );
+        // The remaining start time is a REAL window start, not a shifted one.
+        let first = s.first_start().unwrap();
+        assert_eq!(
+            first % 10.0,
+            0.0,
+            "start must still land on a real window boundary, got {}",
+            first
+        );
+        let (start, _data) = s.drain_concatenated().unwrap();
+        assert_eq!(start, first);
+    }
+
+    #[test]
+    fn cap_never_empties_the_buffer_completely() {
+        // Even a single window larger than the cap is retained: dropping it would
+        // silently discard speech with nothing else to fall back on.
+        let mut s = ShadowBuffer::new();
+        s.append(0.0, &win(90.0, 1.0));
+        assert_eq!(s.window_count(), 1);
+        assert!(s.len_samples() > ShadowBuffer::CAP_SAMPLES);
+    }
+
+    #[test]
+    fn stop_must_not_drain_the_vad_into_the_batch_for_realtime_streams() {
+        // M3: the open segment is already in the shadow, so draining the VAD on
+        // top transcribed the closing sentence twice inside one chunk.
+        assert!(!should_drain_vad_into_batch_on_stop(Some(Route::Realtime)));
+        assert!(should_drain_vad_into_batch_on_stop(Some(Route::Batch)));
+        assert!(should_drain_vad_into_batch_on_stop(None));
+    }
+
+    #[test]
+    fn stop_flush_contains_the_open_segment_exactly_once() {
+        // The shadow already holds the open segment's windows; the stop flush must
+        // therefore emit each of them once and only once.
+        let mut s = ShadowBuffer::new();
+        s.append(100.0, &win(0.6, 7.0)); // open segment, window 1
+        s.append(100.6, &win(0.6, 7.0)); // open segment, window 2
+        let (start, data) = s.drain_concatenated().unwrap();
+        assert_eq!(start, 100.0);
+        assert_eq!(
+            data.iter().filter(|&&v| v == 7.0).count(),
+            (0.6 * 16000.0) as usize * 2,
+            "each window's samples appear exactly once"
+        );
+        assert!(s.is_empty(), "and nothing is left to be flushed again");
     }
 }

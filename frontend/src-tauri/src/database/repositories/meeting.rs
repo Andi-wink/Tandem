@@ -150,11 +150,19 @@ impl MeetingsRepository {
         .fetch_one(pool)
         .await?;
 
-        // Get paginated transcripts ordered by audio_start_time
+        // Get paginated transcripts ordered by audio_start_time.
+        //
+        // `rowid` (SQLite's implicit integer key = insertion order) is the
+        // tiebreaker. audio_start_time alone has real ties: the mic and system
+        // streams are independent, utterance splitting emits several segments per
+        // commit, and the untimed fallback pins several starts to the same value.
+        // Without a stable secondary key the sort is unspecified across pages, so
+        // a segment can appear twice or vanish while paginating. No migration
+        // needed: rowid always exists on these tables.
         let transcripts = sqlx::query_as::<_, Transcript>(
             "SELECT * FROM transcripts
              WHERE meeting_id = ?
-             ORDER BY audio_start_time ASC
+             ORDER BY audio_start_time ASC, rowid ASC
              LIMIT ? OFFSET ?"
         )
         .bind(meeting_id)

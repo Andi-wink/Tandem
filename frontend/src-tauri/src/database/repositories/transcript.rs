@@ -123,7 +123,7 @@ impl TranscriptsRepository {
              FROM meetings m
              JOIN transcripts t ON m.id = t.meeting_id
              WHERE LOWER(t.transcript) LIKE ? ESCAPE '\\'
-             ORDER BY t.timestamp DESC
+             ORDER BY t.timestamp DESC, t.rowid DESC
              LIMIT 50",
         )
         .bind(&search_query)

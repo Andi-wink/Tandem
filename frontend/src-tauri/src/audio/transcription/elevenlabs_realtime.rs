@@ -26,23 +26,35 @@
 //   * SERVER FACT 1: under `commit_strategy=manual` the server AUTO-COMMITS at
 //     ~36.5s of uncommitted FED AUDIO (audio-based, pacing-invariant; NOT the
 //     documented 90s wall-clock).
-//   * SERVER FACT 2: a client commit sent MID-SPEECH ~1-2s before that boundary
+//   * SERVER FACT 2: a client commit sent MID-SPEECH close to that boundary
 //     deterministically STALLS the session (server goes silent, tail audio
-//     orphaned). Distinct from `commit_throttled`, which is two back-to-back
-//     commits with no audio between and makes the server DROP one of them.
-//     Hence the scheduler NEVER client-commits past 33.5s uncommitted and lets
-//     the server's own auto-commit be the commit-point instead.
-//   * THE SCHEDULER NEVER DEPENDS ON SERVER MESSAGES. It runs purely on the
-//     fed-audio clock and PREDICTS the server's auto-commit (subtracting 36.5s
-//     when the clock crosses it), exactly as the validated Python harness does.
-//     A silent/stalled server therefore cannot disarm it permanently.
-//   * NO COMMIT AT RECORDING STOP. Stopping inside the danger band would send
-//     precisely the commit SERVER FACT 2 forbids, and after stop no more audio
-//     is fed so the server's own auto-commit would never arrive either. Instead
-//     the pipeline batch-flushes its shadow buffer (all speech since the last
-//     CONFIRMED commit) through the ordinary batch path, and the session's
-//     `begin_shutdown()` suppresses further event emission so a late in-flight
-//     reply cannot duplicate that text.
+//     orphaned). MEASURED: healthy at 34.5s uncommitted, stalled 3/3 at 35.0s.
+//     Distinct from `commit_throttled`, which is two back-to-back commits with
+//     no audio between and makes the server DROP one of them. Hence the
+//     scheduler never client-commits past 32.0s and lets the server's own
+//     auto-commit be the commit-point instead.
+//   * THE SCHEDULER RUNS ON THE FED-AUDIO CLOCK, not on server messages: it
+//     PREDICTS the auto-commit by subtracting 36.5s when the clock crosses it,
+//     so a silent server cannot disarm it. But 36.5s is a RECEIVE-time figure
+//     and the true trigger is ~0.5-1.0s earlier, so a purely predictive clock
+//     under-counts a little every cycle with nothing to correct it. Each
+//     received committed transcript therefore RE-SYNCS the clock, bounding that
+//     error to one cycle instead of accumulating it over a long meeting.
+//   * STALL WATCHDOG: a stalled session keeps the socket open and never errors,
+//     so 10s of speech fed with zero server messages forces a disconnect and
+//     lets the reconnect ladder + batch catch-up take over.
+//   * STAGED STOP. A finalize commit IS sent at recording stop, but only from
+//     outside the danger band and only with real audio outstanding (this is what
+//     the 4.68% harness configuration did at clip end). Its reply is awaited
+//     briefly and emitted normally. Then emission is suppressed and the pipeline
+//     batch-flushes whatever shadow windows no emitted commit covered. Inside
+//     the band nothing is sent at all: no more audio is fed after stop, so the
+//     server would never reach its own boundary either, and the batch path is
+//     the only safe route.
+//
+// ACCEPTED RISK: the batch fallback for the tail is an HTTP request that can
+// still fail after its retries. A warning is emitted and the recorded .wav
+// always survives, so the audio is never lost, only its transcript.
 //
 // COST: the continuous feed bills roughly wall-clock audio on BOTH sockets (mic
 // and system) for the whole recording, i.e. ~3-5x the VAD-gated feed's billed
@@ -96,7 +108,26 @@ pub const FRAME_SAMPLES: usize = 4_000;
 
 /// Send a silence keepalive if no audio has been fed for this long. Chosen well
 /// under the server's ~15.7s idle-close (spike C1) with margin for scheduling.
+/// The tick period is [`KEEPALIVE_TICK_SECS`], so the true worst case is
+/// `KEEPALIVE_IDLE_SECS + KEEPALIVE_TICK_SECS`.
 pub const KEEPALIVE_IDLE_SECS: f64 = 10.0;
+
+/// How often the keepalive condition is evaluated. At the previous 5.0s the
+/// worst case was 10.0 + 4.99 = 14.99s against a ~15.7s idle close, a 0.7s
+/// margin. 2.5s brings the worst case to 12.49s.
+pub const KEEPALIVE_TICK_SECS: f64 = 2.5;
+
+/// Stall watchdog (M1). If this many seconds of REAL audio are fed with ZERO
+/// server messages of any kind (partial, committed, error) received, the session
+/// is treated as dead and force-disconnected.
+///
+/// SERVER FACT 2 stalls do not close the socket and produce no send errors, so
+/// nothing else detects them: partials freeze, the commit epoch freezes, the
+/// route never flips, and the pipeline's shadow buffer silently eats the rest of
+/// the meeting at its cap. A healthy session emits a partial roughly once a
+/// second while speech is being fed, so 10s of speech with total silence from the
+/// server is unambiguous.
+pub const WATCHDOG_SECS: f64 = 10.0;
 
 /// Length of each silence keepalive frame (250ms @ 16kHz of zeros). Billed as
 /// audio-seconds but a few frames per idle gap is negligible (spike §4/D-dev-1).
@@ -111,13 +142,18 @@ pub const BACKOFF_SCHEDULE_MS: [u64; 4] = [1_000, 3_000, 8_000, 30_000];
 
 /// Bounded feed-ring capacity per stream (drop-oldest on overflow). One queued
 /// `Audio` command carries one PIPELINE window (600ms), not one 250ms socket
-/// frame, so 64 slots is ~38s of queued audio (shed granularity 600ms) minus
-/// whatever `SegmentGap` control commands share the queue. Kept at 64: the ring
-/// only backs up if the socket send path stalls, and 38s is already far more
-/// live tail than is useful, while the recording file remains the source of
-/// truth so a shed window only degrades the live transcript, never the audio.
-/// Shed windows are also harmless to timestamps: [`TimelineMapper`] records an
-/// entry per frame actually SENT, so a hole simply maps around.
+/// frame, so 64 slots is ~38s of queued audio at 600ms shed granularity.
+///
+/// `SegmentGap` no longer erodes that depth: at most ONE gap signal is queued at
+/// a time (they coalesce on push) and a queued gap is evicted before any audio.
+/// Before that fix a silent stretch enqueued one gap per window alongside the
+/// audio, so a backed-up ring converged to 64 gap signals and zero audio.
+///
+/// Kept at 64: the ring only backs up if the socket send path stalls, 38s is
+/// already far more live tail than is useful, and the recording file remains the
+/// source of truth so a shed window only degrades the live transcript, never the
+/// audio. Shed windows are also harmless to timestamps: [`TimelineMapper`]
+/// records an entry per frame actually SENT, so a hole simply maps around.
 pub const FEED_RING_CAP: usize = 64;
 
 // ============================================================================
@@ -190,25 +226,40 @@ pub fn is_realtime_to_batch_flip(prev: Option<Route>, cur: Option<Route>) -> boo
 /// buffer to the batch worker (MAJOR-R1). ALWAYS true, including for streams on
 /// the Realtime route.
 ///
-/// This inverts the original rule, which skipped Realtime streams because the
-/// session's `close_all` sent a final WS `commit` that owned the closing tail.
-/// Under the danger-band strategy that finalize commit is UNSENDABLE:
-///   * stopping while uncommitted audio sits in [33.5s, 36.5s) would send exactly
-///     the mid-band commit SERVER FACT 2 says stalls the session, orphaning the
-///     whole tail, and
-///   * simply suppressing it does not help either, because after stop no more
-///     audio is fed, so the server never reaches its 36.5s boundary and never
-///     auto-commits the tail on its own.
-/// So there is no WS finalize at all. The shadow buffer (every speech window
-/// since the last CONFIRMED commit) is flushed through the ordinary batch path
-/// instead: no stall risk, no danger band, and it also covers a stop inside the
-/// first 30s where nothing has been committed yet.
+/// This inverts the original rule, which skipped Realtime streams because
+/// `close_all` sent an UNCONDITIONAL final WS `commit` that owned the tail. That
+/// commit had no danger-band check: stopping with uncommitted audio inside the
+/// band sent exactly the commit SERVER FACT 2 says stalls the session, orphaning
+/// the whole tail, and simply suppressing it lost the tail too, because after
+/// stop no more audio is fed so the server never reaches its own boundary either.
 ///
-/// Double-emit is prevented on the other side: [`ElevenLabsRealtimeSession::begin_shutdown`]
-/// is called BEFORE the pipeline force-flush, so any commit reply still in flight
-/// is dropped rather than emitted alongside the batch transcription.
+/// The staged stop now sends a finalize commit only when
+/// [`CommitScheduler::finalize_should_commit`] allows it, and this flush handles
+/// the REMAINDER: the shadow windows no emitted commit covered. That remainder is
+/// often empty (the finalize covered everything), is the whole tail when the
+/// finalize was refused or its reply was late, and is also the right answer for a
+/// stop inside the first 30s where nothing has been committed at all.
+///
+/// Double transcription is prevented structurally rather than by timing: the
+/// shadow clear is WINDOWED by what each emitted commit actually covered, and
+/// [`ElevenLabsRealtimeSession::begin_shutdown`] is called before the flush so a
+/// late reply is dropped instead of emitted alongside it.
 pub fn should_batch_flush_on_stop(_route: Option<Route>) -> bool {
     true
+}
+
+/// Whether recording-stop should drain the VAD processor's still-open segment
+/// into the batch buffer. FALSE for a stream on the Realtime route (M3).
+///
+/// The realtime tap shadows EVERY speech window, in-speech ones included, so the
+/// open segment is already in the shadow. Appending `vad.flush()`'s segments on
+/// top of it transcribed the closing sentence TWICE inside a single chunk
+/// ("...ship it on Friday so let's ship it on Friday"). The Realtime -> Batch
+/// flip path already discards the flush result for exactly this reason; the stop
+/// path must match it. The flush is still CALLED, to reset the processor, its
+/// result is just dropped.
+pub fn should_drain_vad_into_batch_on_stop(route: Option<Route>) -> bool {
+    route != Some(Route::Realtime)
 }
 
 // ============================================================================
@@ -405,29 +456,70 @@ pub fn keepalive_due(secs_since_last_audio: f64) -> bool {
 // COMMIT SCHEDULER (pure, unit-tested) — the danger-band strategy
 // ============================================================================
 
-/// Audio-seconds of uncommitted feed after which the next VAD gap is a commit
-/// candidate. The WER study swept this: per-segment (~1-2s) 6.31% pooled WER,
-/// 15s 5.90%, 30s 4.68%, never (commit once at clip end) 4.58%. 30s is the knee
-/// where accuracy has nearly converged on the "never commit" bound while the
-/// user still sees committed text at a usable cadence.
-pub const COMMIT_INTERVAL_SECS: f64 = 30.0;
+/// Audio-seconds of uncommitted feed after which the next speech gap is a commit
+/// candidate.
+///
+/// The original WER sweep put the accuracy knee near 30s: per-segment (~1-2s)
+/// 6.31% pooled WER, 15s 5.90%, 30s 4.68%, never (commit once at clip end)
+/// 4.58%. But 30s paired with a 32.0s cutoff leaves only a 2s ARMING WINDOW, and
+/// the live multi-cycle stress run showed speech-dense audio reproducibly passing
+/// straight through it with no gap, so the cycle ran on into the server's
+/// auto-commit every time. 27.0 widens the window to 5s, which catches those
+/// gaps, at no measurable accuracy cost: two 6-minute live sessions at
+/// 27 / 32 / re-sync scored 5.09% and 4.58% WER, the same band as the 4.68%
+/// baseline, with zero stalls and zero `commit_throttled`.
+///
+/// TUNING: this and [`FORCE_CUTOFF_SECS`] are the only two knobs. Validation
+/// source: `audio_testing/run_hybrid_realtime_wer.py` at harness commit d8c8dd3
+/// (`--cutoff` / `--resync` / `--make-multi`).
+pub const COMMIT_INTERVAL_SECS: f64 = 27.0;
 
-/// SERVER FACT 1. Under `commit_strategy=manual` the server auto-commits after
-/// ~36.5s of UNCOMMITTED FED AUDIO. Verified audio-based and pacing-invariant
-/// (seen at 9.15s wall-clock at 4x pacing = 36.6s audio, on every clip), i.e.
-/// NOT the 90s wall-clock figure in the public docs.
+/// SERVER FACT 1. Under `commit_strategy=manual` the server auto-commits on
+/// uncommitted FED AUDIO, not wall clock (definitely not the documented 90s).
+///
+/// MEASUREMENT CAVEAT: 36.5s is a RECEIVE-time figure (when the committed event
+/// arrived, seen at 9.15s wall-clock at 4x pacing = 36.6s audio on every clip).
+/// The live multi-cycle run measured auto-commit RECEIPT SPACING of 34.75-36.25s,
+/// median 35.5s, so the server's true TRIGGER is earlier still by roughly the
+/// transcription plus network latency. Everything derived from this constant
+/// treats it as an UPPER bound on the trigger, never as the trigger itself, and
+/// [`CommitScheduler::on_committed_received`] corrects the residual each cycle.
 pub const AUTO_COMMIT_AUDIO_SECS: f64 = 36.5;
 
-/// SERVER FACT 2. A client commit fired mid-speech within a couple of seconds of
-/// the auto-commit boundary deterministically STALLS the session: the server
-/// stops emitting and the trailing audio is orphaned. This guard band keeps
-/// client commits well clear of it.
-pub const DANGER_GUARD_SECS: f64 = 3.0;
+/// SERVER FACT 2. A client commit fired mid-speech close to the auto-commit
+/// boundary deterministically STALLS the session: the server stops emitting and
+/// the trailing audio is orphaned.
+///
+/// MEASURED BOUNDARY (harness event logs): a commit at 34.5s uncommitted was
+/// healthy; a commit at 35.0s stalled 3 runs out of 3. So the real stall edge is
+/// 34.5-35.0s, NOT the 36.5s receive-time figure, and the previously claimed
+/// "3.0s validated guard" was in truth only ~1.0-1.5s.
+pub const STALL_EDGE_SECS: f64 = 34.5;
 
-/// Hard cutoff for CLIENT commits: 33.5s of uncommitted fed audio. Past this the
-/// scheduler never commits in this cycle — it lets the server's own auto-commit
-/// land instead. Validated: zero stalls, zero `commit_throttled`.
-pub const FORCE_CUTOFF_SECS: f64 = AUTO_COMMIT_AUDIO_SECS - DANGER_GUARD_SECS;
+/// Margin held below the measured stall edge. 2.5s puts the cutoff at 32.0s.
+pub const DANGER_GUARD_SECS: f64 = 2.5;
+
+/// Hard cutoff for CLIENT commits: 32.0s of uncommitted fed audio, i.e. 2.5s
+/// below the last position observed healthy. Past this the scheduler never
+/// commits in this cycle and lets the server's own auto-commit land instead.
+///
+/// TUNING: this and [`COMMIT_INTERVAL_SECS`] are the only two knobs; a live
+/// multi-cycle stress run may move them, and each is a one-line change here.
+pub const FORCE_CUTOFF_SECS: f64 = STALL_EDGE_SECS - DANGER_GUARD_SECS;
+
+/// Uncommitted seconds we assume the server still holds at the moment a
+/// committed transcript REACHES us (the re-sync floor).
+///
+/// At the instant the server emits a commit its own uncommitted counter is zero;
+/// by the time the event reaches us we have fed only the in-flight audio, ~0.5s
+/// at real pace. 1.5s is a deliberate OVER-estimate: over-counting delays our
+/// next commit slightly (harmless), under-counting walks us into the stall band.
+///
+/// MEASURED (live multi-cycle run, harness commit d8c8dd3): without the re-sync
+/// the client model drifts -1.0s per auto-commit cycle, monotonically, over 3
+/// consecutive cycles. With it the model error stays within [-0.25, +1.25] over
+/// 9-10 cycles with no trend.
+pub const RESYNC_MARGIN_SECS: f64 = 1.5;
 
 /// A gap only arms a commit once this much REAL (non-keepalive) audio has been
 /// fed since the last commit-point. Two jobs: committing over pure keepalive
@@ -442,24 +534,31 @@ pub const MIN_REAL_AUDIO_SECS: f64 = 1.0;
 /// connection.
 ///
 /// Mirrors the validated Python harness scheduler in
-/// `audio_testing/run_hybrid_realtime_wer.py` (`build_schedule`), including its
-/// key property: the harness never waited for a server event to know a
-/// commit-point had happened. It PREDICTED the server's auto-commit at
-/// `last_commit + AUTO_COMMIT_AUDIO_SECS` and advanced its clock there.
+/// `audio_testing/run_hybrid_realtime_wer.py` (`build_schedule`), with one
+/// addition the 60s validation clips could never have exercised (they only ever
+/// ran ONE auto-commit cycle): a receipt-driven re-sync.
 ///
-/// A COMMIT-POINT is therefore either of:
+/// A COMMIT-POINT is any of:
 ///   * a CLIENT commit we send — the clock resets at SEND time, so a second gap
-///     arriving before the reply cannot fire a back-to-back commit, and
+///     arriving before the reply cannot fire a back-to-back commit;
 ///   * the PREDICTED server auto-commit — when the fed clock crosses
-///     [`AUTO_COMMIT_AUDIO_SECS`] we subtract it, keeping the phase of the
-///     residual audio.
+///     [`AUTO_COMMIT_AUDIO_SECS`] we subtract it, keeping the residual's phase.
+///     This is the MESSAGE-LESS BACKSTOP: it keeps the scheduler armed even if
+///     the server never says anything;
+///   * a RECEIVED committed transcript — [`on_committed_received`](Self::on_committed_received)
+///     re-syncs to [`RESYNC_MARGIN_SECS`].
 ///
-/// Received `committed_transcript` events deliberately do NOT touch this clock.
-/// Resetting on the reply as well as on the send discarded the audio fed during
-/// the round trip, leaving our count systematically BELOW the server's (the
-/// unsafe direction — a slow reply to a 30s commit could eat the entire 3.0s
-/// guard). And depending on a reply at all meant a silent or stalled server
-/// disarmed the scheduler permanently past the cutoff.
+/// Why the re-sync matters: [`AUTO_COMMIT_AUDIO_SECS`] is a RECEIVE-time figure
+/// and the server's true trigger is ~0.5-1.0s earlier, so a purely predictive
+/// subtract under-counts the server by that much on EVERY cycle, with nothing to
+/// correct it. Over a long meeting the error accumulates (N cycles x ~0.8s) until
+/// a "safe" 31s client commit is really a ~35s commit server-side, which is
+/// precisely the stall in SERVER FACT 2. The re-sync bounds the error to one
+/// cycle instead of accumulating it.
+///
+/// The re-sync only ever moves the clock FORWARD relative to the naive predictive
+/// subtract (it floors at [`RESYNC_MARGIN_SECS`] rather than zeroing), so it can
+/// only ever make us more conservative, never less.
 #[derive(Debug, Default)]
 pub struct CommitScheduler {
     /// ALL fed-audio seconds (real + keepalive) since the last commit-point.
@@ -513,12 +612,28 @@ impl CommitScheduler {
         }
     }
 
+    /// Re-sync to a committed transcript that just ARRIVED (either message
+    /// variant, whether or not we emitted it).
+    ///
+    /// `uncommitted := max(RESYNC_MARGIN_SECS, uncommitted - AUTO_COMMIT_AUDIO_SECS)`.
+    /// The subtract handles the case where the predictive backstop has not fired
+    /// yet (our clock still carries the whole cycle); the floor handles the case
+    /// where it already did (our clock is a small residual, which we must not
+    /// trust below the in-flight estimate). Either way the result is an
+    /// over-estimate of what the server actually still holds, which is the safe
+    /// direction.
+    pub fn on_committed_received(&mut self) {
+        let subtracted = self.uncommitted_secs - AUTO_COMMIT_AUDIO_SECS;
+        self.uncommitted_secs = subtracted.max(RESYNC_MARGIN_SECS);
+        self.real_secs = self.real_secs.min(self.uncommitted_secs);
+    }
+
     /// A speech gap was observed: should we commit here?
     ///
     /// `pending_tail_secs` is REAL audio still held in the [`FrameSlicer`] that
     /// will be flushed immediately before the commit. Including it here is what
-    /// makes the guard exact: checking the cutoff before the flush left an
-    /// effective guard of 2.75s rather than the intended 3.0s.
+    /// makes the guard exact: checking the cutoff before the flush would shave
+    /// one frame (250ms) off the intended margin.
     ///
     /// True only inside the safe window `[COMMIT_INTERVAL_SECS,
     /// FORCE_CUTOFF_SECS)` and with real speech behind it.
@@ -526,6 +641,15 @@ impl CommitScheduler {
         let unc = self.uncommitted_secs + pending_tail_secs;
         let real = self.real_secs + pending_tail_secs;
         unc >= COMMIT_INTERVAL_SECS && unc < FORCE_CUTOFF_SECS && real >= MIN_REAL_AUDIO_SECS
+    }
+
+    /// Whether a FINALIZE commit at recording stop is safe and worthwhile: same
+    /// danger-band rule as a gap commit, but with no interval requirement (the
+    /// point is to flush whatever is outstanding, however little).
+    pub fn finalize_should_commit(&self, pending_tail_secs: f64) -> bool {
+        let unc = self.uncommitted_secs + pending_tail_secs;
+        let real = self.real_secs + pending_tail_secs;
+        unc < FORCE_CUTOFF_SECS && real >= MIN_REAL_AUDIO_SECS
     }
 
     /// Record a CLIENT-initiated commit-point (call at SEND time, after the
@@ -815,6 +939,22 @@ pub struct Utterance {
 /// single segment so the caller always has something to emit. Spacing tokens
 /// stay attached to the segment they follow and are trimmed at the edges.
 pub fn split_committed_on_gaps(words: &[WordTiming], gap_secs: f64) -> Vec<Utterance> {
+    split_committed_on_gaps_mapped(words, gap_secs, |t| t)
+}
+
+/// [`split_committed_on_gaps`] with the gap measured on a MAPPED clock.
+///
+/// `map` converts a server cumulative time to recording time. That matters
+/// because keepalive silence and shed windows make the two clocks differ: two
+/// utterances separated by a 40s recording pause are ADJACENT in server time, so
+/// splitting on the raw server clock leaves them as one block whose mapped
+/// duration wrongly spans the pause. The returned `start`/`end` stay in SERVER
+/// time so the caller can map them itself (with monotonic clamping).
+pub fn split_committed_on_gaps_mapped(
+    words: &[WordTiming],
+    gap_secs: f64,
+    map: impl Fn(f64) -> f64,
+) -> Vec<Utterance> {
     let mut out: Vec<Utterance> = Vec::new();
     let mut cur_text = String::new();
     let mut cur_start: Option<f64> = None;
@@ -824,7 +964,7 @@ pub fn split_committed_on_gaps(words: &[WordTiming], gap_secs: f64) -> Vec<Utter
         let is_spacing = w.word_type.as_deref() == Some("spacing");
         if !is_spacing {
             if let (Some(s), Some(prev_end)) = (w.start, cur_end) {
-                if s - prev_end > gap_secs && !cur_text.trim().is_empty() {
+                if map(s) - map(prev_end) > gap_secs && !cur_text.trim().is_empty() {
                     out.push(Utterance {
                         start: cur_start.unwrap_or(prev_end),
                         end: prev_end,
@@ -934,10 +1074,22 @@ pub fn parse_server_message(raw: &str) -> ServerMsg {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let words: Vec<WordTiming> = val
-                .get("words")
-                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .unwrap_or_default();
+            // PER-ELEMENT lossy parse: one malformed token must not collapse the
+            // whole array to empty (which would lose every word timing in the
+            // block and force the untimed single-segment fallback).
+            let mut words: Vec<WordTiming> = Vec::new();
+            let mut skipped = 0usize;
+            if let Some(arr) = val.get("words").and_then(|v| v.as_array()) {
+                for item in arr {
+                    match serde_json::from_value::<WordTiming>(item.clone()) {
+                        Ok(w) => words.push(w),
+                        Err(_) => skipped += 1,
+                    }
+                }
+            }
+            if skipped > 0 {
+                debug!("🎧 Realtime: skipped {} malformed word timing(s)", skipped);
+            }
             ServerMsg::Committed { text, words }
         }
         "committed_transcript" => ServerMsg::CommittedPlain,
@@ -1069,9 +1221,15 @@ enum FeedCmd {
     /// EVERY silent window (matching the harness, which commits at the first
     /// silent chunk once armed) rather than only at VAD segment completion,
     /// which could otherwise push an armed cycle straight past the cutoff.
+    /// COALESCED: at most one is ever queued (a second is a no-op), because a
+    /// queued gap conveys nothing a fresher one does not.
     SegmentGap,
-    /// Shut the connection down. There is deliberately NO finalize-commit
-    /// command: see [`should_batch_flush_on_stop`].
+    /// Recording stop: flush the slicer tail and, if [`CommitScheduler::finalize_should_commit`]
+    /// allows (outside the danger band, real audio behind it), send one final
+    /// commit so the tail is transcribed by the WS path rather than by the batch
+    /// fallback. Never sent inside the band: see [`should_batch_flush_on_stop`].
+    Finalize,
+    /// Shut the connection down.
     Close,
 }
 
@@ -1094,18 +1252,33 @@ impl FeedRing {
         }
     }
 
-    /// Non-blocking push. On overflow, evicts the oldest queued command. Close
-    /// and Onset/SegmentGap/Commit control messages are never evicted (only Audio
-    /// is), so commit/onset ordering survives shedding.
+    /// Non-blocking push.
+    ///
+    /// `SegmentGap` COALESCES: pushing one while another is already queued is a
+    /// no-op, since a stale gap says nothing a fresher one does not. On overflow
+    /// a queued `SegmentGap` is evicted first (it is pure signalling), then the
+    /// oldest `Audio`; `Onset`/`Finalize`/`Close` are never evicted so control
+    /// ordering survives shedding.
     fn push(&self, cmd: FeedCmd) {
         // Poison-tolerant: a panicked holder must not wedge the audio-thread feed.
         let mut q = self.q.lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(cmd, FeedCmd::SegmentGap)
+            && q.iter().any(|c| matches!(c, FeedCmd::SegmentGap))
+        {
+            return;
+        }
         if q.len() >= self.cap {
-            // Evict the oldest Audio command; if none, evict the front.
-            if let Some(pos) = q.iter().position(|c| matches!(c, FeedCmd::Audio { .. })) {
-                q.remove(pos);
-            } else {
-                q.pop_front();
+            let victim = q
+                .iter()
+                .position(|c| matches!(c, FeedCmd::SegmentGap))
+                .or_else(|| q.iter().position(|c| matches!(c, FeedCmd::Audio { .. })));
+            match victim {
+                Some(pos) => {
+                    q.remove(pos);
+                }
+                None => {
+                    q.pop_front();
+                }
             }
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }
@@ -1136,14 +1309,24 @@ impl FeedRing {
 struct StreamHandle {
     ring: Arc<FeedRing>,
     route: Arc<AtomicU8>,
-    /// Bumped exactly once per CONFIRMED commit for this stream, i.e. on RECEIPT
-    /// of a committed transcript (either server-message variant). Never at send
-    /// time: the shadow buffer means "speech the server has not confirmed
-    /// transcribing", so clearing it when a commit is merely in flight would lose
-    /// that audio if the socket died during the round trip, and bumping at both
-    /// send and receipt cleared it twice, the second clear wiping genuinely
-    /// uncommitted audio fed in the meantime.
+    /// Bumped exactly once per committed transcript we actually EMITTED.
+    ///
+    /// Not at send time: the shadow buffer means "speech no transcript covers
+    /// yet", so clearing it while a commit is merely in flight would lose that
+    /// audio if the socket died during the round trip.
+    ///
+    /// Not on `committed_transcript` (the plain variant) either, and not on a
+    /// SUPPRESSED timestamps variant. The server sends the two variants ~0.1-0.35s
+    /// apart for every commit (12/12 in the spike logs). If the plain one bumped
+    /// the epoch and shutdown landed in that gap, the timestamps variant would be
+    /// suppressed, the epoch would claim the audio was transcribed, the shadow
+    /// would be cleared at the stop flush, and the block would exist nowhere.
+    /// Tying the epoch to actual emission makes that structurally impossible.
     commit_epoch: Arc<AtomicU64>,
+    /// Recording-relative time through which emitted commits have covered this
+    /// stream, stored as `f64::to_bits`. Read together with `commit_epoch` so the
+    /// pipeline can drop exactly the shadow windows a commit accounted for.
+    committed_through_bits: Arc<AtomicU64>,
     join: tokio::task::JoinHandle<()>,
 }
 
@@ -1167,6 +1350,9 @@ pub struct ElevenLabsRealtimeSession {
     /// Set by [`begin_shutdown`](Self::begin_shutdown): suppresses all further
     /// transcript event emission from both streams.
     shutting_down: Arc<AtomicBool>,
+    /// Retained so callers without an AppHandle (the pipeline) can raise a
+    /// warning through the same bridge: see [`emit_warning`](Self::emit_warning).
+    event_tx: mpsc::UnboundedSender<RealtimeEvent>,
 }
 
 impl ElevenLabsRealtimeSession {
@@ -1224,7 +1410,7 @@ impl ElevenLabsRealtimeSession {
             url,
             api_key,
             DeviceType::System,
-            event_tx,
+            event_tx.clone(),
             warned.clone(),
             shutting_down.clone(),
         );
@@ -1234,6 +1420,7 @@ impl ElevenLabsRealtimeSession {
             system,
             warned,
             shutting_down,
+            event_tx,
         })
     }
 
@@ -1253,10 +1440,12 @@ impl ElevenLabsRealtimeSession {
         // Per-source monotonic partial sequence counter (owned by the task).
         let session_seq = Arc::new(AtomicU64::new(0));
         let commit_epoch = Arc::new(AtomicU64::new(0));
+        let committed_through_bits = Arc::new(AtomicU64::new(0f64.to_bits()));
 
         let task_ring = ring.clone();
         let task_route = route.clone();
         let task_epoch = commit_epoch.clone();
+        let task_through = committed_through_bits.clone();
         let join = tokio::spawn(async move {
             run_stream(
                 transport,
@@ -1266,7 +1455,10 @@ impl ElevenLabsRealtimeSession {
                 task_ring,
                 task_route,
                 session_seq,
-                task_epoch,
+                CommitProgress {
+                    epoch: task_epoch,
+                    through_bits: task_through,
+                },
                 event_tx,
                 warned,
                 shutting_down,
@@ -1278,6 +1470,7 @@ impl ElevenLabsRealtimeSession {
             ring,
             route,
             commit_epoch,
+            committed_through_bits,
             join,
         }
     }
@@ -1327,9 +1520,52 @@ impl ElevenLabsRealtimeSession {
     }
 
     /// Commit-point counter for a stream (see [`StreamHandle::commit_epoch`]).
-    /// The pipeline clears its shadow catch-up buffer when this advances.
+    /// The pipeline clears the covered part of its shadow buffer when this
+    /// advances. `Acquire` pairs with the `Release` bump so the pipeline's final
+    /// pre-flush read is ordered against the emission that preceded it.
     pub fn commit_epoch(&self, device_type: &DeviceType) -> u64 {
-        self.handle(device_type).commit_epoch.load(Ordering::Relaxed)
+        self.handle(device_type).commit_epoch.load(Ordering::Acquire)
+    }
+
+    /// Recording-relative time through which this stream's committed transcripts
+    /// have been CONFIRMED. The pipeline drops exactly the shadow windows that
+    /// end at or before this. Meaningful only alongside `commit_epoch`.
+    pub fn committed_through_secs(&self, device_type: &DeviceType) -> f64 {
+        f64::from_bits(
+            self.handle(device_type)
+                .committed_through_bits
+                .load(Ordering::Acquire),
+        )
+    }
+
+    /// Ask a stream to send its FINALIZE commit (recording stop). Whether one is
+    /// actually sent is the [`CommitScheduler`]'s call: inside the danger band, or
+    /// with no real audio outstanding, nothing is sent and the pipeline's batch
+    /// flush of the shadow buffer is the tail transcription instead.
+    pub fn finalize(&self, device_type: &DeviceType) {
+        self.handle(device_type).ring.push(FeedCmd::Finalize);
+    }
+
+    /// Send the finalize commit on BOTH streams and wait (bounded) for the
+    /// resulting committed replies to be emitted, so the common-case tail is
+    /// transcribed by the accurate WS path. Returns when both streams have
+    /// reported a confirmation or `timeout` elapses.
+    pub async fn finalize_all(&self, timeout: Duration) {
+        let before = [
+            self.commit_epoch(&DeviceType::Microphone),
+            self.commit_epoch(&DeviceType::System),
+        ];
+        self.finalize(&DeviceType::Microphone);
+        self.finalize(&DeviceType::System);
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let done = self.commit_epoch(&DeviceType::Microphone) > before[0]
+                && self.commit_epoch(&DeviceType::System) > before[1];
+            if done || tokio::time::Instant::now() >= deadline {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
     }
 
     /// Number of audio frames shed under backpressure (diagnostics/tests).
@@ -1342,15 +1578,23 @@ impl ElevenLabsRealtimeSession {
         self.warned.load(Ordering::Relaxed)
     }
 
+    /// Surface a one-off transcription warning to the frontend through this
+    /// session's event bridge. Used by the pipeline, which has no AppHandle of its
+    /// own, e.g. when the shadow buffer hits its cap.
+    pub fn emit_warning(&self, message: &str) {
+        let _ = self.event_tx.send(RealtimeEvent::Warning {
+            message: message.to_string(),
+        });
+    }
+
     /// Stop emitting transcript events from both streams, immediately and
     /// permanently.
     ///
-    /// MUST be called at recording stop BEFORE the pipeline's final force-flush.
-    /// The tail audio is transcribed by the batch path at stop (see
-    /// [`should_batch_flush_on_stop`]); any commit reply still in flight on the
-    /// socket covers that same audio, so letting it through would persist the
-    /// text twice under two different sequence ids, which frontend dedup cannot
-    /// catch. Socket handling continues normally, only emission is suppressed.
+    /// At recording stop this is called AFTER [`finalize_all`](Self::finalize_all)
+    /// has had its bounded chance, and BEFORE the pipeline's force-flush. From
+    /// here on the batch flush of the remaining shadow windows owns the tail, so
+    /// a late commit reply covering that same audio must not also be emitted.
+    /// Socket handling continues normally, only emission is suppressed.
     pub fn begin_shutdown(&self) {
         self.shutting_down.store(true, Ordering::SeqCst);
     }
@@ -1360,9 +1604,9 @@ impl ElevenLabsRealtimeSession {
         self.shutting_down.load(Ordering::SeqCst)
     }
 
-    /// Close both connections. Sends NO commit: there is no safe finalize commit
-    /// under the danger-band strategy (see [`should_batch_flush_on_stop`]), so
-    /// there is also nothing to wait for and no grace period.
+    /// Close both connections. Sends no commit of its own: the staged stop path
+    /// already had its chance via [`finalize_all`](Self::finalize_all), and a
+    /// commit here could land inside the danger band.
     pub async fn close_all(self: Arc<Self>) {
         // Belt-and-braces: a caller that forgot begin_shutdown still must not
         // emit a late reply once we are tearing the sockets down.
@@ -1381,6 +1625,26 @@ impl ElevenLabsRealtimeSession {
 // PER-STREAM CONNECTION TASK (reconnect ladder + duplex loop)
 // ============================================================================
 
+/// How far this stream's EMITTED commits have covered the recording, published
+/// for the pipeline's shadow buffer. The two fields are written together (epoch
+/// last, with `Release`) so a reader that sees a new epoch also sees the matching
+/// coverage time.
+#[derive(Clone)]
+struct CommitProgress {
+    epoch: Arc<AtomicU64>,
+    through_bits: Arc<AtomicU64>,
+}
+
+impl CommitProgress {
+    /// Publish one emitted commit covering the recording up to `through_secs`.
+    fn record(&self, through_secs: f64) {
+        let prev = f64::from_bits(self.through_bits.load(Ordering::Relaxed));
+        self.through_bits
+            .store(through_secs.max(prev).to_bits(), Ordering::Relaxed);
+        self.epoch.fetch_add(1, Ordering::Release);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_stream(
     transport: Arc<dyn RealtimeTransport>,
@@ -1390,7 +1654,7 @@ async fn run_stream(
     ring: Arc<FeedRing>,
     route: Arc<AtomicU8>,
     session_seq: Arc<AtomicU64>,
-    commit_epoch: Arc<AtomicU64>,
+    progress: CommitProgress,
     event_tx: mpsc::UnboundedSender<RealtimeEvent>,
     warned: Arc<AtomicBool>,
     shutting_down: Arc<AtomicBool>,
@@ -1415,7 +1679,7 @@ async fn run_stream(
                     pair,
                     &ring,
                     &session_seq,
-                    &commit_epoch,
+                    &progress,
                     &event_tx,
                     &source,
                     &mut mapper,
@@ -1581,16 +1845,31 @@ async fn send_real_frame(
     true
 }
 
-/// Emit the committed block, split into utterance-level segments at word gaps,
-/// with per-segment times from the piecewise timeline map.
+/// Collapse whitespace for comparing reconstructed text against the server's.
+fn whitespace_normalized(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Emit the committed block, split into utterance-level segments at MAPPED
+/// recording-time gaps, with per-segment times from the piecewise timeline map.
+///
+/// Returns the recording-relative time the block covers up to, for the shadow
+/// buffer's windowed clear.
 fn emit_committed(
     words: &[WordTiming],
     text: &str,
     mapper: &mut TimelineMapper,
     event_tx: &mpsc::UnboundedSender<RealtimeEvent>,
     source: &str,
-) {
-    let mut segments = split_committed_on_gaps(words, UTTERANCE_SPLIT_GAP_SECS);
+    text_mismatch_warned: &mut bool,
+) -> f64 {
+    // Gaps are measured in RECORDING time, not server time: a pause bridged by
+    // keepalive silence is a hole in the fed clock, so two utterances 40s apart in
+    // the recording can be adjacent in server time. Splitting on the raw server
+    // clock would merge them into one block whose mapped duration spans the pause.
+    let mut segments = split_committed_on_gaps_mapped(words, UTTERANCE_SPLIT_GAP_SECS, |t| {
+        mapper.map_time(t)
+    });
     if segments.is_empty() {
         // No usable word timings: emit the block as one segment, positioned
         // monotonically after the previous commit.
@@ -1601,8 +1880,34 @@ fn emit_committed(
             text: text.trim().to_string(),
         });
     }
+    if segments.len() == 1 {
+        // The server's own `text` is authoritative when there is nothing to split:
+        // it carries the exact punctuation/spacing, which reconstruction can only
+        // approximate.
+        segments[0].text = text.trim().to_string();
+    } else if !*text_mismatch_warned {
+        let rebuilt = whitespace_normalized(
+            &segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        if rebuilt != whitespace_normalized(text) {
+            *text_mismatch_warned = true;
+            // Text itself stays at debug! (privacy); only the fact is warned.
+            warn!(
+                "🎧 Realtime [{}] per-utterance reconstruction differs from the server text (lengths {} vs {}); splitting anyway",
+                source,
+                rebuilt.len(),
+                whitespace_normalized(text).len()
+            );
+        }
+    }
+    let mut covered = 0.0f64;
     for seg in segments {
         let (start, end, dur) = mapper.map_word_span(seg.start, seg.end);
+        covered = covered.max(end);
         debug!("🎧 Realtime [{}] committed: '{}'", source, seg.text);
         let _ = event_tx.send(RealtimeEvent::Committed {
             source: source.to_string(),
@@ -1612,6 +1917,7 @@ fn emit_committed(
             duration: dur,
         });
     }
+    covered
 }
 
 /// The connected duplex loop: pump feed commands out, parse incoming events in,
@@ -1621,7 +1927,7 @@ async fn duplex_loop(
     mut pair: TransportPair,
     ring: &Arc<FeedRing>,
     session_seq: &Arc<AtomicU64>,
-    commit_epoch: &Arc<AtomicU64>,
+    progress: &CommitProgress,
     event_tx: &mpsc::UnboundedSender<RealtimeEvent>,
     source: &str,
     mapper: &mut TimelineMapper,
@@ -1636,8 +1942,11 @@ async fn duplex_loop(
     // window shed by the FeedRing self-corrects on the next one instead of
     // accumulating error.
     let mut next_rec_time = 0.0f64;
-    let keepalive_period = Duration::from_secs_f64(KEEPALIVE_IDLE_SECS / 2.0);
-    let mut ka_tick = tokio::time::interval(keepalive_period);
+    // Stall watchdog (M1): REAL audio fed since the last message of ANY kind from
+    // the server. A healthy session emits ~1 partial/s while speech is flowing.
+    let mut real_fed_since_server_msg = 0.0f64;
+    let mut text_mismatch_warned = false;
+    let mut ka_tick = tokio::time::interval(Duration::from_secs_f64(KEEPALIVE_TICK_SECS));
     ka_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
@@ -1659,41 +1968,57 @@ async fn duplex_loop(
                                 return DuplexOutcome::Disconnected;
                             }
                             next_rec_time += secs;
+                            real_fed_since_server_msg += secs;
+                        }
+                        if real_fed_since_server_msg >= WATCHDOG_SECS {
+                            // SERVER FACT 2 stall: the socket is fine, no send ever
+                            // errors, but the server has gone silent. Nothing else
+                            // detects this. Force a disconnect so the reconnect
+                            // ladder runs: a new socket fully re-syncs the scheduler
+                            // and mapper, and the pipeline's Realtime->Batch flip
+                            // drains the shadow buffer through the batch path.
+                            warn!(
+                                "🎧 Realtime [{}] stall watchdog: {:.1}s of speech fed with no server response — reconnecting",
+                                source, real_fed_since_server_msg
+                            );
+                            return DuplexOutcome::Disconnected;
                         }
                     }
                     FeedCmd::SegmentGap => {
                         // A speech gap: commit here ONLY if the scheduler says we
-                        // are in the safe window. The slicer tail is included in
-                        // the decision because it is flushed immediately before the
-                        // commit, so the danger guard stays a full 3.0s.
+                        // are in the safe window. The slicer tail is included in the
+                        // decision because it is flushed immediately before the
+                        // commit, so the margin below the stall edge stays intact.
                         let pending = frame_secs(slicer.pending());
                         if sched.on_gap(pending) {
-                            let tail = slicer.drain();
-                            if !tail.is_empty()
-                                && !send_real_frame(
-                                    &mut pair, &tail, next_rec_time,
-                                    &mut sched, mapper, &mut last_audio,
-                                ).await
-                            {
+                            if !send_commit(
+                                &mut pair, &mut slicer, &mut sched, mapper,
+                                &mut last_audio, &mut next_rec_time, source, "gap",
+                            ).await {
                                 return DuplexOutcome::Disconnected;
                             }
-                            next_rec_time += pending;
-                            let commit_msg =
-                                encode_audio_chunk_message(&[], FEED_SAMPLE_RATE, true);
-                            if pair.outgoing.send(commit_msg).await.is_err() {
+                        }
+                    }
+                    FeedCmd::Finalize => {
+                        // Recording stop. Same danger-band rule as a gap, minus the
+                        // interval requirement: flush whatever is outstanding, but
+                        // ONLY from outside the band. Inside it, sending nothing and
+                        // letting the pipeline batch-flush the shadow is the only
+                        // safe option (after stop no more audio is fed, so the
+                        // server would never auto-commit the tail either).
+                        let pending = frame_secs(slicer.pending());
+                        if sched.finalize_should_commit(pending) {
+                            if !send_commit(
+                                &mut pair, &mut slicer, &mut sched, mapper,
+                                &mut last_audio, &mut next_rec_time, source, "finalize",
+                            ).await {
                                 return DuplexOutcome::Disconnected;
                             }
-                            debug!(
-                                "🎧 Realtime [{}] gap commit at {:.1}s uncommitted ({:.1}s real)",
+                        } else {
+                            info!(
+                                "🎧 Realtime [{}] finalize skipped ({:.1}s uncommitted, {:.1}s real) — batch flush owns the tail",
                                 source, sched.uncommitted_secs(), sched.real_secs()
                             );
-                            // Reset at SEND. The reply does NOT reset the clock:
-                            // that would discard the round trip's audio and leave
-                            // our count below the server's, eating the guard band.
-                            sched.on_client_commit();
-                            // A commit frame carries no audio, so it must NOT reset
-                            // the idle timer: doing so could push the next keepalive
-                            // past the server's ~15.7s idle-close.
                         }
                     }
                 }
@@ -1702,6 +2027,8 @@ async fn duplex_loop(
                 match maybe_msg {
                     None => return DuplexOutcome::Disconnected,
                     Some(raw) => {
+                        // ANY message proves the server is alive.
+                        real_fed_since_server_msg = 0.0;
                         let suppressed = shutting_down.load(Ordering::SeqCst);
                         match parse_server_message(&raw) {
                             ServerMsg::Partial { text } => {
@@ -1715,41 +2042,44 @@ async fn duplex_loop(
                                 }
                             }
                             ServerMsg::Committed { text, words } => {
+                                // C1 re-sync: bound the predictive clock's error to
+                                // one cycle. Runs whether or not we emit.
+                                sched.on_committed_received();
                                 if suppressed {
                                     // Shutting down: this reply is DROPPED, so the
                                     // audio it covers is not transcribed by us. The
                                     // epoch must NOT advance, or the pipeline would
-                                    // clear the shadow buffer for a tail that the
-                                    // stop flush is about to transcribe — losing it
-                                    // from both paths.
+                                    // drop shadow windows for a tail that the stop
+                                    // flush is about to transcribe.
+                                } else if !text.trim().is_empty() {
+                                    let covered = emit_committed(
+                                        &words, &text, mapper, event_tx, source,
+                                        &mut text_mismatch_warned,
+                                    );
+                                    // The epoch tracks EMISSION, never mere receipt:
+                                    // see StreamHandle::commit_epoch for why the
+                                    // paired plain variant must not bump it.
+                                    progress.record(covered);
                                 } else {
-                                    // CONFIRMED commit: the only thing that advances
-                                    // the epoch, so the shadow buffer holds exactly
-                                    // the speech the server has not confirmed. It
-                                    // deliberately does NOT touch the scheduler.
-                                    commit_epoch.fetch_add(1, Ordering::Relaxed);
-                                    if !text.trim().is_empty() {
-                                        emit_committed(&words, &text, mapper, event_tx, source);
-                                    } else {
-                                        // Empty commit (e.g. an auto-commit over
-                                        // silence): nothing to persist, but the
-                                        // frontend's volatile tail is now stale.
-                                        emit_tail_clear(
-                                            event_tx, source, session_seq, shutting_down,
-                                        );
-                                    }
+                                    // Empty commit (e.g. an auto-commit over
+                                    // silence): nothing to persist, but the
+                                    // frontend's volatile tail is now stale.
+                                    emit_tail_clear(
+                                        event_tx, source, session_seq, shutting_down,
+                                    );
                                 }
                             }
                             ServerMsg::CommittedPlain => {
-                                // Not emitted (the timestamps variant is the one we
-                                // persist; emitting both would duplicate the text),
-                                // but it is still a CONFIRMED commit, so it must
-                                // advance the epoch or the shadow buffer would never
-                                // be cleared for it. Both variants arriving for one
-                                // commit simply clears the shadow twice in a row.
-                                if !suppressed {
-                                    commit_epoch.fetch_add(1, Ordering::Relaxed);
-                                }
+                                // 1:1 paired with the timestamps variant (12/12 in
+                                // the spike logs) and never emitted, so it must NOT
+                                // bump the epoch: if it did and shutdown landed in
+                                // the ~0.1-0.35s between the pair, the timestamps
+                                // variant would be suppressed while the epoch claimed
+                                // the audio was transcribed, and the block would exist
+                                // nowhere. It still re-syncs the clock, which is pure
+                                // safety. A server that sends ONLY this variant is
+                                // covered by the stall watchdog.
+                                sched.on_committed_received();
                             }
                             ServerMsg::Error { kind, fatal } => {
                                 if fatal {
@@ -1772,6 +2102,8 @@ async fn duplex_loop(
                     // Counts toward the server's auto-commit boundary (it counts
                     // every fed sample) but NOT toward arming a commit, and adds no
                     // timeline span: no recording time elapsed for these samples.
+                    // It also does not feed the stall watchdog, which is about
+                    // SPEECH going unanswered.
                     let secs = frame_secs(KEEPALIVE_SILENCE_SAMPLES);
                     sched.on_fed_keepalive(secs);
                     mapper.note_sent_keepalive(secs);
@@ -1781,6 +2113,46 @@ async fn duplex_loop(
             }
         }
     }
+}
+
+/// Flush the slicer tail, then send one `commit:true` frame and reset the
+/// scheduler at SEND time. Returns false if the socket died.
+#[allow(clippy::too_many_arguments)]
+async fn send_commit(
+    pair: &mut TransportPair,
+    slicer: &mut FrameSlicer,
+    sched: &mut CommitScheduler,
+    mapper: &mut TimelineMapper,
+    last_audio: &mut tokio::time::Instant,
+    next_rec_time: &mut f64,
+    source: &str,
+    reason: &str,
+) -> bool {
+    let pending = frame_secs(slicer.pending());
+    let tail = slicer.drain();
+    if !tail.is_empty()
+        && !send_real_frame(pair, &tail, *next_rec_time, sched, mapper, last_audio).await
+    {
+        return false;
+    }
+    *next_rec_time += pending;
+    let commit_msg = encode_audio_chunk_message(&[], FEED_SAMPLE_RATE, true);
+    if pair.outgoing.send(commit_msg).await.is_err() {
+        return false;
+    }
+    debug!(
+        "🎧 Realtime [{}] {} commit at {:.1}s uncommitted ({:.1}s real)",
+        source,
+        reason,
+        sched.uncommitted_secs(),
+        sched.real_secs()
+    );
+    // Reset at SEND: a second gap arriving before the reply must not fire a
+    // back-to-back commit. A commit frame carries no audio, so `last_audio` is
+    // deliberately NOT touched (that could push the next keepalive past the
+    // server's ~15.7s idle close).
+    sched.on_client_commit();
+    true
 }
 
 // ============================================================================
@@ -2023,6 +2395,32 @@ mod tests {
     }
 
     #[test]
+    fn timeline_clamps_a_time_inside_a_keepalive_hole_to_the_preceding_edge() {
+        // m10: a surviving mutant proved this was untested — if keepalives wrongly
+        // recorded a span, a word timed inside the hole would map into the middle
+        // of the pause instead of to the last real audio before it.
+        let mut m = TimelineMapper::new();
+        feed_mapper(&mut m, 0.0, 4.0); // rec 0..4 == fed 0..4
+        m.note_sent_keepalive(0.25);
+        m.note_sent_keepalive(0.25);
+        m.note_sent_keepalive(0.25);
+        m.note_sent_keepalive(0.25); // fed 4..5 is a HOLE (no recording time)
+        feed_mapper(&mut m, 70.0, 3.0); // rec 70..73 == fed 5..8
+
+        // Exactly one span before the hole and one after: keepalives add none.
+        assert_eq!(m.span_count(), 2, "keepalives must not record spans");
+        // fed 4.5 sits inside the hole -> clamps to the end of the preceding span.
+        assert!(
+            (m.map_time(4.5) - 4.0).abs() < 1e-6,
+            "hole must clamp to the preceding edge, got {}",
+            m.map_time(4.5)
+        );
+        // The boundary itself and just after resolve to the two real spans.
+        assert!((m.map_time(4.0) - 4.0).abs() < 1e-6);
+        assert!((m.map_time(5.1) - 70.1).abs() < 1e-6);
+    }
+
+    #[test]
     fn timeline_clamps_times_landing_in_a_hole_or_past_the_end() {
         let mut m = TimelineMapper::new();
         feed_mapper(&mut m, 0.0, 2.0); // rec 0..2 == fed 0..2
@@ -2144,6 +2542,54 @@ mod tests {
         assert_eq!(segs[0].text, "hi");
         // Empty input -> no segments (the caller falls back to one block).
         assert!(split_committed_on_gaps(&[], UTTERANCE_SPLIT_GAP_SECS).is_empty());
+    }
+
+    #[test]
+    fn split_uses_mapped_recording_time_not_server_time() {
+        // m3: a pause bridged by keepalives is a HOLE in the fed clock, so two
+        // utterances 60s apart in the recording are ADJACENT in server time.
+        // Splitting on the raw server clock leaves one block whose mapped duration
+        // wrongly spans the whole pause.
+        let mut m = TimelineMapper::new();
+        feed_mapper(&mut m, 0.0, 2.0); // rec 0..2 == fed 0..2
+        for _ in 0..8 {
+            m.note_sent_keepalive(0.25); // fed 2..4 is a hole (60s of pause)
+        }
+        feed_mapper(&mut m, 62.0, 2.0); // rec 62..64 == fed 4..6
+
+        // In SERVER time these words are 2.1 apart... but only 0.1s apart once the
+        // hole is removed, so the raw-clock split would fire and the mapped split
+        // must not. And the reverse case below.
+        let words = vec![w("before", 1.0, 1.8), w("after", 4.1, 4.6)];
+        let server_split = split_committed_on_gaps(&words, UTTERANCE_SPLIT_GAP_SECS);
+        let mapped_split =
+            split_committed_on_gaps_mapped(&words, UTTERANCE_SPLIT_GAP_SECS, |t| m.map_time(t));
+        assert_eq!(server_split.len(), 2, "server clock sees a 2.3s gap");
+        assert_eq!(
+            mapped_split.len(), 2,
+            "recording clock sees a 60s gap: still two utterances"
+        );
+        // The mapped ends are what matter: the second utterance must be placed
+        // after the pause, not stretched across it.
+        let (s0, e0, _) = m.map_word_span(mapped_split[0].start, mapped_split[0].end);
+        let (s1, _e1, d1) = m.map_word_span(mapped_split[1].start, mapped_split[1].end);
+        assert!((s0 - 1.0).abs() < 1e-6);
+        assert!((e0 - 1.8).abs() < 1e-6);
+        assert!((s1 - 62.1).abs() < 1e-6, "got {}", s1);
+        assert!(d1 < 1.0, "duration must not span the pause, got {}", d1);
+    }
+
+    #[test]
+    fn split_does_not_break_words_that_only_look_far_apart_on_the_server_clock() {
+        // The complementary case: adjacent speech whose SERVER gap is inflated by
+        // nothing (no hole) must behave identically under both splitters.
+        let mut m = TimelineMapper::new();
+        feed_mapper(&mut m, 10.0, 6.0);
+        let words = vec![w("one", 0.5, 0.9), w("two", 1.1, 1.6)];
+        let a = split_committed_on_gaps(&words, UTTERANCE_SPLIT_GAP_SECS);
+        let b = split_committed_on_gaps_mapped(&words, UTTERANCE_SPLIT_GAP_SECS, |t| m.map_time(t));
+        assert_eq!(a.len(), 1);
+        assert_eq!(a, b);
     }
 
     #[test]
@@ -2306,6 +2752,60 @@ mod tests {
         assert!(matches!(b, FeedCmd::Audio { ref samples, .. } if samples == &vec![2.0]));
         let c = ring.recv().await;
         assert!(matches!(c, FeedCmd::Audio { ref samples, .. } if samples == &vec![3.0]));
+    }
+
+    #[tokio::test]
+    async fn feed_ring_coalesces_gaps_and_evicts_them_before_audio() {
+        // m1: silent windows push Audio + SegmentGap each. With gaps neither
+        // coalesced nor preferentially evicted, a backed-up ring converged to all
+        // gap signals and zero audio, halving the effective queue depth and then
+        // starving the socket entirely.
+        let ring = FeedRing::new(4);
+        ring.push(FeedCmd::SegmentGap);
+        ring.push(FeedCmd::SegmentGap);
+        ring.push(FeedCmd::SegmentGap);
+        let gaps = {
+            let q = ring.q.lock().unwrap();
+            q.iter().filter(|c| matches!(c, FeedCmd::SegmentGap)).count()
+        };
+        assert_eq!(gaps, 1, "a queued gap must absorb later ones");
+
+        // Fill with audio, then overflow: the GAP is the first victim.
+        for i in 0..3 {
+            ring.push(FeedCmd::Audio {
+                samples: vec![i as f32],
+                at_secs: i as f64,
+            });
+        }
+        ring.push(FeedCmd::Audio {
+            samples: vec![99.0],
+            at_secs: 9.0,
+        });
+        let (gaps, audio) = {
+            let q = ring.q.lock().unwrap();
+            (
+                q.iter().filter(|c| matches!(c, FeedCmd::SegmentGap)).count(),
+                q.iter()
+                    .filter(|c| matches!(c, FeedCmd::Audio { .. }))
+                    .count(),
+            )
+        };
+        assert_eq!(gaps, 0, "the gap must be evicted before any audio");
+        assert_eq!(audio, 4, "all four audio windows survive");
+    }
+
+    #[tokio::test]
+    async fn feed_ring_never_evicts_finalize_or_close() {
+        let ring = FeedRing::new(2);
+        ring.push(FeedCmd::Finalize);
+        ring.push(FeedCmd::Audio {
+            samples: vec![1.0],
+            at_secs: 0.0,
+        });
+        ring.push(FeedCmd::Close);
+        let q = ring.q.lock().unwrap();
+        assert!(q.iter().any(|c| matches!(c, FeedCmd::Finalize)));
+        assert!(q.iter().any(|c| matches!(c, FeedCmd::Close)));
     }
 
     // ---- session seq monotonicity + reconnect ladder via stub transport ---
@@ -2616,20 +3116,85 @@ mod tests {
     struct CapturingTransport {
         sent: Arc<Mutex<Vec<String>>>,
         incoming: Vec<String>,
+        /// Send a `partial_transcript` back after every N frames we receive, so
+        /// the stall watchdog stays quiet (a live server emits ~1 partial/s while
+        /// speech flows). `None` models a server that never answers, which is
+        /// exactly what the watchdog exists to catch.
+        heartbeat_every: Option<usize>,
+        /// Deliver `incoming` only after this many frames have been received, so a
+        /// canned commit can land AFTER some audio has been fed (delivering it at
+        /// connect time would map against an empty timeline). 0 = immediately.
+        incoming_after_frames: usize,
+    }
+
+    impl CapturingTransport {
+        /// Responsive server: heartbeats every 4 frames (= 1s of audio).
+        fn responsive(sent: Arc<Mutex<Vec<String>>>, incoming: Vec<String>) -> Self {
+            Self {
+                sent,
+                incoming,
+                heartbeat_every: Some(4),
+                incoming_after_frames: 0,
+            }
+        }
+
+        /// Responsive server whose canned messages arrive only after `after`
+        /// frames of audio have been fed.
+        fn responsive_after(
+            sent: Arc<Mutex<Vec<String>>>,
+            incoming: Vec<String>,
+            after: usize,
+        ) -> Self {
+            Self {
+                sent,
+                incoming,
+                heartbeat_every: Some(4),
+                incoming_after_frames: after,
+            }
+        }
     }
 
     #[async_trait]
     impl RealtimeTransport for CapturingTransport {
         async fn connect(&self, _url: &str, _api_key: &str) -> Result<TransportPair, String> {
             let (out_tx, mut out_rx) = mpsc::channel::<String>(64);
-            let (in_tx, in_rx) = mpsc::channel::<String>(64);
+            let (in_tx, in_rx) = mpsc::channel::<String>(512);
             let sent = self.sent.clone();
+            let heartbeat_every = self.heartbeat_every;
+            let after = self.incoming_after_frames;
+            let deferred = if after > 0 {
+                self.incoming.clone()
+            } else {
+                Vec::new()
+            };
+            let hb_tx = in_tx.clone();
             tokio::spawn(async move {
+                let mut n = 0usize;
                 while let Some(m) = out_rx.recv().await {
                     sent.lock().unwrap().push(m);
+                    n += 1;
+                    if let Some(every) = heartbeat_every {
+                        if n % every == 0 {
+                            let _ = hb_tx
+                                .send(
+                                    r#"{"message_type":"partial_transcript","text":"hb"}"#
+                                        .to_string(),
+                                )
+                                .await;
+                        }
+                    }
+                    if after > 0 && n == after {
+                        for m in deferred.iter() {
+                            let _ = hb_tx.send(m.clone()).await;
+                        }
+                    }
                 }
             });
-            let incoming = self.incoming.clone();
+            let incoming = if after > 0 {
+                Vec::new()
+            } else {
+                self.incoming.clone()
+            };
             tokio::spawn(async move {
                 for m in incoming {
                     if in_tx.send(m).await.is_err() {
@@ -2667,6 +3232,27 @@ mod tests {
         }
     }
 
+    /// Feed `secs` of audio the way the pipeline does: one 600ms window per call,
+    /// pumping between them. Feeding it as a single giant command would let the
+    /// duplex loop push tens of seconds of frames without ever returning to its
+    /// select, which is neither realistic nor how the stall watchdog is meant to
+    /// see the world.
+    async fn feed_windows(
+        session: &Arc<ElevenLabsRealtimeSession>,
+        device_type: &DeviceType,
+        secs: f64,
+        start: f64,
+    ) {
+        const WIN: f64 = 0.6;
+        let window = feed_secs(WIN);
+        let n = (secs / WIN).round() as usize;
+        for i in 0..n {
+            session.feed(device_type, &window, start + i as f64 * WIN);
+            pump(2, 5).await;
+        }
+        pump(4, 10).await;
+    }
+
     #[tokio::test(start_paused = true)]
     async fn segment_gap_before_interval_never_commits() {
         // CONTRACT CHANGE (continuous feed): a VAD segment end is a commit
@@ -2674,16 +3260,13 @@ mod tests {
         // scheduler must stay quiet — the old engine committed here, which is
         // exactly the 6.31% pooled-WER behaviour the study replaced.
         let sent = Arc::new(Mutex::new(Vec::<String>::new()));
-        let transport = Arc::new(CapturingTransport {
-            sent: sent.clone(),
-            incoming: vec![],
-        });
+        let transport = Arc::new(CapturingTransport::responsive(sent.clone(), vec![]));
         let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
         let session =
             ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
         pump(1, 10).await;
 
-        session.feed(&DeviceType::Microphone, &feed_secs(1.0), 0.0);
+        feed_windows(&session, &DeviceType::Microphone, 1.0, 0.0).await;
         session.segment_gap(&DeviceType::Microphone);
         pump(10, 20).await;
 
@@ -2696,16 +3279,13 @@ mod tests {
         // danger band -> the first gap commits, and the counter reset means a
         // second gap right after does NOT produce a back-to-back commit.
         let sent = Arc::new(Mutex::new(Vec::<String>::new()));
-        let transport = Arc::new(CapturingTransport {
-            sent: sent.clone(),
-            incoming: vec![],
-        });
+        let transport = Arc::new(CapturingTransport::responsive(sent.clone(), vec![]));
         let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
         let session =
             ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
         pump(1, 10).await;
 
-        session.feed(&DeviceType::Microphone, &feed_secs(31.0), 0.0);
+        feed_windows(&session, &DeviceType::Microphone, 31.0, 0.0).await;
         pump(40, 20).await;
         assert_eq!(count_commits(&sent), 0, "feeding alone never commits");
 
@@ -2729,17 +3309,14 @@ mod tests {
         // DANGER_GUARD_SECS of the server's ~36.5s auto-commit and stall the
         // session. The scheduler must go silent and let the auto-commit land.
         let sent = Arc::new(Mutex::new(Vec::<String>::new()));
-        let transport = Arc::new(CapturingTransport {
-            sent: sent.clone(),
-            incoming: vec![],
-        });
+        let transport = Arc::new(CapturingTransport::responsive(sent.clone(), vec![]));
         let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
         let session =
             ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
         pump(1, 10).await;
 
         // 34.0s > FORCE_CUTOFF_SECS (33.5) with no gap along the way.
-        session.feed(&DeviceType::Microphone, &feed_secs(34.0), 0.0);
+        feed_windows(&session, &DeviceType::Microphone, 34.0, 0.0).await;
         pump(40, 20).await;
         session.segment_gap(&DeviceType::Microphone);
         pump(20, 20).await;
@@ -2748,21 +3325,17 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn commit_epoch_advances_only_on_confirmed_commits() {
-        // FINDINGS 5 + 8: the epoch means "the server CONFIRMED a commit". Exactly
-        // one bump per committed event, for BOTH message variants, and never at
-        // send time (the shadow buffer must survive the round trip).
+    async fn commit_epoch_advances_only_on_emitted_commits() {
+        // FINDING 5: the epoch means "a transcript covers this audio". Never at
+        // send time (the shadow must survive the round trip).
         let sent = Arc::new(Mutex::new(Vec::<String>::new()));
-        let transport = Arc::new(CapturingTransport {
-            sent: sent.clone(),
-            incoming: vec![],
-        });
+        let transport = Arc::new(CapturingTransport::responsive(sent.clone(), vec![]));
         let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
         let session =
             ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
         pump(1, 10).await;
 
-        session.feed(&DeviceType::Microphone, &feed_secs(31.0), 0.0);
+        feed_windows(&session, &DeviceType::Microphone, 31.0, 0.0).await;
         pump(40, 20).await;
         session.segment_gap(&DeviceType::Microphone);
         pump(20, 20).await;
@@ -2775,44 +3348,107 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn committed_events_bump_the_epoch_once_each_for_both_variants() {
+    async fn only_the_emitted_timestamps_variant_bumps_the_epoch() {
+        // M2: the server sends the plain and timestamps variants ~0.1-0.35s apart
+        // for EVERY commit (12/12 in the spike logs). Exactly one bump, from the
+        // one we actually emit.
         let sent = Arc::new(Mutex::new(Vec::<String>::new()));
-        let transport = Arc::new(CapturingTransport {
-            sent: sent.clone(),
-            incoming: vec![
-                r#"{"message_type":"committed_transcript_with_timestamps","text":"a","words":[{"text":"a","start":0.0,"end":0.4,"type":"word"}]}"#.into(),
+        let transport = Arc::new(CapturingTransport::responsive(sent.clone(), vec![
                 r#"{"message_type":"committed_transcript","text":"a"}"#.into(),
-            ],
-        });
+                r#"{"message_type":"committed_transcript_with_timestamps","text":"a","words":[{"text":"a","start":0.0,"end":0.4,"type":"word"}]}"#.into(),
+            ]));
         let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
         let session =
             ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
         pump(40, 20).await;
         assert_eq!(
             session.commit_epoch(&DeviceType::Microphone),
-            2,
-            "one bump per committed event, both variants"
+            1,
+            "one bump per COMMIT, not per message"
         );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn predicted_auto_commit_rearms_without_any_server_event() {
-        // FINDING 3: with a silent/stalled server (no committed events at all) the
-        // old scheduler stayed disarmed forever past the cutoff. The predictive
-        // reset must re-arm it purely on the fed clock.
+    async fn shutdown_between_the_paired_variants_loses_nothing() {
+        // M2, the proven losing ordering: plain arrives, shutdown lands, then the
+        // timestamps variant is suppressed. If the plain one had bumped the epoch,
+        // the pipeline would drop the shadow windows at the stop flush while the
+        // text was never emitted, and the block would exist NOWHERE.
         let sent = Arc::new(Mutex::new(Vec::<String>::new()));
-        let transport = Arc::new(CapturingTransport {
-            sent: sent.clone(),
-            incoming: vec![], // server says nothing, ever
-        });
+        let transport = Arc::new(CapturingTransport::responsive(
+            sent.clone(),
+            vec![r#"{"message_type":"committed_transcript","text":"the last sentence"}"#.into()],
+        ));
+        let (tx, mut rx) = mpsc::unbounded_channel::<RealtimeEvent>();
+        let session =
+            ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
+        pump(20, 20).await;
+        // Only the plain variant has arrived so far.
+        assert_eq!(
+            session.commit_epoch(&DeviceType::Microphone),
+            0,
+            "the plain variant alone must never claim coverage"
+        );
+        // Shutdown lands in the gap; the timestamps variant would now be dropped.
+        session.begin_shutdown();
+        pump(20, 20).await;
+        assert_eq!(
+            session.commit_epoch(&DeviceType::Microphone),
+            0,
+            "still no coverage claimed, so the shadow survives for the batch flush"
+        );
+        // And nothing was emitted, so there is nothing to duplicate either.
+        let mut committed = 0;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev, RealtimeEvent::Committed { .. }) {
+                committed += 1;
+            }
+        }
+        assert_eq!(committed, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn emitted_commit_publishes_its_coverage_time() {
+        // M4: the pipeline drops exactly the shadow windows this covers.
+        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
+        // The commit lands after 12 frames (3s) of audio, so the timeline map
+        // already covers the words it timestamps.
+        let transport = Arc::new(CapturingTransport::responsive_after(sent.clone(), vec![
+                r#"{"message_type":"committed_transcript_with_timestamps","text":"hi","words":[{"text":"hi","start":1.0,"end":2.0,"type":"word"}]}"#.into(),
+            ], 12));
+        let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
+        let session =
+            ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
+        pump(1, 10).await;
+        // Feed from recording second 100 so the mapping is unambiguous.
+        feed_windows(&session, &DeviceType::Microphone, 5.0, 100.0).await;
+        pump(40, 20).await;
+        assert_eq!(session.commit_epoch(&DeviceType::Microphone), 1);
+        let through = session.committed_through_secs(&DeviceType::Microphone);
+        assert!(
+            (through - 102.0).abs() < 0.6,
+            "coverage should map to ~102s, got {}",
+            through
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn predicted_auto_commit_rearms_without_any_committed_event() {
+        // FINDING 3: a server that emits partials but never a committed event (its
+        // auto-commits going unreported) used to leave the scheduler disarmed
+        // forever past the cutoff. The predictive reset must re-arm it purely on
+        // the fed clock. The partials keep the stall watchdog quiet, which is what
+        // separates "alive but quiet about commits" from "dead".
+        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
+        let transport = Arc::new(CapturingTransport::responsive(sent.clone(), vec![]));
         let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
         let session =
             ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
         pump(1, 10).await;
 
-        // Cross the 36.5s boundary (predicted auto-commit), then feed another 31s.
-        session.feed(&DeviceType::Microphone, &feed_secs(40.0), 0.0);
-        pump(60, 20).await;
+        // Cross the 36.5s boundary (predicted auto-commit) with 3.5s left over.
+        feed_windows(&session, &DeviceType::Microphone, 40.0, 0.0).await;
+        pump(80, 20).await;
         session.segment_gap(&DeviceType::Microphone);
         pump(20, 20).await;
         assert_eq!(
@@ -2821,14 +3457,14 @@ mod tests {
             "3.5s past the predicted boundary is below the interval"
         );
 
-        session.feed(&DeviceType::Microphone, &feed_secs(28.0), 40.0);
-        pump(60, 20).await;
+        feed_windows(&session, &DeviceType::Microphone, 28.0, 40.0).await;
+        pump(80, 20).await;
         session.segment_gap(&DeviceType::Microphone);
         pump(20, 20).await;
         assert_eq!(
             count_commits(&sent),
             1,
-            "the predicted reset must re-arm the scheduler with no server events"
+            "the predicted reset must re-arm the scheduler with no committed events"
         );
     }
 
@@ -2838,18 +3474,15 @@ mod tests {
         // scenarios, NO commit:true may be sent while uncommitted audio sits in
         // [FORCE_CUTOFF_SECS, AUTO_COMMIT_AUDIO_SECS). The old finalize commit did
         // exactly that and stalled the session, orphaning the whole tail.
-        for fed in [10.0f64, 25.0, 31.0, 33.4, 33.6, 34.0, 35.0, 36.4] {
+        for fed in [10.0f64, 25.0, 31.0, 31.9, 32.1, 33.0, 34.5, 36.4] {
             let sent = Arc::new(Mutex::new(Vec::<String>::new()));
-            let transport = Arc::new(CapturingTransport {
-                sent: sent.clone(),
-                incoming: vec![],
-            });
+            let transport = Arc::new(CapturingTransport::responsive(sent.clone(), vec![]));
             let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
             let session =
                 ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
             pump(1, 10).await;
 
-            session.feed(&DeviceType::Microphone, &feed_secs(fed), 0.0);
+            feed_windows(&session, &DeviceType::Microphone, fed, 0.0).await;
             pump(60, 20).await;
             session.segment_gap(&DeviceType::Microphone);
             pump(20, 20).await;
@@ -2858,28 +3491,127 @@ mod tests {
                 assert_eq!(after_gap, 0, "danger band at {}s must not commit", fed);
             }
 
-            // Stop: close must add nothing, at any fed position.
+            // Stop: the STAGED finalize must obey the same band, and close itself
+            // must add nothing.
+            session.finalize(&DeviceType::Microphone);
+            pump(40, 20).await;
+            let after_finalize = count_commits(&sent);
+            if fed >= FORCE_CUTOFF_SECS && after_gap == 0 {
+                assert_eq!(
+                    after_finalize, 0,
+                    "finalize must not commit inside the danger band (fed {}s)",
+                    fed
+                );
+            }
             let close = tokio::spawn(session.clone().close_all());
             pump(40, 100).await;
             let _ = close.await;
             assert_eq!(
                 count_commits(&sent),
-                after_gap,
-                "close must never send a commit (fed {}s)",
+                after_finalize,
+                "close itself must never send a commit (fed {}s)",
                 fed
             );
         }
     }
 
     #[tokio::test(start_paused = true)]
-    async fn begin_shutdown_suppresses_further_transcript_events() {
-        // FINDING 1 / stop redesign: the batch flush owns the tail at stop, so a
-        // commit reply still in flight must not also be emitted.
+    async fn staged_finalize_commits_the_tail_when_outside_the_band() {
+        // M6: the validated 4.68% configuration DID commit at clip end. A stop
+        // with a small outstanding tail must use the accurate WS path.
+        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
+        let transport = Arc::new(CapturingTransport::responsive(sent.clone(), vec![]));
+        let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
+        let session =
+            ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
+        pump(1, 10).await;
+
+        // 5s outstanding: below the interval (so no gap commit), but a legitimate
+        // finalize.
+        feed_windows(&session, &DeviceType::Microphone, 5.0, 0.0).await;
+        pump(30, 20).await;
+        session.segment_gap(&DeviceType::Microphone);
+        pump(10, 20).await;
+        assert_eq!(count_commits(&sent), 0, "5s is below the commit interval");
+
+        session.finalize(&DeviceType::Microphone);
+        pump(20, 20).await;
+        assert_eq!(count_commits(&sent), 1, "finalize must flush the tail");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn staged_finalize_skips_when_nothing_real_is_outstanding() {
+        // Guards the old commit_throttled case: a finalize right behind a commit,
+        // with no real audio between, must not be sent.
+        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
+        let transport = Arc::new(CapturingTransport::responsive(sent.clone(), vec![]));
+        let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
+        let session =
+            ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
+        pump(1, 10).await;
+
+        feed_windows(&session, &DeviceType::Microphone, 31.0, 0.0).await;
+        pump(60, 20).await;
+        session.segment_gap(&DeviceType::Microphone);
+        pump(20, 20).await;
+        assert_eq!(count_commits(&sent), 1, "gap commit");
+
+        session.finalize(&DeviceType::Microphone);
+        pump(20, 20).await;
+        assert_eq!(count_commits(&sent), 1, "finalize must not double-commit");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stall_watchdog_forces_a_reconnect_when_the_server_goes_silent() {
+        // M1: a SERVER FACT 2 stall leaves the socket open with no errors. Without
+        // the watchdog the route never flips, partials freeze and the pipeline's
+        // shadow buffer silently eats the rest of the meeting.
         let sent = Arc::new(Mutex::new(Vec::<String>::new()));
         let transport = Arc::new(CapturingTransport {
             sent: sent.clone(),
             incoming: vec![],
+            heartbeat_every: None, // server never answers
+            incoming_after_frames: 0,
         });
+        let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
+        let session =
+            ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
+        pump(1, 10).await;
+        assert_eq!(session.route(&DeviceType::Microphone), Route::Realtime);
+
+        // Feed past WATCHDOG_SECS of speech with no reply.
+        feed_windows(&session, &DeviceType::Microphone, WATCHDOG_SECS + 1.0, 0.0).await;
+        pump(40, 20).await;
+        assert_eq!(
+            session.route(&DeviceType::Microphone),
+            Route::Batch,
+            "the watchdog must drop the route so the batch path takes over"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn responsive_server_never_trips_the_watchdog() {
+        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
+        let transport = Arc::new(CapturingTransport::responsive(sent.clone(), vec![]));
+        let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
+        let session =
+            ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
+        pump(1, 10).await;
+        feed_windows(&session, &DeviceType::Microphone, 60.0, 0.0).await;
+        pump(80, 20).await;
+        assert_eq!(
+            session.route(&DeviceType::Microphone),
+            Route::Realtime,
+            "partials prove liveness; the watchdog must stay quiet"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn begin_shutdown_suppresses_further_transcript_events() {
+        // M6 stage (b): once the batch flush owns the remainder, a commit reply
+        // still in flight must not also be emitted.
+        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
+        let transport = Arc::new(CapturingTransport::responsive(sent.clone(), vec![]));
         let (tx, mut rx) = mpsc::unbounded_channel::<RealtimeEvent>();
         let session =
             ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
@@ -2888,7 +3620,7 @@ mod tests {
         session.begin_shutdown();
         assert!(session.is_shutting_down());
         // The stream tasks are alive; drive them and confirm nothing is emitted.
-        session.feed(&DeviceType::Microphone, &feed_secs(1.0), 0.0);
+        feed_windows(&session, &DeviceType::Microphone, 1.0, 0.0).await;
         pump(20, 20).await;
         assert!(
             rx.try_recv().is_err(),
@@ -2903,13 +3635,13 @@ mod tests {
         // pipeline clear the shadow buffer that the stop flush is about to
         // transcribe, losing the tail from BOTH paths.
         let sent = Arc::new(Mutex::new(Vec::<String>::new()));
-        let transport = Arc::new(CapturingTransport {
-            sent: sent.clone(),
-            incoming: vec![
+        let transport = Arc::new(CapturingTransport::responsive(
+            sent.clone(),
+            vec![
                 r#"{"message_type":"committed_transcript_with_timestamps","text":"tail","words":[{"text":"tail","start":0.0,"end":0.4,"type":"word"}]}"#.into(),
                 r#"{"message_type":"committed_transcript","text":"tail"}"#.into(),
             ],
-        });
+        ));
         let (tx, mut rx) = mpsc::unbounded_channel::<RealtimeEvent>();
         let session =
             ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
@@ -2928,29 +3660,42 @@ mod tests {
     // ---- commit scheduler (pure) ------------------------------------------
 
     #[test]
-    fn scheduler_constants_match_the_validated_harness() {
-        assert_eq!(COMMIT_INTERVAL_SECS, 30.0);
-        assert_eq!(AUTO_COMMIT_AUDIO_SECS, 36.5);
-        assert_eq!(DANGER_GUARD_SECS, 3.0);
-        assert_eq!(FORCE_CUTOFF_SECS, 33.5);
+    fn scheduler_constants_hold_the_measured_margin() {
+        // Live-validated set (harness commit d8c8dd3): 27 / 32 / re-sync 1.5.
+        assert_eq!(COMMIT_INTERVAL_SECS, 27.0);
+        assert_eq!(AUTO_COMMIT_AUDIO_SECS, 36.5); // receive-time upper bound
+        assert_eq!(STALL_EDGE_SECS, 34.5); // last position observed healthy
+        assert_eq!(DANGER_GUARD_SECS, 2.5);
+        assert_eq!(FORCE_CUTOFF_SECS, 32.0);
         assert_eq!(MIN_REAL_AUDIO_SECS, 1.0);
+        assert_eq!(RESYNC_MARGIN_SECS, 1.5);
+        // The cutoff must stay a real margin below the measured stall edge.
+        assert!(STALL_EDGE_SECS - FORCE_CUTOFF_SECS >= 2.5);
+        // The ARMING WINDOW must be wide enough for a speech gap to land in it.
+        // At 30/32 the 2s window was reproducibly missed on speech-dense audio,
+        // sending every cycle into the server's auto-commit instead.
+        assert!(
+            FORCE_CUTOFF_SECS - COMMIT_INTERVAL_SECS >= 5.0,
+            "arming window {}s is too narrow",
+            FORCE_CUTOFF_SECS - COMMIT_INTERVAL_SECS
+        );
     }
 
     #[test]
     fn scheduler_never_commits_before_the_interval() {
         let mut s = CommitScheduler::new();
         assert!(!s.on_gap(0.0), "a gap at 0s uncommitted must not commit");
-        s.on_fed_real(29.9);
-        assert!(!s.on_gap(0.0), "29.9s is still below the 30s interval");
+        s.on_fed_real(26.9);
+        assert!(!s.on_gap(0.0), "26.9s is still below the 27s interval");
     }
 
     #[test]
     fn scheduler_commits_at_the_first_gap_past_the_interval() {
         let mut s = CommitScheduler::new();
-        s.on_fed_real(30.0);
+        s.on_fed_real(27.0);
         assert!(s.on_gap(0.0), "exactly at the interval is armed");
-        s.on_fed_real(1.0);
-        assert!(s.on_gap(0.0), "still armed while below the cutoff");
+        s.on_fed_real(4.0);
+        assert!(s.on_gap(0.0), "still armed anywhere below the cutoff");
         assert!((s.uncommitted_secs() - 31.0).abs() < 1e-9);
     }
 
@@ -2959,20 +3704,20 @@ mod tests {
         // SERVER FACT 2: no client commit at/after FORCE_CUTOFF_SECS, ever, no
         // matter how many gaps arrive — the server's auto-commit takes over.
         let mut s = CommitScheduler::new();
-        s.on_fed_real(33.4);
-        assert!(s.on_gap(0.0), "33.4s is the last safe moment");
-        s.on_fed_real(0.1); // 33.5 == FORCE_CUTOFF_SECS
+        s.on_fed_real(31.9);
+        assert!(s.on_gap(0.0), "31.9s is the last safe moment");
+        s.on_fed_real(0.1); // 32.0 == FORCE_CUTOFF_SECS
         assert!(!s.on_gap(0.0), "at the cutoff we must stop committing");
-        s.on_fed_real(2.9); // 36.4, just under the auto-commit boundary
+        s.on_fed_real(4.4); // 36.4, just under the auto-commit boundary
         assert!(!s.on_gap(0.0), "and never resume inside the band");
     }
 
     #[test]
     fn scheduler_counts_the_pending_slicer_tail_in_the_cutoff_check() {
         // FINDING 9: the tail is flushed immediately BEFORE the commit, so it must
-        // be part of the decision or the effective guard shrinks to 2.75s.
+        // be part of the decision or the effective margin shrinks by one frame.
         let mut s = CommitScheduler::new();
-        s.on_fed_real(33.4);
+        s.on_fed_real(31.9);
         assert!(s.on_gap(0.0), "safe with nothing pending");
         assert!(
             !s.on_gap(0.25),
@@ -2980,9 +3725,9 @@ mod tests {
         );
         // And the same inclusion can ARM a gap that is just under the interval.
         let mut s2 = CommitScheduler::new();
-        s2.on_fed_real(29.9);
+        s2.on_fed_real(26.9);
         assert!(!s2.on_gap(0.0));
-        assert!(s2.on_gap(0.25), "29.9 + 0.25 >= 30 -> armed");
+        assert!(s2.on_gap(0.25), "26.9 + 0.25 >= 27 -> armed");
     }
 
     #[test]
@@ -3001,32 +3746,225 @@ mod tests {
             s.uncommitted_secs()
         );
         // Re-arms a full interval later, with no server message at any point.
-        s.on_fed_real(29.8); // 29.9
+        s.on_fed_real(26.8); // 26.9
         assert!(!s.on_gap(0.0));
-        s.on_fed_real(0.2); // 30.1
+        s.on_fed_real(0.2); // 27.1
         assert!(s.on_gap(0.0), "predictive reset must re-arm the scheduler");
     }
 
     #[test]
     fn scheduler_in_flight_reply_cannot_undercount_the_server() {
-        // FINDING 2: the reviewers' scenario. Resetting on the reply as well as on
-        // the send discarded the round trip's audio, so the client believed 31.5s
-        // uncommitted while the server was at 33.5s — inside the guard band. With
-        // the reply ignored, the client's count matches the server's and the gap
-        // is correctly refused.
+        // FINDING 2 (round 2): resetting fully on the reply as well as on the send
+        // discarded the round trip's audio, leaving the client BELOW the server.
+        // The re-sync floors at RESYNC_MARGIN_SECS instead of zeroing, so the
+        // client stays at or above the server's true position.
         let mut s = CommitScheduler::new();
         s.on_fed_real(31.0);
         assert!(s.on_gap(0.0));
         s.on_client_commit(); // reset at SEND
         s.on_fed_real(2.0); // fed during the round trip
-                            // The reply arrives here. It must NOT reset anything.
-        s.on_fed_real(31.5);
+        s.on_committed_received(); // the reply lands
         assert!(
-            (s.uncommitted_secs() - 33.5).abs() < 1e-9,
-            "client count must track the server's, got {}",
+            s.uncommitted_secs() >= RESYNC_MARGIN_SECS - 1e-9,
+            "the re-sync must not drop below the in-flight estimate, got {}",
             s.uncommitted_secs()
         );
-        assert!(!s.on_gap(0.0), "33.5s is the cutoff — must refuse the gap");
+        s.on_fed_real(30.4); // 31.9 total: still just inside the safe window
+        assert!(s.on_gap(0.0));
+        s.on_fed_real(0.2); // 32.1 > FORCE_CUTOFF
+        assert!(!s.on_gap(0.0), "must refuse the gap past the cutoff");
+    }
+
+    /// Outcome of a simulated meeting.
+    struct SimResult {
+        /// Client commits actually sent.
+        commits: u32,
+        /// Worst SERVER-side uncommitted position at which we sent one. This is
+        /// the safety number: it must stay clear of [`STALL_EDGE_SECS`].
+        worst_commit_pos: f64,
+        /// Most negative `client_estimate - server_truth` seen at a sync point,
+        /// i.e. how far the client model fell BELOW reality (the unsafe side).
+        worst_model_error: f64,
+    }
+
+    /// Walk a simulated server through `secs` of continuous speech.
+    ///
+    /// Server model: auto-commits at `true_trigger` of uncommitted audio; every
+    /// commit (ours or its own) produces a committed event that reaches us
+    /// `reply_lag` of audio later. A speech gap is offered every `gap_period`
+    /// seconds, which is what decides whether the client can catch its arming
+    /// window at all. `resync` toggles the C1 fix.
+    fn simulate_meeting(
+        secs: f64,
+        true_trigger: f64,
+        reply_lag: f64,
+        gap_period: f64,
+        resync: bool,
+    ) -> SimResult {
+        const FRAME: f64 = 0.25;
+        let mut s = CommitScheduler::new();
+        let mut server_unc = 0.0f64;
+        let mut pending_reply: Option<f64> = None;
+        let mut commits = 0u32;
+        let mut worst_commit_pos: f64 = 0.0;
+        let mut worst_model_error: f64 = 0.0;
+        let mut t = 0.0f64;
+        let mut since_gap = 0.0f64;
+
+        while t < secs {
+            s.on_fed_real(FRAME);
+            server_unc += FRAME;
+            t += FRAME;
+            since_gap += FRAME;
+
+            // Server's own auto-commit.
+            if server_unc >= true_trigger {
+                server_unc = 0.0;
+                pending_reply = Some(reply_lag);
+            }
+
+            // Deliver a due reply; that is the natural sync point to measure the
+            // client's model against the server's truth.
+            if let Some(lag) = pending_reply {
+                let lag = lag - FRAME;
+                if lag <= 0.0 {
+                    pending_reply = None;
+                    if resync {
+                        s.on_committed_received();
+                    }
+                    worst_model_error =
+                        worst_model_error.min(s.uncommitted_secs() - server_unc);
+                } else {
+                    pending_reply = Some(lag);
+                }
+            }
+
+            // Offer a speech gap on the configured cadence.
+            if since_gap >= gap_period {
+                since_gap = 0.0;
+                if s.on_gap(0.0) {
+                    worst_commit_pos = worst_commit_pos.max(server_unc);
+                    commits += 1;
+                    s.on_client_commit();
+                    server_unc = 0.0;
+                    pending_reply = Some(reply_lag);
+                }
+            }
+        }
+        SimResult {
+            commits,
+            worst_commit_pos,
+            worst_model_error,
+        }
+    }
+
+    #[test]
+    fn scheduler_resync_keeps_every_commit_clear_of_the_stall_edge() {
+        // C1 (CRITICAL): AUTO_COMMIT_AUDIO_SECS is a RECEIVE-time figure, so the
+        // server's true trigger is earlier (observed receipt spacing 34.75-36.25s,
+        // median 35.5s). A purely predictive clock therefore drifts ~1.0s per
+        // auto-commit cycle, monotonically, with nothing to correct it: after
+        // enough cycles a commit we believe is at 30s is really at ~35s
+        // server-side, which is the SERVER FACT 2 stall. The 60s validation clips
+        // only ever ran ONE cycle, which is why this stayed invisible.
+        //
+        // The safety property that actually matters is not "never under-count" but
+        // "never commit while the server is near its stall edge". Simulate a
+        // 10-minute meeting with frequent gaps and assert it.
+        let r = simulate_meeting(600.0, 35.5, 0.5, 2.0, true);
+        assert!(
+            r.worst_commit_pos < STALL_EDGE_SECS,
+            "committed at {:.2}s server-side; the measured stall edge is {:.2}s",
+            r.worst_commit_pos,
+            STALL_EDGE_SECS
+        );
+        // Liveness: a scheduler that never commits would pass the above trivially.
+        assert!(
+            r.commits >= 10,
+            "expected regular commits over 10 minutes, got {}",
+            r.commits
+        );
+        // And the model never sits meaningfully below reality at a sync point
+        // (live measurement put the error in [-0.25, +1.25] with no trend).
+        assert!(
+            r.worst_model_error >= -0.5,
+            "model fell {:.2}s below the server at a sync point",
+            r.worst_model_error
+        );
+    }
+
+    #[test]
+    fn scheduler_resync_stops_the_model_drifting_across_auto_commit_cycles() {
+        // The drift only bites when the CLIENT keeps missing its arming window and
+        // the SERVER's auto-commit is what closes each cycle (speech-dense audio,
+        // sparse gaps). Each such cycle shifts the client's clock ~1.0s below
+        // reality, monotonically, so eventually a gap the client believes is at
+        // 27-32s is really at 34-36s server-side: the stall.
+        //
+        // Whether that happens depends on how the gap cadence beats against the
+        // cycle, so sweep the cadence and take the worst case of each variant.
+        let mut worst_without: f64 = 0.0;
+        let mut worst_with: f64 = 0.0;
+        let mut period = 1.0f64;
+        while period <= 45.0 {
+            worst_without = worst_without
+                .max(simulate_meeting(900.0, 35.5, 0.5, period, false).worst_commit_pos);
+            worst_with = worst_with
+                .max(simulate_meeting(900.0, 35.5, 0.5, period, true).worst_commit_pos);
+            period += 0.5;
+        }
+
+        assert!(
+            worst_without >= STALL_EDGE_SECS,
+            "without the re-sync the drift must reach the stall band, got {:.2}s",
+            worst_without
+        );
+        assert!(
+            worst_with < STALL_EDGE_SECS,
+            "with the re-sync every commit must stay clear, got {:.2}s",
+            worst_with
+        );
+    }
+
+    #[test]
+    fn scheduler_stays_safe_across_the_observed_trigger_spread() {
+        // Observed auto-commit receipt spacing was 34.75-36.25s (median 35.5).
+        // Sweep that whole range, slow replies, and both dense and sparse gaps.
+        for trigger in [34.75f64, 35.0, 35.5, 36.0, 36.25] {
+            for lag in [0.25f64, 0.5, 1.0, 1.5] {
+                for gap_period in [1.0f64, 5.0, 13.0, 29.0, 90.0] {
+                    let r = simulate_meeting(400.0, trigger, lag, gap_period, true);
+                    assert!(
+                        r.worst_commit_pos < STALL_EDGE_SECS,
+                        "trigger {} lag {} gaps every {}s: committed at {:.2}s server-side",
+                        trigger,
+                        lag,
+                        gap_period,
+                        r.worst_commit_pos
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scheduler_resync_floors_rather_than_zeroing() {
+        // The floor is what makes the re-sync safe: never claim less outstanding
+        // than the audio that must still be in flight.
+        let mut s = CommitScheduler::new();
+        s.on_fed_real(2.0);
+        s.on_committed_received();
+        assert!((s.uncommitted_secs() - RESYNC_MARGIN_SECS).abs() < 1e-9);
+        // And when the predictive subtract has NOT fired yet, it removes a whole
+        // cycle rather than flooring.
+        let mut s2 = CommitScheduler::new();
+        s2.on_fed_real(36.0);
+        s2.on_committed_received();
+        assert!(
+            (s2.uncommitted_secs() - RESYNC_MARGIN_SECS).abs() < 1e-9,
+            "36.0 - 36.5 is negative -> floor, got {}",
+            s2.uncommitted_secs()
+        );
     }
 
     #[test]
@@ -3051,6 +3989,26 @@ mod tests {
         );
         s.on_fed_keepalive(20.0); // uncommitted now 34.5 > cutoff
         assert!(!s.on_gap(0.0), "and the cutoff still applies");
+    }
+
+    #[test]
+    fn scheduler_rearms_after_a_long_idle_without_locking_up() {
+        // FINDING 7's second half: a very long pause must not leave the scheduler
+        // permanently stuck in the danger band once speech resumes.
+        let mut s = CommitScheduler::new();
+        for _ in 0..5400 {
+            s.on_fed_keepalive(0.25); // 22.5 minutes of keepalive silence
+        }
+        // Speech resumes; within one interval the scheduler arms again.
+        let mut armed = false;
+        for _ in 0..(4 * 40) {
+            s.on_fed_real(0.25);
+            if s.on_gap(0.0) {
+                armed = true;
+                break;
+            }
+        }
+        assert!(armed, "must re-arm within ~40s of resumed speech");
     }
 
     #[test]

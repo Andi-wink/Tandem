@@ -12,9 +12,10 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```rust
 //! use app_lib::summary::templates;
 //!
+//! # fn main() -> Result<(), String> {
 //! // Load a specific template
 //! let template = templates::get_template("daily_standup")?;
 //!
@@ -26,6 +27,8 @@
 //!
 //! // List available templates
 //! let available = templates::list_templates();
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! # Custom Templates

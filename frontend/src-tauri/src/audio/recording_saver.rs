@@ -62,9 +62,21 @@ pub struct RecordingSaver {
     base_folder_override: Option<PathBuf>,
     metadata: Option<MeetingMetadata>,
     transcript_segments: Arc<Mutex<Vec<TranscriptSegment>>>,
+    /// Debounce state for transcripts.json (M5). `add_transcript_segment` used to
+    /// clone, pretty-serialize and atomically rewrite the ENTIRE segment list on
+    /// every single segment, which is O(n^2) in bytes written on the event thread.
+    /// Utterance-level splitting turns ~700 segments per 3h meeting into several
+    /// thousand, taking that from noticeable to gigabytes. The in-memory list and
+    /// the per-segment DB upsert are unchanged; only the JSON mirror is debounced,
+    /// and `save_recording` always writes it unconditionally at the end.
+    last_transcript_write: Arc<Mutex<Option<std::time::Instant>>>,
+    transcripts_dirty: Arc<Mutex<bool>>,
     chunk_receiver: Option<mpsc::UnboundedReceiver<AudioChunk>>,
     is_saving: Arc<Mutex<bool>>,
 }
+
+/// Minimum wall-clock gap between incremental transcripts.json rewrites.
+const TRANSCRIPT_WRITE_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl RecordingSaver {
     pub fn new() -> Self {
@@ -75,6 +87,8 @@ impl RecordingSaver {
             base_folder_override: None,
             metadata: None,
             transcript_segments: Arc::new(Mutex::new(Vec::new())),
+            last_transcript_write: Arc::new(Mutex::new(None)),
+            transcripts_dirty: Arc::new(Mutex::new(false)),
             chunk_receiver: None,
             is_saving: Arc::new(Mutex::new(false)),
         }
@@ -133,12 +147,55 @@ impl RecordingSaver {
             error!("Failed to lock transcript segments for adding segment {}", segment.id);
         }
 
-        // NEW: Save incrementally to disk
-        if let Some(folder) = &self.meeting_folder {
-            if let Err(e) = self.write_transcripts_json(folder) {
-                warn!("Failed to write incremental transcript update: {}", e);
+        // Mirror to disk incrementally, DEBOUNCED (M5): at most one full rewrite
+        // every TRANSCRIPT_WRITE_DEBOUNCE. Anything skipped is covered by the
+        // unconditional write in `save_recording`.
+        self.write_transcripts_json_debounced();
+    }
+
+    /// Rewrite transcripts.json only if the debounce window has elapsed; otherwise
+    /// just mark the mirror dirty.
+    fn write_transcripts_json_debounced(&self) {
+        let Some(folder) = self.meeting_folder.clone() else {
+            return;
+        };
+        let due = {
+            let mut last = match self.last_transcript_write.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+            let now = std::time::Instant::now();
+            let due = match *last {
+                Some(prev) => now.duration_since(prev) >= TRANSCRIPT_WRITE_DEBOUNCE,
+                None => true,
+            };
+            if due {
+                *last = Some(now);
             }
+            due
+        };
+        if !due {
+            if let Ok(mut dirty) = self.transcripts_dirty.lock() {
+                *dirty = true;
+            }
+            return;
         }
+        if let Err(e) = self.write_transcripts_json(&folder) {
+            warn!("Failed to write incremental transcript update: {}", e);
+            return;
+        }
+        if let Ok(mut dirty) = self.transcripts_dirty.lock() {
+            *dirty = false;
+        }
+    }
+
+    /// Whether segments have been added since the last transcripts.json write
+    /// (diagnostics/tests).
+    pub fn transcripts_pending_write(&self) -> bool {
+        self.transcripts_dirty
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(false)
     }
 
     /// Legacy method for backward compatibility - converts text to basic segment
