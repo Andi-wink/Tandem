@@ -6,12 +6,37 @@
 // differ).
 //
 // One WS connection per audio stream (mic / system = DeviceType, mapping to the
-// source labels "Local" / "Remote" exactly as worker.rs does). Audio of OPEN VAD
-// speech segments is forwarded live as ~250ms PCM16 frames (+300ms pre-roll at
-// segment open) by the pipeline tap; on VAD segment end the pipeline sends an
-// explicit `commit`. During silence the per-connection task sends periodic
-// silence keepalive frames because the server closes idle sockets ~15.7s after
-// the last AUDIO frame (WS pings do NOT prevent it — spike caveat C1).
+// source labels "Local" / "Remote" exactly as worker.rs does).
+//
+// COMMIT STRATEGY (rewritten 2026-07-28 from the WER study in
+// audio_testing/run_hybrid_realtime_wer.py; supersedes the original VAD-gated
+// feed + per-segment commit described in the Phase 2 plan):
+//
+//   * CONTINUOUS FEED. While the route is Realtime the pipeline tap forwards
+//     ALL audio for the stream as ~250ms PCM16 frames, silence included. The
+//     server keeps its cross-utterance context, which is where the accuracy
+//     comes from. VAD segment ends are no longer commits: they are GAP SIGNALS
+//     (commit candidates) via `segment_gap()`.
+//   * PERIODIC COMMITS AT VAD GAPS, danger-band aware ([`CommitScheduler`]).
+//     Pooled WER on six real meeting clips, continuous feed, committed text only:
+//       per-VAD-segment commits 6.31%  |  every ~15s 5.90%
+//       ~30s danger-band scheduler 4.68%  |  commit-once-at-end 4.58%
+//     WER improves monotonically as commit frequency drops — every commit costs
+//     boundary insertions — so 30s is the accuracy/latency knee we ship.
+//   * SERVER FACT 1: under `commit_strategy=manual` the server AUTO-COMMITS at
+//     ~36.5s of uncommitted FED AUDIO (audio-based, pacing-invariant; NOT the
+//     documented 90s wall-clock).
+//   * SERVER FACT 2: a client commit sent MID-SPEECH ~1-2s before that boundary
+//     deterministically STALLS the session (server goes silent, tail audio
+//     orphaned). Distinct from `commit_throttled`, which is two back-to-back
+//     commits with no audio between and makes the server DROP one of them.
+//     Hence the scheduler NEVER client-commits past 33.5s uncommitted and lets
+//     the server's own auto-commit be the commit-point instead.
+//
+// During silence the per-connection task still sends periodic silence keepalive
+// frames because the server closes idle sockets ~15.7s after the last AUDIO
+// frame (WS pings do NOT prevent it — spike caveat C1). Under continuous feed
+// they only matter when the feed itself pauses (recording paused / route flip).
 //
 // This module is deliberately free of Tauri types: the receive loop emits
 // `RealtimeEvent`s onto an mpsc channel, and a small bridge task (spawned where an
@@ -51,8 +76,10 @@ pub const FEED_SAMPLE_RATE: u32 = 16_000;
 /// frames — ~1 partial/s cadence, 0.44s commit latency. Phase 3 may retune.
 pub const FRAME_SAMPLES: usize = 4_000;
 
-/// Pre-roll prepended at speech onset: 300ms @ 16kHz (plan D2). Approximates
-/// silero's 300ms pre_speech_pad so the server sees the word onset.
+/// Pre-roll that USED to be prepended at speech onset: 300ms @ 16kHz (plan D2).
+/// Obsolete under the continuous feed (the server already has every sample that
+/// precedes the onset), so the pipeline no longer maintains a [`PrerollRing`].
+/// Kept as the ring's documented capacity for the degraded/experimental paths.
 pub const PREROLL_SAMPLES: usize = 4_800;
 
 /// Send a silence keepalive if no audio has been fed for this long. Chosen well
@@ -79,12 +106,13 @@ pub const FEED_RING_CAP: usize = 64;
 // ROUTING — what the pipeline does with a stream's audio right now
 // ============================================================================
 
-/// How the pipeline should route a stream's VAD audio at this instant.
+/// How the pipeline should route a stream's audio at this instant.
 ///
-/// `Realtime`: socket is connected — tap live frames, bypass batch accumulation.
+/// `Realtime`: socket is connected — feed EVERY window live (continuous feed,
+/// silence included) and bypass batch accumulation.
 /// `Batch`: socket is (temporarily) disconnected or permanently degraded — route
-/// VAD segments through the existing batch accumulation + HTTP provider path so
-/// no words are lost (plan D5).
+/// VAD segments through the existing VAD-gated batch accumulation + HTTP provider
+/// path so no words are lost (plan D5). That fallback path is unchanged.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Route {
     Realtime,
@@ -112,14 +140,15 @@ pub fn route_for_state(connected: bool, degraded: bool) -> Route {
     }
 }
 
-/// Whether the pipeline must re-mark the segment onset because a socket just
-/// (re)connected while the stream's VAD segment is ALREADY open (MAJOR-2a).
+/// Whether the pipeline should hand the session an explicit timeline anchor
+/// because a socket just (re)connected while the stream's VAD segment is ALREADY
+/// open (MAJOR-2a).
 ///
-/// On a normal onset the pipeline detects `!was_in_speech && now_in_speech` and
-/// marks the anchor itself. But when the route flips Batch -> Realtime mid-speech
-/// there is no `was->now` edge, so without this the resumed stream would commit
-/// with a stale/absent anchor. The re-fed audio starts "now", so the current
-/// recording clock is the correct anchor.
+/// Under the continuous feed the anchor normally comes from the first fed frame's
+/// own timestamp, so this is belt-and-braces: it guarantees an anchor for a
+/// Batch -> Realtime flip mid-speech, where there is no `was->now` edge. The
+/// re-fed audio starts "now", so the current recording clock is the right anchor,
+/// and [`TimelineMapper`] keeps whichever anchor lands first on the connection.
 ///
 /// `prev`/`cur` are the stream's realtime route on the previous / current window
 /// (None = no realtime session). Returns true only on a Batch->Realtime flip
@@ -389,30 +418,149 @@ pub fn keepalive_due(secs_since_last_audio: f64) -> bool {
 }
 
 // ============================================================================
+// COMMIT SCHEDULER (pure, unit-tested) — the danger-band strategy
+// ============================================================================
+
+/// Audio-seconds of uncommitted feed after which the next VAD gap is a commit
+/// candidate. The WER study swept this: per-segment (~1-2s) 6.31% pooled WER,
+/// 15s 5.90%, 30s 4.68%, never (commit once at clip end) 4.58%. 30s is the knee
+/// where accuracy has nearly converged on the "never commit" bound while the
+/// user still sees committed text at a usable cadence.
+pub const COMMIT_INTERVAL_SECS: f64 = 30.0;
+
+/// SERVER FACT 1. Under `commit_strategy=manual` the server auto-commits after
+/// ~36.5s of UNCOMMITTED FED AUDIO. Verified audio-based and pacing-invariant
+/// (seen at 9.15s wall-clock at 4x pacing = 36.6s audio, on every clip), i.e.
+/// NOT the 90s wall-clock figure in the public docs.
+pub const AUTO_COMMIT_AUDIO_SECS: f64 = 36.5;
+
+/// SERVER FACT 2. A client commit fired mid-speech within a couple of seconds of
+/// the auto-commit boundary deterministically STALLS the session: the server
+/// stops emitting and the trailing audio is orphaned. This guard band keeps
+/// client commits well clear of it.
+pub const DANGER_GUARD_SECS: f64 = 3.0;
+
+/// Hard cutoff for CLIENT commits: 33.5s of uncommitted fed audio. Past this the
+/// scheduler never commits again in this cycle — it lets the server's own
+/// auto-commit land (arriving as a committed transcript) and treats that as the
+/// commit-point. Validated: zero stalls, zero `commit_throttled`.
+pub const FORCE_CUTOFF_SECS: f64 = AUTO_COMMIT_AUDIO_SECS - DANGER_GUARD_SECS;
+
+/// Minimum uncommitted fed audio for the recording-stop finalize commit to be
+/// worth sending. Without it, a finalize landing right behind a just-sent
+/// periodic commit is two back-to-back commits with ~no audio between them, the
+/// server answers `commit_throttled` and can DROP the earlier committed event.
+pub const FINALIZE_MIN_GAP_SECS: f64 = 1.0;
+
+/// Decides WHEN to send a client `commit`, driven purely by FED-AUDIO seconds
+/// (never wall clock), one instance per stream per connection.
+///
+/// Mirrors the validated Python harness scheduler in
+/// `audio_testing/run_hybrid_realtime_wer.py` (`build_schedule`).
+///
+/// A single counter suffices: under the continuous feed the "interval clock" and
+/// the "uncommitted audio clock" are the same quantity, because every fed second
+/// is a second of uncommitted audio and both reset at exactly the same events
+/// (a commit-point). So `uncommitted_secs` doubles as `secs_since_commit_point`.
+///
+/// A COMMIT-POINT is either of:
+///   * a CLIENT commit we send (reset immediately on send, so a second VAD gap
+///     arriving before the server's response cannot fire a back-to-back commit),
+///   * a COMMITTED TRANSCRIPT arriving from the server, which covers the server's
+///     own ~36.5s auto-commit and also re-syncs us to the server's clock after a
+///     client commit (costing at most the round-trip of fed audio, ~0.5s, far
+///     inside [`DANGER_GUARD_SECS`]).
+#[derive(Debug, Default)]
+pub struct CommitScheduler {
+    /// Fed-audio seconds accumulated since the last commit-point.
+    uncommitted_secs: f64,
+}
+
+impl CommitScheduler {
+    pub fn new() -> Self {
+        Self {
+            uncommitted_secs: 0.0,
+        }
+    }
+
+    /// Account for audio actually SENT on the socket. Keepalive silence counts
+    /// too: the server counts every fed sample toward its auto-commit boundary.
+    pub fn on_fed(&mut self, secs: f64) {
+        if secs > 0.0 {
+            self.uncommitted_secs += secs;
+        }
+    }
+
+    /// A VAD segment just ended (a natural speech gap): should we commit here?
+    ///
+    /// True only inside the safe window `[COMMIT_INTERVAL_SECS,
+    /// FORCE_CUTOFF_SECS)`. Below the interval it is too soon (commits cost WER);
+    /// at or past the cutoff we are in the danger band and must stay silent so
+    /// the server's auto-commit is the one that lands.
+    pub fn on_gap(&self) -> bool {
+        self.uncommitted_secs >= COMMIT_INTERVAL_SECS && self.uncommitted_secs < FORCE_CUTOFF_SECS
+    }
+
+    /// Record a CLIENT-initiated commit-point (call at send time).
+    pub fn on_client_commit(&mut self) {
+        self.reset();
+    }
+
+    /// Record a SERVER commit-point: ANY committed transcript we receive, client-
+    /// or server-initiated, including empty ones (an auto-commit over silence
+    /// still resets the server's uncommitted clock, so it must reset ours).
+    pub fn on_committed(&mut self) {
+        self.reset();
+    }
+
+    /// Fresh uncommitted clock (new connection = new server session).
+    pub fn reset(&mut self) {
+        self.uncommitted_secs = 0.0;
+    }
+
+    /// Whether recording-stop's finalize commit is worth sending.
+    pub fn finalize_should_commit(&self) -> bool {
+        self.uncommitted_secs >= FINALIZE_MIN_GAP_SECS
+    }
+
+    /// Uncommitted fed-audio seconds (diagnostics/tests).
+    pub fn uncommitted_secs(&self) -> f64 {
+        self.uncommitted_secs
+    }
+}
+
+// ============================================================================
 // TIMELINE MAPPER (pure, unit-tested)
 // ============================================================================
 
 /// Maps a committed segment's server word timings onto the recording timeline.
 ///
-/// The absolute position is anchored to the recording clock captured at segment
-/// onset (the recording-relative time of the first fed sample, i.e. pre-roll
-/// start). The intra-segment duration is taken from the word span
-/// (`last.end - first.start`), which is independent of whether the server's word
-/// timestamps are session-cumulative or reset per commit — sidestepping that
-/// unconfirmed detail (spike open item).
+/// Server word timestamps are SESSION-CUMULATIVE over fed audio: `t = 0` is the
+/// first sample the server received on THIS connection. Under the continuous
+/// feed that origin is simply "the moment this connection started carrying
+/// audio", and fed-audio time then tracks recording time linearly (no VAD gating
+/// means no gaps to compensate). So the whole mapping collapses to
+/// `recording_time(word) = anchor + word_time`,
+/// where `anchor` is the recording-relative clock at the FIRST audio anchored on
+/// this connection. This is both simpler and more accurate than the previous
+/// per-VAD-segment anchoring, which had to re-anchor at every onset and could
+/// only recover an intra-segment span.
 ///
-/// PRECISION LIMITS: the anchor is captured one VAD window (~600ms) after true
-/// onset at worst, and the pre-roll (300ms) shifts the start slightly earlier
-/// than the first spoken word. Good enough for playback sync; Phase 3 measures
-/// the residual and can tighten this once the server's timestamp origin is
-/// confirmed.
+/// The anchor is set by whichever arrives first after a (re)connect: an explicit
+/// [`mark_onset`](Self::mark_onset) or the first fed audio frame's timestamp
+/// (both carry the same value in practice). It is NOT consumed per commit —
+/// [`reset_anchor`](Self::reset_anchor) clears it on reconnect, since a new
+/// server session restarts the cumulative clock at 0.
+///
+/// PRECISION LIMITS: the anchor is one VAD window (~600ms) granular, and network
+/// reordering is not modelled. Good enough for playback sync and ordering.
 #[derive(Debug, Default)]
 pub struct TimelineMapper {
     anchor_recording_secs: Option<f64>,
-    /// End (recording-relative secs) of the last mapped commit — used as a
-    /// monotonic fallback so a commit that arrives with no fresh onset anchor is
-    /// NEVER placed at 0.0 (which would corrupt the meeting store's
-    /// audio_start_time ASC ordering). See MAJOR-2.
+    /// End (recording-relative secs) of the last mapped commit — the monotonic
+    /// floor. A commit is NEVER placed before it (which would corrupt the meeting
+    /// store's audio_start_time ASC ordering) and never at 0.0 once any commit
+    /// has occurred. See MAJOR-2.
     last_commit_end_secs: f64,
 }
 
@@ -424,33 +572,56 @@ impl TimelineMapper {
         }
     }
 
-    /// Record the recording-relative time of the first fed sample of a segment.
-    /// Called at speech onset AND on a mid-open-segment reconnect (the re-fed
-    /// audio starts "now", so that is the correct anchor — MAJOR-2a).
+    /// Set the connection's anchor if it has none yet: the recording-relative
+    /// time of the first audio this connection carries. Later calls within the
+    /// same connection are ignored (the cumulative server clock has one origin).
+    pub fn anchor_if_unset(&mut self, recording_secs: f64) {
+        if self.anchor_recording_secs.is_none() {
+            self.anchor_recording_secs = Some(recording_secs.max(0.0));
+        }
+    }
+
+    /// Explicit anchor hint from the pipeline (speech onset / Batch->Realtime
+    /// resume). Same semantics as [`anchor_if_unset`](Self::anchor_if_unset):
+    /// first one after a (re)connect wins.
     pub fn mark_onset(&mut self, recording_secs: f64) {
-        self.anchor_recording_secs = Some(recording_secs.max(0.0));
+        self.anchor_if_unset(recording_secs);
+    }
+
+    /// Drop the anchor because the socket is being (re)connected — the new server
+    /// session restarts its cumulative word clock at 0. `last_commit_end_secs` is
+    /// deliberately KEPT so ordering stays monotonic across a socket rotation.
+    pub fn reset_anchor(&mut self) {
+        self.anchor_recording_secs = None;
     }
 
     /// Compute (start, end, duration) in recording-relative seconds for a commit.
-    /// Uses the onset anchor when present (the normal path); otherwise continues
-    /// monotonically from the previous commit's end so the absolute position is
-    /// never 0.0 once any commit has occurred. The anchor is consumed each commit
-    /// so a stale one can't be reused, and `last_commit_end` advances so ordering
-    /// stays monotonic across reconnects.
+    ///
+    /// `start = anchor + first_word_start`, `end = anchor + last_word_end`. With
+    /// no anchor at all (defensive: a commit before any audio was anchored) it
+    /// falls back to continuing from the previous commit's end. The result is
+    /// then clamped forward so it never regresses below `last_commit_end_secs`,
+    /// preserving the reported duration.
     pub fn map_commit(&mut self, words: &[WordTiming]) -> (f64, f64, f64) {
-        let span = word_span_secs(words);
-        let start = self
+        let (first, last) = word_bounds_secs(words);
+        let span = (last - first).max(0.0);
+        let anchor = self
             .anchor_recording_secs
-            .take()
             .unwrap_or(self.last_commit_end_secs);
+        let mut start = (anchor + first).max(0.0);
+        if start < self.last_commit_end_secs {
+            start = self.last_commit_end_secs;
+        }
         let end = start + span;
         self.last_commit_end_secs = end;
         (start, end, span)
     }
 }
 
-/// Duration in seconds spanned by the timed word tokens (spacing/None skipped).
-pub fn word_span_secs(words: &[WordTiming]) -> f64 {
+/// First word start and last word end (session-cumulative secs) of the timed
+/// tokens; spacing tokens and untimed tokens are skipped. `(0.0, 0.0)` when the
+/// commit carries no usable timings.
+pub fn word_bounds_secs(words: &[WordTiming]) -> (f64, f64) {
     let mut first: Option<f64> = None;
     let mut last: Option<f64> = None;
     for w in words {
@@ -469,9 +640,16 @@ pub fn word_span_secs(words: &[WordTiming]) -> f64 {
         }
     }
     match (first, last) {
-        (Some(f), Some(l)) if l >= f => l - f,
-        _ => 0.0,
+        (Some(f), Some(l)) if l >= f => (f, l),
+        (Some(f), _) => (f, f),
+        _ => (0.0, 0.0),
     }
+}
+
+/// Duration in seconds spanned by the timed word tokens (spacing/None skipped).
+pub fn word_span_secs(words: &[WordTiming]) -> f64 {
+    let (first, last) = word_bounds_secs(words);
+    (last - first).max(0.0)
 }
 
 // ============================================================================
@@ -665,14 +843,21 @@ impl RealtimeTransport for TungsteniteTransport {
 // ============================================================================
 
 /// Commands the pipeline pushes to a stream's connection task (ordering matters:
-/// Onset precedes the Audio it anchors, which precedes its Commit).
+/// Onset precedes the Audio it anchors, which precedes any SegmentGap).
 #[derive(Debug, Clone)]
 enum FeedCmd {
-    /// Recording-relative seconds of the first fed sample of a new segment.
+    /// Recording-relative seconds hint for the connection's timeline anchor.
     Onset(f64),
-    /// Speech audio (16kHz f32), sliced into 250ms frames by the task.
-    Audio(Vec<f32>),
-    /// End of a VAD segment: flush the partial frame and send an explicit commit.
+    /// Audio (16kHz f32), sliced into 250ms frames by the task. `at_secs` is the
+    /// recording-relative time of the FIRST sample, used to anchor the timeline
+    /// on the first audio of a connection. Under the continuous feed this is
+    /// every window's audio, silence included — NOT only VAD-open segments.
+    Audio { samples: Vec<f32>, at_secs: f64 },
+    /// A VAD segment just ended: a COMMIT CANDIDATE, not a commit. The
+    /// [`CommitScheduler`] decides whether this gap actually commits.
+    SegmentGap,
+    /// Recording stop: flush the partial frame and send the finalize commit
+    /// (subject to [`CommitScheduler::finalize_should_commit`]).
     Commit,
     /// Shut the connection down.
     Close,
@@ -698,14 +883,14 @@ impl FeedRing {
     }
 
     /// Non-blocking push. On overflow, evicts the oldest queued command. Close
-    /// and Onset/Commit control messages are never evicted (only Audio is), so
-    /// commit/onset ordering survives shedding.
+    /// and Onset/SegmentGap/Commit control messages are never evicted (only Audio
+    /// is), so commit/onset ordering survives shedding.
     fn push(&self, cmd: FeedCmd) {
         // Poison-tolerant: a panicked holder must not wedge the audio-thread feed.
         let mut q = self.q.lock().unwrap_or_else(|e| e.into_inner());
         if q.len() >= self.cap {
             // Evict the oldest Audio command; if none, evict the front.
-            if let Some(pos) = q.iter().position(|c| matches!(c, FeedCmd::Audio(_))) {
+            if let Some(pos) = q.iter().position(|c| matches!(c, FeedCmd::Audio { .. })) {
                 q.remove(pos);
             } else {
                 q.pop_front();
@@ -739,6 +924,13 @@ impl FeedRing {
 struct StreamHandle {
     ring: Arc<FeedRing>,
     route: Arc<AtomicU8>,
+    /// Bumped at every COMMIT-POINT for this stream (a client commit we send, or
+    /// a committed transcript we receive). The pipeline watches it to know when
+    /// its shadow catch-up buffer may be cleared — under the continuous feed the
+    /// uncommitted window is up to ~30s, so clearing it at VAD segment ends (as
+    /// the per-segment-commit design did) would drop audio the server has not
+    /// committed yet.
+    commit_epoch: Arc<AtomicU64>,
     join: tokio::task::JoinHandle<()>,
 }
 
@@ -836,9 +1028,11 @@ impl ElevenLabsRealtimeSession {
         let route = Arc::new(AtomicU8::new(ROUTE_BATCH));
         // Per-source monotonic partial sequence counter (owned by the task).
         let session_seq = Arc::new(AtomicU64::new(0));
+        let commit_epoch = Arc::new(AtomicU64::new(0));
 
         let task_ring = ring.clone();
         let task_route = route.clone();
+        let task_epoch = commit_epoch.clone();
         let join = tokio::spawn(async move {
             run_stream(
                 transport,
@@ -848,13 +1042,19 @@ impl ElevenLabsRealtimeSession {
                 task_ring,
                 task_route,
                 session_seq,
+                task_epoch,
                 event_tx,
                 warned,
             )
             .await;
         });
 
-        StreamHandle { ring, route, join }
+        StreamHandle {
+            ring,
+            route,
+            commit_epoch,
+            join,
+        }
     }
 
     fn handle(&self, device_type: &DeviceType) -> &StreamHandle {
@@ -869,28 +1069,41 @@ impl ElevenLabsRealtimeSession {
         route_from_u8(self.handle(device_type).route.load(Ordering::Relaxed))
     }
 
-    /// Mark the recording-relative onset time of a new segment (call before the
-    /// first `feed` of that segment). Non-blocking.
+    /// Hint the recording-relative anchor for the stream's current connection.
+    /// Only the FIRST anchor after a (re)connect is used (see [`TimelineMapper`]);
+    /// normally the first fed frame supplies it. Non-blocking.
     pub fn mark_onset(&self, device_type: &DeviceType, recording_secs: f64) {
         self.handle(device_type)
             .ring
             .push(FeedCmd::Onset(recording_secs));
     }
 
-    /// Feed speech audio (16kHz mono f32) for a stream. Non-blocking (drop-oldest
-    /// on overflow); safe to call from the audio pipeline thread.
-    pub fn feed(&self, device_type: &DeviceType, samples: &[f32]) {
+    /// Feed audio (16kHz mono f32) for a stream. Under the continuous-feed
+    /// strategy this is EVERY window while the route is Realtime, silence
+    /// included — the server's cross-utterance context is what buys the accuracy.
+    /// `at_secs` is the recording-relative time of the first sample. Non-blocking
+    /// (drop-oldest on overflow); safe to call from the audio pipeline thread.
+    pub fn feed(&self, device_type: &DeviceType, samples: &[f32], at_secs: f64) {
         if samples.is_empty() {
             return;
         }
-        self.handle(device_type)
-            .ring
-            .push(FeedCmd::Audio(samples.to_vec()));
+        self.handle(device_type).ring.push(FeedCmd::Audio {
+            samples: samples.to_vec(),
+            at_secs,
+        });
     }
 
-    /// Signal a VAD segment end for a stream (flush partial + explicit commit).
-    pub fn commit(&self, device_type: &DeviceType) {
-        self.handle(device_type).ring.push(FeedCmd::Commit);
+    /// Signal a VAD segment end (speech gap) for a stream. This is a COMMIT
+    /// CANDIDATE only: the per-connection [`CommitScheduler`] decides whether the
+    /// gap actually commits (>= 30s uncommitted and outside the danger band).
+    pub fn segment_gap(&self, device_type: &DeviceType) {
+        self.handle(device_type).ring.push(FeedCmd::SegmentGap);
+    }
+
+    /// Commit-point counter for a stream (see [`StreamHandle::commit_epoch`]).
+    /// The pipeline clears its shadow catch-up buffer when this advances.
+    pub fn commit_epoch(&self, device_type: &DeviceType) -> u64 {
+        self.handle(device_type).commit_epoch.load(Ordering::Relaxed)
     }
 
     /// Number of audio frames shed under backpressure (diagnostics/tests).
@@ -903,9 +1116,12 @@ impl ElevenLabsRealtimeSession {
         self.warned.load(Ordering::Relaxed)
     }
 
-    /// Close both connections. Sends a final `commit` first so an open segment at
-    /// recording stop is still transcribed, allows a brief window for the
-    /// committed response to round-trip and persist, then shuts the sockets down.
+    /// Close both connections. Sends a finalize `commit` first so the audio fed
+    /// since the last commit-point (up to ~30s under the continuous feed) is still
+    /// transcribed, allows a brief window for the committed response to round-trip
+    /// and persist, then shuts the sockets down. The finalize is gated by
+    /// [`CommitScheduler::finalize_should_commit`], so a stop landing right behind
+    /// a periodic commit does not fire a throttled back-to-back commit.
     pub async fn close_all(self: Arc<Self>) {
         self.mic.ring.push(FeedCmd::Commit);
         self.system.ring.push(FeedCmd::Commit);
@@ -934,13 +1150,16 @@ async fn run_stream(
     ring: Arc<FeedRing>,
     route: Arc<AtomicU8>,
     session_seq: Arc<AtomicU64>,
+    commit_epoch: Arc<AtomicU64>,
     event_tx: mpsc::UnboundedSender<RealtimeEvent>,
     warned: Arc<AtomicBool>,
 ) {
     let source = source_label(&device_type).to_string();
     let mut ladder = BackoffLadder::new();
     // Timeline mapper persists ACROSS reconnects so `last_commit_end` (the
-    // monotonic anchor fallback, MAJOR-2b) and ordering survive a socket rotation.
+    // monotonic floor, MAJOR-2b) and ordering survive a socket rotation. Its
+    // ANCHOR is reset per connection: a new server session restarts the
+    // cumulative word clock at 0.
     let mut mapper = TimelineMapper::new();
 
     loop {
@@ -949,9 +1168,18 @@ async fn run_stream(
                 ladder.reset();
                 route.store(ROUTE_REALTIME, Ordering::Relaxed);
                 info!("🎧 Realtime [{}] connected", source);
+                mapper.reset_anchor();
 
-                let outcome =
-                    duplex_loop(pair, &ring, &session_seq, &event_tx, &source, &mut mapper).await;
+                let outcome = duplex_loop(
+                    pair,
+                    &ring,
+                    &session_seq,
+                    &commit_epoch,
+                    &event_tx,
+                    &source,
+                    &mut mapper,
+                )
+                .await;
 
                 // Left the duplex loop: connection down (or asked to close).
                 route.store(ROUTE_BATCH, Ordering::Relaxed);
@@ -1065,17 +1293,51 @@ enum DuplexOutcome {
     FatalError(String),
 }
 
+/// Seconds of audio represented by a frame of `n` samples at the feed rate.
+fn frame_secs(n: usize) -> f64 {
+    n as f64 / FEED_SAMPLE_RATE as f64
+}
+
+/// Send the slicer's sub-frame remainder (if any) as a `commit:false` chunk, so a
+/// commit that follows covers every sample fed so far.
+///
+/// Returns `None` if the socket died, `Some(true)` if a frame was sent,
+/// `Some(false)` if there was nothing pending.
+async fn flush_tail_frame(
+    pair: &mut TransportPair,
+    slicer: &mut FrameSlicer,
+    sched: &mut CommitScheduler,
+    last_audio: &mut tokio::time::Instant,
+) -> Option<bool> {
+    let tail = slicer.drain();
+    if tail.is_empty() {
+        return Some(false);
+    }
+    let n = tail.len();
+    let msg = encode_audio_chunk_message(&tail, FEED_SAMPLE_RATE, false);
+    if pair.outgoing.send(msg).await.is_err() {
+        return None;
+    }
+    sched.on_fed(frame_secs(n));
+    *last_audio = tokio::time::Instant::now();
+    Some(true)
+}
+
 /// The connected duplex loop: pump feed commands out, parse incoming events in,
 /// and send silence keepalives during idle gaps.
+#[allow(clippy::too_many_arguments)]
 async fn duplex_loop(
     mut pair: TransportPair,
     ring: &Arc<FeedRing>,
     session_seq: &Arc<AtomicU64>,
+    commit_epoch: &Arc<AtomicU64>,
     event_tx: &mpsc::UnboundedSender<RealtimeEvent>,
     source: &str,
     mapper: &mut TimelineMapper,
 ) -> DuplexOutcome {
     let mut slicer = FrameSlicer::new(FRAME_SAMPLES);
+    // Fresh uncommitted clock: a new connection is a new server session.
+    let mut sched = CommitScheduler::new();
     let mut last_audio = tokio::time::Instant::now();
     // Whether a SPEECH audio frame has actually been SENT on the socket since the
     // last commit frame was sent. Gates every commit so a back-to-back commit with
@@ -1099,38 +1361,77 @@ async fn duplex_loop(
                     FeedCmd::Onset(recording_secs) => {
                         mapper.mark_onset(recording_secs);
                     }
-                    FeedCmd::Audio(samples) => {
+                    FeedCmd::Audio { samples, at_secs } => {
+                        // First audio of this connection defines the origin of the
+                        // server's session-cumulative word clock.
+                        mapper.anchor_if_unset(at_secs);
                         for frame in slicer.push(&samples) {
+                            let n = frame.len();
                             let msg = encode_audio_chunk_message(&frame, FEED_SAMPLE_RATE, false);
                             if pair.outgoing.send(msg).await.is_err() {
                                 return DuplexOutcome::Disconnected;
                             }
+                            sched.on_fed(frame_secs(n));
                             sent_audio_since_commit = true;
                             last_audio = tokio::time::Instant::now();
                         }
                     }
-                    FeedCmd::Commit => {
-                        // Flush any partial frame first (counts as fed audio).
-                        let tail = slicer.drain();
-                        if !tail.is_empty() {
-                            let msg = encode_audio_chunk_message(&tail, FEED_SAMPLE_RATE, false);
-                            if pair.outgoing.send(msg).await.is_err() {
+                    FeedCmd::SegmentGap => {
+                        // A natural speech gap: commit here ONLY if the scheduler
+                        // says we are in the safe window (>= 30s uncommitted and
+                        // still clear of the server's ~36.5s auto-commit band).
+                        // Otherwise keep feeding commit:false — past the cutoff the
+                        // server's own auto-commit becomes the commit-point.
+                        if sched.on_gap() && sent_audio_since_commit {
+                            if flush_tail_frame(&mut pair, &mut slicer, &mut sched, &mut last_audio)
+                                .await
+                                .is_none()
+                            {
                                 return DuplexOutcome::Disconnected;
                             }
-                            sent_audio_since_commit = true;
-                            last_audio = tokio::time::Instant::now();
-                        }
-                        // Only send the commit if audio was fed since the last one.
-                        // close_all enqueues a Commit unconditionally at stop; when
-                        // the last segment already committed at its end (recording
-                        // stopped during silence) this skips the redundant second
-                        // commit that would otherwise throttle-drop the last event.
-                        if sent_audio_since_commit {
                             let commit_msg =
                                 encode_audio_chunk_message(&[], FEED_SAMPLE_RATE, true);
                             if pair.outgoing.send(commit_msg).await.is_err() {
                                 return DuplexOutcome::Disconnected;
                             }
+                            debug!(
+                                "🎧 Realtime [{}] gap commit at {:.1}s uncommitted",
+                                source,
+                                sched.uncommitted_secs()
+                            );
+                            // Reset on SEND (not on the server's reply) so a second
+                            // gap arriving before the reply cannot fire a
+                            // back-to-back commit -> commit_throttled.
+                            sched.on_client_commit();
+                            commit_epoch.fetch_add(1, Ordering::Relaxed);
+                            sent_audio_since_commit = false;
+                            last_audio = tokio::time::Instant::now();
+                        }
+                    }
+                    FeedCmd::Commit => {
+                        // Recording stop finalize. Flush the partial frame first
+                        // (counts as fed audio).
+                        match flush_tail_frame(&mut pair, &mut slicer, &mut sched, &mut last_audio)
+                            .await
+                        {
+                            None => return DuplexOutcome::Disconnected,
+                            Some(true) => sent_audio_since_commit = true,
+                            Some(false) => {}
+                        }
+                        // Both gates must pass (whichever is stricter wins):
+                        //  * audio actually SENT since the last commit, and
+                        //  * >= FINALIZE_MIN_GAP_SECS of it, so a finalize landing
+                        //    right behind a periodic commit cannot become the
+                        //    back-to-back pair the server answers with
+                        //    commit_throttled (dropping the earlier event).
+                        if sent_audio_since_commit && sched.finalize_should_commit() {
+                            let commit_msg =
+                                encode_audio_chunk_message(&[], FEED_SAMPLE_RATE, true);
+                            if pair.outgoing.send(commit_msg).await.is_err() {
+                                return DuplexOutcome::Disconnected;
+                            }
+                            sched.on_client_commit();
+                            commit_epoch.fetch_add(1, Ordering::Relaxed);
                             sent_audio_since_commit = false;
                             last_audio = tokio::time::Instant::now();
                         }
@@ -1153,6 +1454,13 @@ async fn duplex_loop(
                                 }
                             }
                             ServerMsg::Committed { text, words } => {
+                                // COMMIT-POINT: reset the uncommitted clock before
+                                // emitting, whoever initiated it (our client commit
+                                // or the server's ~36.5s auto-commit) and even when
+                                // the text is empty (an auto-commit over silence
+                                // still resets the server's clock).
+                                sched.on_committed();
+                                commit_epoch.fetch_add(1, Ordering::Relaxed);
                                 if !text.trim().is_empty() {
                                     let (start, end, dur) = mapper.map_commit(&words);
                                     debug!("🎧 Realtime [{}] committed: '{}'", source, text);
@@ -1163,7 +1471,20 @@ async fn duplex_loop(
                                         audio_end_time: end,
                                         duration: dur,
                                     });
+                                } else {
+                                    // Empty commit: nothing to persist, but the
+                                    // frontend's volatile tail is now stale (the
+                                    // server flushed its buffer), so drop it.
+                                    emit_tail_clear(event_tx, source, session_seq);
                                 }
+                            }
+                            ServerMsg::CommittedPlain => {
+                                // We act on `committed_transcript_with_timestamps`
+                                // only (avoids a double emit), but the plain event
+                                // is still proof the server committed, so it must
+                                // reset the uncommitted clock. Both arriving for one
+                                // commit just resets twice with ~no audio between.
+                                sched.on_committed();
                             }
                             ServerMsg::Error { kind, fatal } => {
                                 if fatal {
@@ -1171,7 +1492,7 @@ async fn duplex_loop(
                                 }
                                 warn!("🎧 Realtime [{}] transient error event: {}", source, kind);
                             }
-                            ServerMsg::CommittedPlain | ServerMsg::SessionStarted | ServerMsg::Other => {}
+                            ServerMsg::SessionStarted | ServerMsg::Other => {}
                         }
                     }
                 }
@@ -1183,6 +1504,9 @@ async fn duplex_loop(
                     if pair.outgoing.send(msg).await.is_err() {
                         return DuplexOutcome::Disconnected;
                     }
+                    // Keepalive silence is fed audio as far as the server's
+                    // auto-commit boundary is concerned, so it counts here too.
+                    sched.on_fed(frame_secs(KEEPALIVE_SILENCE_SAMPLES));
                     last_audio = tokio::time::Instant::now();
                     debug!("🎧 Realtime [{}] silence keepalive", source);
                 }
@@ -1396,30 +1720,63 @@ mod tests {
     }
 
     #[test]
-    fn timeline_never_anchors_at_zero_uses_monotonic_fallback() {
-        // MAJOR-2b: a commit with no fresh onset continues from the last commit
-        // end, never 0.0 (which would corrupt audio_start_time ASC ordering).
+    fn timeline_uses_session_cumulative_word_times_from_one_anchor() {
+        // CONTRACT CHANGE (continuous feed): server word timestamps are
+        // SESSION-CUMULATIVE over fed audio, and under a continuous feed fed-audio
+        // time tracks recording time linearly. So a single per-connection anchor
+        // maps every later commit: start = anchor + first_word_start. The anchor is
+        // no longer consumed per commit (the old per-VAD-segment contract, which
+        // assumed each commit's words restarted at 0.0).
         let mut m = TimelineMapper::new();
         m.mark_onset(10.0);
-        let (_s1, e1, _d1) = m.map_commit(&[w("one", 0.0, 0.5)]); // 10.0..10.5
+        let (s1, e1, d1) = m.map_commit(&[w("one", 0.0, 0.5)]); // 10.0..10.5
+        assert!((s1 - 10.0).abs() < 1e-9);
         assert!((e1 - 10.5).abs() < 1e-9);
-        // No new onset (anchor consumed): next commit continues from 10.5, not 0.
-        let (s2, e2, _d2) = m.map_commit(&[w("two", 0.0, 0.4)]);
-        assert!((s2 - 10.5).abs() < 1e-9, "start must continue, got {}", s2);
-        assert!((e2 - 10.9).abs() < 1e-9);
-        // A fresh onset overrides the fallback again.
-        m.mark_onset(30.0);
-        let (s3, _e3, _d3) = m.map_commit(&[w("three", 0.0, 0.2)]);
-        assert!((s3 - 30.0).abs() < 1e-9);
+        assert!((d1 - 0.5).abs() < 1e-9);
+        // A later commit at cumulative 20.0..20.4 lands at 30.0..30.4.
+        let (s2, e2, d2) = m.map_commit(&[w("two", 20.0, 20.4)]);
+        assert!((s2 - 30.0).abs() < 1e-9, "start must use the anchor, got {}", s2);
+        assert!((e2 - 30.4).abs() < 1e-9);
+        assert!((d2 - 0.4).abs() < 1e-9);
+        // A second anchor hint within the same connection is IGNORED (one origin).
+        m.mark_onset(999.0);
+        let (s3, _e3, _d3) = m.map_commit(&[w("three", 21.0, 21.2)]);
+        assert!((s3 - 31.0).abs() < 1e-9, "anchor must not move, got {}", s3);
+    }
+
+    #[test]
+    fn timeline_reanchors_on_reconnect_and_never_regresses() {
+        // MAJOR-2b retained: a reconnect restarts the server's cumulative clock at
+        // 0, so the anchor is dropped and re-taken — but `last_commit_end` is kept
+        // as a monotonic floor so audio_start_time ASC ordering can never break.
+        let mut m = TimelineMapper::new();
+        m.mark_onset(10.0);
+        let (_s1, e1, _d1) = m.map_commit(&[w("one", 0.0, 5.0)]); // 10.0..15.0
+        assert!((e1 - 15.0).abs() < 1e-9);
+
+        // Reconnect at recording second 20: fresh cumulative clock.
+        m.reset_anchor();
+        m.mark_onset(20.0);
+        let (s2, e2, _d2) = m.map_commit(&[w("two", 1.0, 1.5)]);
+        assert!((s2 - 21.0).abs() < 1e-9);
+        assert!((e2 - 21.5).abs() < 1e-9);
+
+        // Pathological: a reconnect anchored EARLIER than the last commit end must
+        // still not place the commit behind it (duration preserved).
+        m.reset_anchor();
+        m.mark_onset(5.0);
+        let (s3, e3, d3) = m.map_commit(&[w("three", 0.0, 0.4)]);
+        assert!((s3 - 21.5).abs() < 1e-9, "must clamp forward, got {}", s3);
+        assert!((e3 - 21.9).abs() < 1e-9);
+        assert!((d3 - 0.4).abs() < 1e-9);
     }
 
     #[test]
     fn timeline_initial_no_onset_edge_is_zero_then_monotonic() {
         // Defensive (re-QA #4): the ONLY way map_commit yields start 0.0 is the
-        // true initial state — no onset ever marked AND no prior commit
-        // (last_commit_end = 0.0). In normal operation the FeedRing FIFO
-        // guarantees an Onset precedes the Audio that precedes a Commit, and
-        // MAJOR-2a marks onset on a mid-open reconnect, so this state is
+        // true initial state — no anchor ever set AND no prior commit
+        // (last_commit_end = 0.0). In normal operation the first fed Audio frame
+        // anchors the connection before any commit can arrive, so this state is
         // unreachable live. Prove the fallback stays sane (monotonic, never
         // negative) even here.
         let mut m = TimelineMapper::new();
@@ -1561,20 +1918,24 @@ mod tests {
 
     #[tokio::test]
     async fn feed_ring_drops_oldest_audio_and_preserves_controls() {
+        let audio = |v: f32, at: f64| FeedCmd::Audio {
+            samples: vec![v],
+            at_secs: at,
+        };
         let ring = FeedRing::new(3);
         ring.push(FeedCmd::Onset(1.0));
-        ring.push(FeedCmd::Audio(vec![1.0]));
-        ring.push(FeedCmd::Audio(vec![2.0]));
+        ring.push(audio(1.0, 0.0));
+        ring.push(audio(2.0, 1.0));
         // Overflow: should evict the OLDEST Audio (the vec![1.0]), keep Onset.
-        ring.push(FeedCmd::Audio(vec![3.0]));
+        ring.push(audio(3.0, 2.0));
         assert_eq!(ring.dropped(), 1);
 
         let a = ring.recv().await;
         assert!(matches!(a, FeedCmd::Onset(x) if (x - 1.0).abs() < 1e-9));
         let b = ring.recv().await;
-        assert!(matches!(b, FeedCmd::Audio(ref v) if v == &vec![2.0]));
+        assert!(matches!(b, FeedCmd::Audio { ref samples, .. } if samples == &vec![2.0]));
         let c = ring.recv().await;
-        assert!(matches!(c, FeedCmd::Audio(ref v) if v == &vec![3.0]));
+        assert!(matches!(c, FeedCmd::Audio { ref samples, .. } if samples == &vec![3.0]));
     }
 
     // ---- session seq monotonicity + reconnect ladder via stub transport ---
@@ -1922,12 +2283,25 @@ mod tests {
             .count()
     }
 
+    /// Samples of continuous feed audio worth `secs` seconds at the feed rate.
+    fn feed_secs(secs: f64) -> Vec<f32> {
+        vec![0.1f32; (secs * FEED_SAMPLE_RATE as f64) as usize]
+    }
+
+    /// Drive the paused clock so the spawned stream tasks make progress.
+    async fn pump(steps: usize, step_ms: u64) {
+        for _ in 0..steps {
+            tokio::time::advance(Duration::from_millis(step_ms)).await;
+            tokio::task::yield_now().await;
+        }
+    }
+
     #[tokio::test(start_paused = true)]
-    async fn close_after_segment_commit_sends_no_second_commit() {
-        // Phase 3 bug: recording stops during silence after the last segment
-        // already committed at its end. close_all enqueues a final Commit, but no
-        // audio was fed since -> the gate must skip it (a back-to-back commit is
-        // commit_throttled and drops the last event). Expect exactly ONE commit.
+    async fn segment_gap_before_interval_never_commits() {
+        // CONTRACT CHANGE (continuous feed): a VAD segment end is a commit
+        // CANDIDATE, not a commit. With only ~1s of uncommitted audio the
+        // scheduler must stay quiet — the old engine committed here, which is
+        // exactly the 6.31% pooled-WER behaviour the study replaced.
         let sent = Arc::new(Mutex::new(Vec::<String>::new()));
         let transport = Arc::new(CapturingTransport {
             sent: sent.clone(),
@@ -1936,40 +2310,144 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
         let session =
             ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
+        pump(1, 10).await;
 
-        tokio::time::advance(Duration::from_millis(10)).await;
-        tokio::task::yield_now().await;
+        session.feed(&DeviceType::Microphone, &feed_secs(1.0), 0.0);
+        session.segment_gap(&DeviceType::Microphone);
+        pump(10, 20).await;
 
-        // One segment fed, then committed at segment end.
-        session.mark_onset(&DeviceType::Microphone, 1.0);
-        session.feed(&DeviceType::Microphone, &vec![0.1f32; FRAME_SAMPLES]);
-        session.commit(&DeviceType::Microphone);
-        for _ in 0..10 {
-            tokio::time::advance(Duration::from_millis(20)).await;
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(count_commits(&sent), 1, "segment-end commit should be sent");
+        assert_eq!(count_commits(&sent), 0, "no commit below the 30s interval");
+    }
 
-        // Stop: close_all enqueues a Commit, but nothing was fed since -> skipped.
+    #[tokio::test(start_paused = true)]
+    async fn segment_gap_past_interval_commits_once() {
+        // >= COMMIT_INTERVAL_SECS of uncommitted feed and still clear of the
+        // danger band -> the first gap commits, and the counter reset means a
+        // second gap right after does NOT produce a back-to-back commit.
+        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
+        let transport = Arc::new(CapturingTransport {
+            sent: sent.clone(),
+            incoming: vec![],
+        });
+        let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
+        let session =
+            ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
+        pump(1, 10).await;
+
+        session.feed(&DeviceType::Microphone, &feed_secs(31.0), 0.0);
+        pump(40, 20).await;
+        assert_eq!(count_commits(&sent), 0, "feeding alone never commits");
+
+        session.segment_gap(&DeviceType::Microphone);
+        session.segment_gap(&DeviceType::Microphone);
+        pump(20, 20).await;
+        assert_eq!(
+            count_commits(&sent),
+            1,
+            "exactly one gap commit: {:?}",
+            sent.lock().unwrap().len()
+        );
+        assert_eq!(session.commit_epoch(&DeviceType::Microphone), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn segment_gap_inside_danger_band_never_commits() {
+        // SERVER FACT 2: past FORCE_CUTOFF_SECS a client commit would land within
+        // DANGER_GUARD_SECS of the server's ~36.5s auto-commit and stall the
+        // session. The scheduler must go silent and let the auto-commit land.
+        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
+        let transport = Arc::new(CapturingTransport {
+            sent: sent.clone(),
+            incoming: vec![],
+        });
+        let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
+        let session =
+            ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
+        pump(1, 10).await;
+
+        // 34.0s > FORCE_CUTOFF_SECS (33.5) with no gap along the way.
+        session.feed(&DeviceType::Microphone, &feed_secs(34.0), 0.0);
+        pump(40, 20).await;
+        session.segment_gap(&DeviceType::Microphone);
+        pump(20, 20).await;
+
+        assert_eq!(count_commits(&sent), 0, "must not commit in the danger band");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn server_committed_transcript_resets_the_uncommitted_clock() {
+        // A server AUTO-commit arrives as a committed transcript. It is a
+        // commit-point: the clock resets, so the next gap must wait another full
+        // interval instead of firing immediately.
+        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
+        let transport = Arc::new(CapturingTransport {
+            sent: sent.clone(),
+            incoming: vec![
+                r#"{"message_type":"committed_transcript_with_timestamps","text":"auto","words":[{"text":"auto","start":0.0,"end":0.4,"type":"word"}]}"#.into(),
+            ],
+        });
+        let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
+        let session =
+            ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
+        pump(1, 10).await;
+
+        // 34s fed (danger band), then the server's auto-commit lands.
+        session.feed(&DeviceType::Microphone, &feed_secs(34.0), 0.0);
+        pump(60, 20).await;
+        assert!(
+            session.commit_epoch(&DeviceType::Microphone) >= 1,
+            "the committed transcript must register a commit-point"
+        );
+
+        // Post-reset: only 2s of new audio, so a gap must NOT commit.
+        session.feed(&DeviceType::Microphone, &feed_secs(2.0), 34.0);
+        pump(20, 20).await;
+        session.segment_gap(&DeviceType::Microphone);
+        pump(20, 20).await;
+        assert_eq!(count_commits(&sent), 0, "clock reset -> too soon to commit");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn close_after_gap_commit_sends_no_second_commit() {
+        // Phase 3 bug, restated for the new scheduler: recording stops right after
+        // a periodic gap commit. close_all enqueues a finalize Commit, but the
+        // FINALIZE_MIN_GAP_SECS guard (and the sent-audio gate) must skip it — a
+        // back-to-back commit is commit_throttled and drops the earlier event.
+        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
+        let transport = Arc::new(CapturingTransport {
+            sent: sent.clone(),
+            incoming: vec![],
+        });
+        let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
+        let session =
+            ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
+        pump(1, 10).await;
+
+        session.feed(&DeviceType::Microphone, &feed_secs(31.0), 0.0);
+        pump(40, 20).await;
+        session.segment_gap(&DeviceType::Microphone);
+        pump(20, 20).await;
+        assert_eq!(count_commits(&sent), 1, "gap commit should be sent");
+
         let close = tokio::spawn(session.clone().close_all());
-        for _ in 0..40 {
-            tokio::time::advance(Duration::from_millis(100)).await;
-            tokio::task::yield_now().await;
-        }
+        pump(40, 100).await;
         let _ = close.await;
 
         assert_eq!(
             count_commits(&sent),
             1,
-            "close must NOT add a second commit: {:?}",
-            *sent.lock().unwrap()
+            "close must NOT add a second commit: {} frames",
+            sent.lock().unwrap().len()
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn close_mid_open_segment_sends_exactly_one_final_commit() {
-        // Recording stops mid-utterance: audio fed, no commit yet. close_all's
-        // final Commit MUST fire (exactly once) to transcribe the closing segment.
+        // Recording stops with uncommitted audio on the wire. close_all's finalize
+        // Commit MUST fire (exactly once) so the closing tail is transcribed.
+        // CONTRACT CHANGE: the fed audio must now exceed FINALIZE_MIN_GAP_SECS
+        // (1.0s); a sub-second tail is deliberately dropped rather than risking a
+        // throttled commit.
         let sent = Arc::new(Mutex::new(Vec::<String>::new()));
         let transport = Arc::new(CapturingTransport {
             sent: sent.clone(),
@@ -1978,31 +2456,106 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel::<RealtimeEvent>();
         let session =
             ElevenLabsRealtimeSession::start_with_transport(transport, "k".into(), None, tx);
+        pump(1, 10).await;
 
-        tokio::time::advance(Duration::from_millis(10)).await;
-        tokio::task::yield_now().await;
-
-        // Audio fed, NO commit (open segment).
         session.mark_onset(&DeviceType::Microphone, 1.0);
-        session.feed(&DeviceType::Microphone, &vec![0.1f32; FRAME_SAMPLES]);
-        for _ in 0..10 {
-            tokio::time::advance(Duration::from_millis(20)).await;
-            tokio::task::yield_now().await;
-        }
+        session.feed(&DeviceType::Microphone, &feed_secs(2.0), 1.0);
+        pump(10, 20).await;
         assert_eq!(count_commits(&sent), 0, "no commit before close");
 
         let close = tokio::spawn(session.clone().close_all());
-        for _ in 0..40 {
-            tokio::time::advance(Duration::from_millis(100)).await;
-            tokio::task::yield_now().await;
-        }
+        pump(40, 100).await;
         let _ = close.await;
 
         assert_eq!(
             count_commits(&sent),
             1,
-            "exactly one final commit for the open segment: {:?}",
-            *sent.lock().unwrap()
+            "exactly one final commit for the open tail"
         );
+    }
+
+    // ---- commit scheduler (pure) ------------------------------------------
+
+    #[test]
+    fn scheduler_constants_match_the_validated_harness() {
+        assert_eq!(COMMIT_INTERVAL_SECS, 30.0);
+        assert_eq!(AUTO_COMMIT_AUDIO_SECS, 36.5);
+        assert_eq!(DANGER_GUARD_SECS, 3.0);
+        assert_eq!(FORCE_CUTOFF_SECS, 33.5);
+        assert_eq!(FINALIZE_MIN_GAP_SECS, 1.0);
+    }
+
+    #[test]
+    fn scheduler_never_commits_before_the_interval() {
+        let mut s = CommitScheduler::new();
+        assert!(!s.on_gap(), "a gap at 0s uncommitted must not commit");
+        s.on_fed(29.9);
+        assert!(!s.on_gap(), "29.9s is still below the 30s interval");
+    }
+
+    #[test]
+    fn scheduler_commits_at_the_first_gap_past_the_interval() {
+        let mut s = CommitScheduler::new();
+        s.on_fed(30.0);
+        assert!(s.on_gap(), "exactly at the interval is armed");
+        s.on_fed(1.0);
+        assert!(s.on_gap(), "still armed while below the cutoff");
+        assert!((s.uncommitted_secs() - 31.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn scheduler_goes_silent_inside_the_danger_band() {
+        // SERVER FACT 2: no client commit at/after FORCE_CUTOFF_SECS, ever, no
+        // matter how many gaps arrive — the server's auto-commit takes over.
+        let mut s = CommitScheduler::new();
+        s.on_fed(33.4);
+        assert!(s.on_gap(), "33.4s is the last safe moment");
+        s.on_fed(0.1); // 33.5 == FORCE_CUTOFF_SECS
+        assert!(!s.on_gap(), "at the cutoff we must stop committing");
+        s.on_fed(3.0); // 36.5, the auto-commit boundary
+        assert!(!s.on_gap(), "and never resume inside the band");
+    }
+
+    #[test]
+    fn scheduler_resets_on_client_and_server_commit_points() {
+        let mut s = CommitScheduler::new();
+        s.on_fed(31.0);
+        assert!(s.on_gap());
+        s.on_client_commit();
+        assert_eq!(s.uncommitted_secs(), 0.0);
+        assert!(!s.on_gap(), "a second gap right after must not re-commit");
+
+        // Server auto-commit past the cutoff resets the clock and re-arms us.
+        s.on_fed(36.5);
+        assert!(!s.on_gap());
+        s.on_committed();
+        assert_eq!(s.uncommitted_secs(), 0.0);
+        s.on_fed(30.0);
+        assert!(s.on_gap(), "re-armed after the auto-commit reset");
+    }
+
+    #[test]
+    fn scheduler_reset_models_a_reconnect() {
+        // A new socket is a new server session: the uncommitted clock starts over.
+        let mut s = CommitScheduler::new();
+        s.on_fed(34.0);
+        assert!(!s.on_gap(), "danger band before the reconnect");
+        s.reset();
+        assert_eq!(s.uncommitted_secs(), 0.0);
+        s.on_fed(30.0);
+        assert!(s.on_gap(), "fresh connection commits normally again");
+    }
+
+    #[test]
+    fn scheduler_finalize_guard_needs_a_full_second() {
+        let mut s = CommitScheduler::new();
+        assert!(!s.finalize_should_commit(), "nothing fed -> nothing to flush");
+        s.on_fed(0.99);
+        assert!(!s.finalize_should_commit(), "0.99s would risk a throttle");
+        s.on_fed(0.01);
+        assert!(s.finalize_should_commit(), "1.0s is a legitimate flush");
+        // Far past the cutoff the finalize still fires (it is the last chance).
+        s.on_fed(40.0);
+        assert!(s.finalize_should_commit());
     }
 }

@@ -16,7 +16,7 @@ use super::audio_processing::{audio_to_mono, LoudnessNormalizer, NoiseSuppressio
 use super::vad::{ContinuousVadProcessor};
 use super::transcription::elevenlabs_realtime::{
     is_realtime_to_batch_flip, should_batch_flush_on_stop, should_remark_onset_on_resume,
-    ElevenLabsRealtimeSession, PrerollRing, Route, FEED_SAMPLE_RATE, PREROLL_SAMPLES,
+    ElevenLabsRealtimeSession, Route, FEED_SAMPLE_RATE,
 };
 
 /// Provider-aware transcription-flush profile.
@@ -796,20 +796,24 @@ pub struct AudioPipeline {
     flush_profile: FlushProfile,
     // ElevenLabs Scribe v2 Realtime streaming session (None unless the realtime
     // model is selected). When active AND the stream's route is Realtime, the VAD
-    // path taps open-segment audio live to the socket and BYPASSES the batch
-    // transcription-buffer accumulation; when the route is Batch (disconnected or
-    // degraded) it falls back to the existing accumulation path so no words are
-    // lost (plan D2/D5). The recording_saver path is never affected.
+    // path taps ALL of the stream's audio live to the socket (continuous feed,
+    // silence included) and BYPASSES the batch transcription-buffer accumulation;
+    // when the route is Batch (disconnected or degraded) it falls back to the
+    // existing VAD-gated accumulation path so no words are lost (plan D2/D5).
+    // The recording_saver path is never affected.
     realtime_session: Option<Arc<ElevenLabsRealtimeSession>>,
-    // Per-stream pre-VAD ring: holds the last ~300ms of pre-speech audio (16kHz),
-    // fed as pre-roll at speech onset so the server sees the word onset.
-    mic_preroll: PrerollRing,
-    system_preroll: PrerollRing,
     // Per-stream realtime route observed on the PREVIOUS window, for detecting
     // route flips (Realtime<->Batch) to drive shadow-buffer catch-up (MAJOR-1)
     // and mid-open-segment reconnect onset re-marking (MAJOR-2a).
     mic_prev_route: Option<Route>,
     system_prev_route: Option<Route>,
+    // Last commit-epoch observed per stream. The realtime session bumps its epoch
+    // at every commit-point; the shadow catch-up buffer is cleared when it moves
+    // (see `shadow_clear`). Under the continuous feed the uncommitted window is up
+    // to ~30s, so the old "clear at each VAD segment end" rule would have thrown
+    // away audio the server had not committed yet.
+    mic_commit_epoch: u64,
+    system_commit_epoch: u64,
 }
 
 impl AudioPipeline {
@@ -828,7 +832,7 @@ impl AudioPipeline {
         realtime_session: Option<Arc<ElevenLabsRealtimeSession>>,
     ) -> Result<Self> {
         if realtime_session.is_some() {
-            info!("🎧 Realtime streaming session ACTIVE — VAD path taps live frames (batch buffer is degraded-mode fallback)");
+            info!("🎧 Realtime streaming session ACTIVE — continuous live feed + 30s danger-band commit scheduler (batch buffer is degraded-mode fallback)");
         }
         info!(
             "🎛️ Flush profile: min={} samples ({:.1}s) / silence-gap {:.1}s / max-block {}",
@@ -931,10 +935,10 @@ impl AudioPipeline {
             system_overlap_tail: Vec::new(),
             flush_profile,
             realtime_session,
-            mic_preroll: PrerollRing::new(PREROLL_SAMPLES),
-            system_preroll: PrerollRing::new(PREROLL_SAMPLES),
             mic_prev_route: None,
             system_prev_route: None,
+            mic_commit_epoch: 0,
+            system_commit_epoch: 0,
         })
     }
 
@@ -1179,12 +1183,22 @@ impl AudioPipeline {
             }
         };
 
-        // ---- REALTIME TAP (plan D2) --------------------------------------
-        // When the socket is up, forward open-segment audio live in ~250ms
-        // frames (+300ms pre-roll at onset), commit at VAD segment end, and
-        // shadow the fed audio into the batch buffer for disconnect catch-up
-        // (MAJOR-1). When the route is Batch (disconnected/degraded) we fall
-        // through to the existing path so the stream keeps transcribing.
+        // ---- REALTIME TAP (continuous feed + danger-band commits) ---------
+        // When the socket is up, forward EVERY window of this stream's audio live
+        // in ~250ms frames — silence included, no VAD gating and no pre-roll. The
+        // server's cross-utterance context is what buys the accuracy (pooled WER
+        // 4.68% vs 6.31% for the old VAD-gated per-segment-commit feed). VAD
+        // segment ends become GAP SIGNALS; the session's CommitScheduler decides
+        // which gap actually commits (>= 30s uncommitted, outside the server's
+        // ~36.5s auto-commit danger band).
+        //
+        // The fed audio is still shadowed into the batch buffer for disconnect
+        // catch-up (MAJOR-1), but only the SPEECH windows (feeding silence into
+        // the batch path would just waste a transcription pass), and it is now
+        // cleared at COMMIT-POINTS rather than at VAD segment ends.
+        //
+        // When the route is Batch (disconnected/degraded) we fall through to the
+        // existing VAD-gated path so the stream keeps transcribing.
         if let (Some(session), Some(Route::Realtime)) = (session.as_ref(), realtime_route) {
             let now_in_speech = match &device_type {
                 DeviceType::Microphone => self.vad_mic.is_in_speech(),
@@ -1203,71 +1217,51 @@ impl AudioPipeline {
                 DeviceType::Microphone => self.vad_mic.audio_elapsed_secs(),
                 DeviceType::System => self.vad_system.audio_elapsed_secs(),
             };
+            // Recording-relative time of this window's first sample.
+            let window_start = (audio_elapsed - frame_secs).max(0.0);
 
-            // MAJOR-2a: a mid-open-segment reconnect has no was->now edge, so
-            // re-mark the onset with the current clock (re-fed audio starts now).
-            let resuming = should_remark_onset_on_resume(
+            // MAJOR-2a: on a Batch->Realtime flip mid-speech there is no
+            // was->now edge, so hand the session an explicit timeline anchor.
+            // Belt-and-braces only: the feed below carries the same timestamp and
+            // the mapper takes whichever anchor lands first on this connection.
+            if should_remark_onset_on_resume(
                 prev_route,
                 realtime_route,
                 was_in_speech || now_in_speech,
-            );
-            // MINOR-5: a segment that opened+closed within one window has no live
-            // in-speech flag but still needs its audio fed before we commit it.
-            let has_committable_segment =
-                speech_segments.iter().any(|s| s.samples.len() >= 800);
-            let active = now_in_speech || was_in_speech || has_committable_segment;
-
-            // Build the payload to feed this window (pre-roll on a true onset).
-            let mut to_feed: Vec<f32> = Vec::new();
-            if active {
-                if !was_in_speech || resuming {
-                    let (anchor, include_preroll) = if resuming {
-                        // Anchor at the current clock; the re-fed audio starts now.
-                        ((audio_elapsed - frame_secs).max(0.0), false)
-                    } else {
-                        let preroll_secs =
-                            self.preroll_len(&device_type) as f64 / FEED_SAMPLE_RATE as f64;
-                        ((audio_elapsed - frame_secs - preroll_secs).max(0.0), true)
-                    };
-                    session.mark_onset(&device_type, anchor);
-                    if include_preroll {
-                        to_feed.extend_from_slice(&self.preroll_take(&device_type));
-                    }
-                }
-                to_feed.extend_from_slice(&frame16);
-                self.preroll_clear(&device_type);
-            } else {
-                // Non-speech: keep the pre-roll ring primed with the lead-in.
-                self.preroll_push(&device_type, &frame16);
+            ) {
+                session.mark_onset(&device_type, window_start);
             }
 
-            // Shadow clear ordering (re-QA #2): if this window COMPLETES a
-            // segment, the prior-window shadow audio belongs to that now-committed
-            // segment, so clear it BEFORE appending this window. That way a NEW
-            // segment's onset audio arriving in the SAME window (rare: needs a
-            // segment to close and another open within one ~600ms window, which
-            // 800ms redemption makes practically impossible) is preserved rather
-            // than wiped by the commit. Variant (b): clear on commit SENT.
-            if has_committable_segment {
+            // CONTINUOUS FEED: everything goes to the socket.
+            session.feed(&device_type, &frame16, window_start);
+
+            // Shadow clear at COMMIT-POINTS (variant b: the epoch bumps on a
+            // commit SENT as well as on a committed transcript received). The
+            // accepted race is unchanged in kind: audio fed between the commit
+            // and this window's observation of the epoch is dropped from the
+            // shadow, so a disconnect inside that ~one-window gap loses it.
+            let epoch = session.commit_epoch(&device_type);
+            if epoch != self.commit_epoch(&device_type) {
+                self.set_commit_epoch(&device_type, epoch);
                 self.shadow_clear(&device_type);
             }
 
-            if !to_feed.is_empty() {
-                session.feed(&device_type, &to_feed);
-                // MAJOR-1 shadow: mirror the fed audio into the batch buffer so a
-                // route flip to Batch can flush the uncommitted tail (catch-up).
-                let shadow_start = (audio_elapsed
-                    - to_feed.len() as f64 / FEED_SAMPLE_RATE as f64)
-                    .max(0.0);
-                self.shadow_append(&device_type, &to_feed, shadow_start);
+            // MINOR-5: a segment that opened+closed within one window has no live
+            // in-speech flag but its audio still belongs in the shadow.
+            let has_committable_segment =
+                speech_segments.iter().any(|s| s.samples.len() >= 800);
+            if now_in_speech || was_in_speech || has_committable_segment {
+                // MAJOR-1 shadow: mirror the SPEECH audio into the batch buffer so
+                // a route flip to Batch can flush the uncommitted tail (catch-up).
+                self.shadow_append(&device_type, &frame16, window_start);
             }
 
-            // Explicit commit at each completed VAD segment end (spike D-dev-2:
-            // don't rely on server VAD alone). Short fragments are ignored to
-            // match the batch path's <800-sample drop.
+            // GAP SIGNAL at each completed VAD segment end — a commit CANDIDATE,
+            // not a commit. Short fragments are ignored to match the batch path's
+            // <800-sample drop.
             for segment in &speech_segments {
                 if segment.samples.len() >= 800 {
-                    session.commit(&device_type);
+                    session.segment_gap(&device_type);
                 }
             }
             return;
@@ -1327,31 +1321,18 @@ impl AudioPipeline {
         }
     }
 
-    fn preroll_len(&self, device_type: &DeviceType) -> usize {
+    /// Last commit-epoch this stream's shadow buffer was cleared at.
+    fn commit_epoch(&self, device_type: &DeviceType) -> u64 {
         match device_type {
-            DeviceType::Microphone => self.mic_preroll.len(),
-            DeviceType::System => self.system_preroll.len(),
+            DeviceType::Microphone => self.mic_commit_epoch,
+            DeviceType::System => self.system_commit_epoch,
         }
     }
 
-    fn preroll_take(&mut self, device_type: &DeviceType) -> Vec<f32> {
+    fn set_commit_epoch(&mut self, device_type: &DeviceType, epoch: u64) {
         match device_type {
-            DeviceType::Microphone => self.mic_preroll.take(),
-            DeviceType::System => self.system_preroll.take(),
-        }
-    }
-
-    fn preroll_clear(&mut self, device_type: &DeviceType) {
-        match device_type {
-            DeviceType::Microphone => self.mic_preroll.clear(),
-            DeviceType::System => self.system_preroll.clear(),
-        }
-    }
-
-    fn preroll_push(&mut self, device_type: &DeviceType, samples: &[f32]) {
-        match device_type {
-            DeviceType::Microphone => self.mic_preroll.push(samples),
-            DeviceType::System => self.system_preroll.push(samples),
+            DeviceType::Microphone => self.mic_commit_epoch = epoch,
+            DeviceType::System => self.system_commit_epoch = epoch,
         }
     }
 
