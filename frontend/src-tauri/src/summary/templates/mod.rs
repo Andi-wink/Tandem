@@ -12,8 +12,8 @@
 //!
 //! # Usage
 //!
-//! ```rust
-//! use crate::summary::templates;
+//! ```ignore
+//! use app_lib::summary::templates;
 //!
 //! // Load a specific template
 //! let template = templates::get_template("daily_standup")?;
