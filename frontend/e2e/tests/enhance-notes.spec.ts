@@ -9,6 +9,16 @@ async function mockCalls(page: Page): Promise<Array<{ cmd: string; args: Record<
   );
 }
 
+/**
+ * Switch the jot strip's destination dropdown. The strip defaults to "Transcript" (typed text goes
+ * straight into the live transcript), so any test that expects a jot chip must pick "Note" first.
+ */
+async function pickJotDestination(page: Page, name: 'transcript' | 'note') {
+  await page.getByTestId('jot-destination').click();
+  await page.getByTestId(`jot-destination-${name}`).click();
+  await expect(page.getByTestId('jot-destination')).toHaveAttribute('data-destination', name);
+}
+
 // ── Strip lifecycle (recording active on the home view) ──────────────────────
 
 const recordingActive = base.extend({
@@ -36,6 +46,10 @@ recordingActive.describe('Jot strip (recording active)', () => {
     const strip = tauriPage.getByTestId('jot-strip');
     await expect(strip).toBeVisible({ timeout: 15_000 });
 
+    // Transcript is the default destination; this test is about jot chips, so switch to Note.
+    await expect(tauriPage.getByTestId('jot-destination')).toHaveAttribute('data-destination', 'transcript');
+    await pickJotDestination(tauriPage, 'note');
+
     const input = tauriPage.getByTestId('jot-input');
     // Type character by character (pressSequentially fires real per-key keydown events, unlike fill()
     // which sets the value in one shot) so the embedded digit "2" actually travels through JotStrip's
@@ -52,10 +66,28 @@ recordingActive.describe('Jot strip (recording active)', () => {
     await expect(input).toHaveValue('');
   });
 
+  recordingActive('default destination sends the line to the transcript, not to a chip', async ({ tauriPage }) => {
+    await tauriPage.goto('/');
+    await tauriPage.waitForLoadState('networkidle');
+    await expect(tauriPage.getByTestId('jot-strip')).toBeVisible({ timeout: 15_000 });
+
+    const input = tauriPage.getByTestId('jot-input');
+    await expect(input).toHaveAttribute('placeholder', 'Add to transcript... (Enter)');
+
+    await input.focus();
+    await input.pressSequentially('note straight into the transcript');
+    await input.press('Enter');
+
+    // The transcript path clears the input and files no jot.
+    await expect(input).toHaveValue('');
+    await expect(tauriPage.getByTestId('jot-chip')).toHaveCount(0);
+  });
+
   recordingActive('edit and delete a chip', async ({ tauriPage }) => {
     await tauriPage.goto('/');
     await tauriPage.waitForLoadState('networkidle');
     await expect(tauriPage.getByTestId('jot-strip')).toBeVisible({ timeout: 15_000 });
+    await pickJotDestination(tauriPage, 'note');
 
     const input = tauriPage.getByTestId('jot-input');
     await input.fill('first note');
