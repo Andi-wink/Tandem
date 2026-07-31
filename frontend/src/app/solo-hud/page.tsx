@@ -27,7 +27,7 @@
  * WebviewWindow.getByLabel('solo-hud').show()/.hide().
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
@@ -64,6 +64,22 @@ function relativeTime(ms: number | null): string {
   if (h < 24) return `${h}h ago`;
   const d = Math.floor(h / 24);
   return `${d}d ago`;
+}
+
+/**
+ * Split a query into lowercase tokens. Every token must hit SOMEWHERE in a row's
+ * searchable fields (AND across tokens, OR across fields), so "tricer master"
+ * narrows to the Tricer session on master rather than matching either word.
+ */
+function queryTokens(query: string): string[] {
+  return query.toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+/** Does every token appear in at least one of the row's fields? */
+function matchesTokens(tokens: string[], fields: Array<string | null | undefined>): boolean {
+  if (tokens.length === 0) return true;
+  const haystack = fields.filter(Boolean).join(' ').toLowerCase();
+  return tokens.every(t => haystack.includes(t));
 }
 
 const COLLAPSED_SIZE = { width: 240, height: 56 };
@@ -108,6 +124,8 @@ export default function SoloHudPage() {
   const [expanded, setExpanded] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(false);
+  /** Picker filter: matches session name, location (cwd) and branch. */
+  const [query, setQuery] = useState('');
 
   // Live Claude session candidates — polled only while the picker is open.
   const { candidates } = useClaudeSessionCandidates(expanded);
@@ -118,6 +136,20 @@ export default function SoloHudPage() {
   const projectsRef = useRef<Project[]>([]);
   projectsRef.current = projects;
   const pulseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  // Read inside the window-level Esc handler, which is registered once per
+  // expand and must not go stale as the query changes.
+  const queryRef = useRef('');
+  queryRef.current = query;
+
+  /** Put the caret in the search box and select what's there (double-click target). */
+  const focusSearch = useCallback(() => {
+    const el = searchRef.current;
+    if (!el) return;
+    el.focus();
+    el.select();
+  }, []);
 
   // ── Resize window to fit collapsed / expanded states ──────────────────
   const resizeWindow = useCallback((toExpanded: boolean) => {
@@ -183,7 +215,15 @@ export default function SoloHudPage() {
     if (!expanded) return;
 
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') collapse();
+      if (e.key !== 'Escape') return;
+      // Esc backs out one step at a time: clear an active filter first, and only
+      // close the picker once the list is unfiltered again.
+      if (queryRef.current) {
+        setQuery('');
+        focusSearch();
+        return;
+      }
+      collapse();
     };
     const onClickAway = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
@@ -200,11 +240,13 @@ export default function SoloHudPage() {
 
   const collapse = useCallback(() => {
     setExpanded(false);
+    setQuery('');
     resizeWindow(false);
   }, [resizeWindow]);
 
   const expand = useCallback(async () => {
     setExpanded(true);
+    setQuery('');
     resizeWindow(true);
     setLoadingProjects(true);
     try {
@@ -221,6 +263,24 @@ export default function SoloHudPage() {
     if (expanded) collapse();
     else expand();
   }, [expanded, collapse, expand]);
+
+  /**
+   * Double-click the pill to go straight to searching. A double-click also fires
+   * two single clicks, which toggle the picker open then shut, so this always
+   * re-expands rather than assuming a state.
+   */
+  const handlePillDoubleClick = useCallback(() => {
+    void expand();
+    requestAnimationFrame(focusSearch);
+  }, [expand, focusSearch]);
+
+  // Opening the picker puts the caret in the search box, so the fleet is
+  // filterable by typing without a second click.
+  useEffect(() => {
+    if (!expanded) return;
+    const id = requestAnimationFrame(focusSearch);
+    return () => cancelAnimationFrame(id);
+  }, [expanded, focusSearch]);
 
   const handlePick = useCallback(
     (project: Project) => {
@@ -262,9 +322,29 @@ export default function SoloHudPage() {
     [collapse],
   );
 
+  const tokens = useMemo(() => queryTokens(query), [query]);
+
   // Show ALL live sessions (sort order preserved by the service); the list
-  // container scrolls, so a large fleet just scrolls within the picker.
-  const sessionCandidates = candidates;
+  // container scrolls, so a large fleet just scrolls within the picker. The
+  // filter narrows on session name, location (cwd) and branch — with 25+ live
+  // sessions, scrolling for the right one is the slow part.
+  const sessionCandidates = useMemo(
+    () =>
+      candidates.filter(c =>
+        matchesTokens(tokens, [sessionDisplayName(c), c.cwd, c.git_branch, c.head_branch]),
+      ),
+    [candidates, tokens],
+  );
+
+  // Registered projects match on name + path (they carry no branch of their own).
+  const visibleProjects = useMemo(
+    () => projects.filter(p => matchesTokens(tokens, [p.name, p.path])),
+    [projects, tokens],
+  );
+
+  const isFiltering = tokens.length > 0;
+  const noMatches =
+    isFiltering && sessionCandidates.length === 0 && visibleProjects.length === 0;
 
   const isListening = active.name === null;
 
@@ -277,6 +357,7 @@ export default function SoloHudPage() {
       <div
         data-tauri-drag-region
         onClick={togglePicker}
+        onDoubleClick={handlePillDoubleClick}
         className="group relative flex items-center gap-2.5 h-10 px-3 rounded-full
                    border border-border bg-card/95 backdrop-blur-md shadow-lg
                    cursor-pointer transition-colors hover:bg-card"
@@ -338,13 +419,89 @@ export default function SoloHudPage() {
       {/* Project picker */}
       {expanded && (
         <div
+          onDoubleClick={focusSearch}
           className="mt-1.5 flex-1 min-h-0 overflow-y-auto rounded-xl border border-border
                      bg-card/95 backdrop-blur-md shadow-lg p-1 custom-scrollbar"
         >
+          {/* Filter — sticky so it stays reachable while a long fleet scrolls */}
+          <div className="sticky top-0 z-10 -mx-1 -mt-1 mb-1 px-2 pt-1 pb-1.5 bg-card/95 backdrop-blur-md">
+            <div className="relative flex items-center">
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+                className="pointer-events-none absolute left-2 text-muted-foreground"
+              >
+                <circle cx="11" cy="11" r="7" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+              <input
+                ref={searchRef}
+                type="text"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="Search name, path or branch…"
+                aria-label="Search sessions and projects by name, path or branch"
+                spellCheck={false}
+                autoComplete="off"
+                // Deliberately quieter than the app's standard 2px focus ring: the picker
+                // focuses this input on every open, so a full ring would shout on a HUD
+                // that is meant to stay out of the way. Still clearly visible.
+                className="no-drag w-full rounded-md border border-border bg-muted/40 py-1 pl-7 pr-6
+                           text-[11px] text-foreground placeholder:text-muted-foreground
+                           focus:border-brand/70 focus-visible:outline-none
+                           focus-visible:ring-1 focus-visible:ring-brand/40"
+              />
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQuery('');
+                    focusSearch();
+                  }}
+                  aria-label="Clear search"
+                  className="no-drag absolute right-1.5 flex items-center justify-center rounded p-0.5
+                             text-muted-foreground hover:text-foreground transition-colors
+                             focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <svg
+                    width="10"
+                    height="10"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {noMatches && (
+            <p className="px-2 py-3 text-center text-xs text-muted-foreground">
+              Nothing matches that search.
+            </p>
+          )}
+
           {sessionCandidates.length > 0 && (
             <div className="mb-1">
               <p className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-                Live sessions ({sessionCandidates.length})
+                Live sessions (
+                {isFiltering
+                  ? `${sessionCandidates.length} of ${candidates.length}`
+                  : sessionCandidates.length}
+                )
               </p>
               <ul className="flex flex-col">
                 {sessionCandidates.map(c => {
@@ -417,21 +574,30 @@ export default function SoloHudPage() {
                   );
                 })}
               </ul>
-              <div className="mx-2 my-1 border-t border-border/60" />
+              {/* Only when a project section follows, so a session-only match
+                  doesn't leave a rule hanging under the last row. */}
+              {(!isFiltering || visibleProjects.length > 0) && (
+                <div className="mx-2 my-1 border-t border-border/60" />
+              )}
             </div>
           )}
+          {/* Hidden entirely while filtering with no project hits, so a session-only
+              search doesn't leave a dangling header. */}
+          {(!isFiltering || visibleProjects.length > 0) && (
+          <>
           <p className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
             Route to project
+            {isFiltering && ` (${visibleProjects.length} of ${projects.length})`}
           </p>
           {loadingProjects ? (
             <p className="px-2 py-2 text-xs text-muted-foreground">Loading…</p>
-          ) : projects.length === 0 ? (
+          ) : visibleProjects.length === 0 ? (
             <p className="px-2 py-2 text-xs text-muted-foreground">
               No projects registered.
             </p>
           ) : (
             <ul className="flex flex-col">
-              {projects.map(project => {
+              {visibleProjects.map(project => {
                 const isCurrent = project.id === active.id;
                 return (
                   <li key={project.id}>
@@ -483,6 +649,8 @@ export default function SoloHudPage() {
                 );
               })}
             </ul>
+          )}
+          </>
           )}
         </div>
       )}
