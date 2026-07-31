@@ -58,6 +58,18 @@ vi.mock('@/contexts/TranscriptContext', () => ({
   }),
 }));
 
+// Capture buffers the stop flow resets when a meeting ends. Stable fn identities so the mock itself
+// never perturbs the re-registration accounting these tests assert on.
+vi.mock('@/contexts/ScreenshotContext', () => {
+  const clearScreenshots = vi.fn();
+  return { useScreenshots: () => ({ clearScreenshots }) };
+});
+
+vi.mock('@/contexts/ClipboardContext', () => {
+  const clearClipboard = vi.fn();
+  return { useClipboard: () => ({ clearClipboard }) };
+});
+
 vi.mock('@/components/Sidebar/SidebarProvider', () => ({
   useSidebar: () => ({
     refetchMeetings: vi.fn(),
