@@ -174,9 +174,11 @@ export default function RootLayout({
           [UpdateCheckProvider],
           [SidebarProvider],
           [TooltipProvider],
-          [RecordingPostProcessingProvider],
+          // Capture buffers sit ABOVE the stop pipeline: useRecordingStop resets them when a
+          // meeting ends, so they must already be mounted when RecordingPostProcessingProvider runs.
           [ClipboardProvider],
           [ScreenshotProvider],
+          [RecordingPostProcessingProvider],
           [SelectionProvider],
           [NotificationProvider],  // SSE connection to backend /api/notify/stream
           [SoloModeProvider],

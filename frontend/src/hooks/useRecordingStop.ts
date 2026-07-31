@@ -8,6 +8,8 @@ import { normalizeDir } from '@/lib/projectDirHistory';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
+import { useScreenshots } from '@/contexts/ScreenshotContext';
+import { useClipboard } from '@/contexts/ClipboardContext';
 import { storageService } from '@/services/storageService';
 import { transcriptService } from '@/services/transcriptService';
 import { Transcript } from '@/types';
@@ -113,7 +115,28 @@ export function useRecordingStop(
     serverAddress,
   } = useSidebar();
 
+  const { clearScreenshots } = useScreenshots();
+  const { clearClipboard } = useClipboard();
+
   const router = useRouter();
+
+  /**
+   * Reset the live capture buffers once a meeting is over.
+   *
+   * Screenshots and clips are per-session: they were already auto-saved into the meeting folder by
+   * the ScreenshotContext / ClipboardContext `recording-stopped` listeners, and meeting-details
+   * reads them back from disk. Without this reset they stayed in the app-global buffers and kept
+   * showing on the home timeline until the NEXT recording started (useRecordingStart clears them)
+   * or the user reloaded the window, so a finished meeting's captures bled into the new-meeting view.
+   *
+   * Skipped while a recording is live (an I5b handover may already have started the next meeting on
+   * these same buffers), mirroring `shouldNavigateAfterStop`.
+   */
+  const clearCaptureBuffers = useCallback(() => {
+    if (!shouldNavigateAfterStop(isRecordingRef.current)) return;
+    clearScreenshots();
+    clearClipboard();
+  }, [clearScreenshots, clearClipboard]);
 
   // Stop-driven auto-summary (I4): kick off summary generation the moment transcripts are saved,
   // from ANY stop source (tray, hotkey, UI). Idempotent per meeting id so the legacy
@@ -709,6 +732,7 @@ export function useRecordingStop(
             }
             router.push(`/meeting-details?id=${meetingId}&source=recording`);
             clearTranscripts()
+            clearCaptureBuffers()
             Analytics.trackPageView('meeting_details');
 
             // Reset to IDLE after navigation
@@ -791,6 +815,10 @@ export function useRecordingStop(
         // stale folder path that the guarded recording-stopped write (if the next event omits
         // folder_path) would let the next meeting inherit and file into the wrong folder.
         clearLastRecordingKeys(sessionStorage);
+        // Nothing was saved and we never navigate away, so the user lands back on Home. Reset the
+        // capture buffers here too, otherwise a discarded (or transcript-less) meeting's screenshots
+        // and clips stay pinned to the new-meeting timeline.
+        clearCaptureBuffers();
         setStatus(RecordingStatus.IDLE);
       }
 
@@ -815,6 +843,7 @@ export function useRecordingStop(
     transcriptsRef,
     flushBuffer,
     clearTranscripts,
+    clearCaptureBuffers,
     meetingTitle,
     markMeetingAsSaved,
     refetchMeetings,
