@@ -34,7 +34,14 @@ impl ProjectRepository {
         auto_discovered: bool,
         session_id: Option<&str>,
     ) -> std::result::Result<ProjectModel, sqlx::Error> {
-        if let Some(existing) = Self::find_by_path(pool, path).await? {
+        // Idempotent on the FULL identity (path, session_id), not on path alone.
+        // F061 virtual sub-projects share a path with the plain project for that
+        // folder, so a path-only check returned the plain row and the virtual row
+        // was never inserted: two Claude chats on one repo then collapsed into a
+        // single project and mixed their notes, tasks and screenshots. `IS`
+        // comparison in find_by_path_session handles the NULL session_id case, so
+        // plain creates still dedupe against plain rows exactly as before.
+        if let Some(existing) = Self::find_by_path_session(pool, path, session_id).await? {
             return Ok(existing);
         }
 
@@ -132,5 +139,92 @@ impl ProjectRepository {
         .fetch_optional(pool)
         .await?;
         Ok(project)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::test_helpers::create_test_pool;
+
+    const PATH: &str = "D:\\Dev-projects\\Tandem";
+
+    /// F061 regression: a virtual sub-project must be created even when a PLAIN
+    /// project already exists for the same folder. The idempotency check used to
+    /// match on path alone, so it returned the plain row, the INSERT never ran,
+    /// and two Claude chats on one repo collapsed into a single project.
+    #[tokio::test]
+    async fn virtual_project_is_created_alongside_plain_project_at_same_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let plain = ProjectRepository::create_project(&pool, "Tandem", PATH, "[]", false, None)
+            .await
+            .unwrap();
+        assert_eq!(plain.session_id, None);
+
+        let virt =
+            ProjectRepository::create_project(&pool, "Fix the HUD", PATH, "[]", true, Some("sess-1"))
+                .await
+                .unwrap();
+
+        assert_ne!(virt.id, plain.id, "virtual sub-project must be its own row");
+        assert_eq!(virt.session_id.as_deref(), Some("sess-1"));
+        assert_eq!(virt.name, "Fix the HUD");
+    }
+
+    /// Two chats against the same folder stay separate projects.
+    #[tokio::test]
+    async fn two_sessions_at_one_path_are_distinct_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let a = ProjectRepository::create_project(&pool, "Chat A", PATH, "[]", true, Some("sess-a"))
+            .await
+            .unwrap();
+        let b = ProjectRepository::create_project(&pool, "Chat B", PATH, "[]", true, Some("sess-b"))
+            .await
+            .unwrap();
+
+        assert_ne!(a.id, b.id);
+        assert_eq!(a.session_id.as_deref(), Some("sess-a"));
+        assert_eq!(b.session_id.as_deref(), Some("sess-b"));
+    }
+
+    /// The original idempotency guarantee still holds for plain creates: a repeat
+    /// create for the same folder returns the existing row instead of erroring on
+    /// the UNIQUE(path) constraint.
+    #[tokio::test]
+    async fn plain_create_is_still_idempotent_by_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let first = ProjectRepository::create_project(&pool, "Tandem", PATH, "[]", false, None)
+            .await
+            .unwrap();
+        let second = ProjectRepository::create_project(&pool, "Renamed", PATH, "[]", false, None)
+            .await
+            .unwrap();
+
+        assert_eq!(first.id, second.id);
+        assert_eq!(second.name, "Tandem", "existing row is returned unchanged");
+    }
+
+    /// Re-picking the same chat returns the same virtual row (no duplicates).
+    #[tokio::test]
+    async fn virtual_create_is_idempotent_by_path_and_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        let first =
+            ProjectRepository::create_project(&pool, "Chat A", PATH, "[]", true, Some("sess-a"))
+                .await
+                .unwrap();
+        let second =
+            ProjectRepository::create_project(&pool, "Chat A", PATH, "[]", true, Some("sess-a"))
+                .await
+                .unwrap();
+
+        assert_eq!(first.id, second.id);
     }
 }

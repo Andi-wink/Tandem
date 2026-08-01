@@ -71,7 +71,9 @@ interface SoloModeContextType extends SoloModeState {
   clearActiveProject: () => void;
   addTask: (task: SoloTask) => void;
   setRoutingModel: (model: string) => void;
-  setSessionFolder: (folder: string) => void;
+  /** Null re-scopes filing to the `.tandem` root — used when routing to a plain
+   *  project while holding a previous chat's session-scoped folder. */
+  setSessionFolder: (folder: string | null) => void;
   getActiveProjectHistory: () => ProjectHistoryEntry | null;
 }
 
@@ -276,7 +278,7 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     setState(prev => ({ ...prev, routingModel: model }));
   }, []);
 
-  const setSessionFolder = useCallback((folder: string) => {
+  const setSessionFolder = useCallback((folder: string | null) => {
     setState(prev => ({ ...prev, sessionFolder: folder }));
   }, []);
 
