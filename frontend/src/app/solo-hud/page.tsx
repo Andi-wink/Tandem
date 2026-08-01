@@ -126,6 +126,10 @@ export default function SoloHudPage() {
   const [loadingProjects, setLoadingProjects] = useState(false);
   /** Picker filter: matches session name, location (cwd) and branch. */
   const [query, setQuery] = useState('');
+  /** Recording state, mirrored from Rust so the pill can pause/resume in place. */
+  const [isRecording, setIsRecording] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [pauseBusy, setPauseBusy] = useState(false);
 
   // Live Claude session candidates — polled only while the picker is open.
   const { candidates } = useClaudeSessionCandidates(expanded);
@@ -210,6 +214,43 @@ export default function SoloHudPage() {
     };
   }, [resizeWindow]);
 
+  // ── Recording / pause state, mirrored from Rust ───────────────────────
+  // Seeded from `get_recording_state` (the RecordingManager is the single source
+  // of truth) so a HUD that mounts or reloads mid-recording shows the real state,
+  // then kept live by the same events the main window listens to.
+  useEffect(() => {
+    let cancelled = false;
+    const unlistenFns: UnlistenFn[] = [];
+    const track = (fn: UnlistenFn) => {
+      if (cancelled) fn();
+      else unlistenFns.push(fn);
+    };
+
+    invoke<{ is_recording?: boolean; is_paused?: boolean }>('get_recording_state')
+      .then(state => {
+        if (cancelled) return;
+        setIsRecording(state?.is_recording === true);
+        setIsPaused(state?.is_paused === true);
+      })
+      .catch(err => console.warn('[SoloHUD] failed to read recording state:', err));
+
+    listen('recording-started', () => {
+      setIsRecording(true);
+      setIsPaused(false);
+    }).then(track);
+    listen('recording-stopped', () => {
+      setIsRecording(false);
+      setIsPaused(false);
+    }).then(track);
+    listen('recording-paused', () => setIsPaused(true)).then(track);
+    listen('recording-resumed', () => setIsPaused(false)).then(track);
+
+    return () => {
+      cancelled = true;
+      unlistenFns.forEach(fn => fn());
+    };
+  }, []);
+
   // ── Esc / click-away collapse ─────────────────────────────────────────
   useEffect(() => {
     if (!expanded) return;
@@ -263,6 +304,36 @@ export default function SoloHudPage() {
     if (expanded) collapse();
     else expand();
   }, [expanded, collapse, expand]);
+
+  /**
+   * Pause / resume the live recording straight from the HUD, so stepping out of
+   * a train of thought doesn't mean finding the main window. The Rust commands
+   * drive the RecordingManager directly and emit app-wide events, so the main
+   * window and the tray menu follow automatically. On failure we re-read the real
+   * state rather than leaving the button lying about what the recorder is doing.
+   */
+  const togglePause = useCallback(async () => {
+    if (pauseBusy) return;
+    setPauseBusy(true);
+    const resume = isPaused;
+    try {
+      await invoke(resume ? 'resume_recording' : 'pause_recording');
+      setIsPaused(!resume);
+    } catch (err) {
+      console.warn(`[SoloHUD] ${resume ? 'resume' : 'pause'} failed:`, err);
+      try {
+        const state = await invoke<{ is_recording?: boolean; is_paused?: boolean }>(
+          'get_recording_state',
+        );
+        setIsRecording(state?.is_recording === true);
+        setIsPaused(state?.is_paused === true);
+      } catch {
+        /* leave the last known state */
+      }
+    } finally {
+      setPauseBusy(false);
+    }
+  }, [isPaused, pauseBusy]);
 
   /**
    * Double-click the pill to go straight to searching. A double-click also fires
@@ -361,11 +432,20 @@ export default function SoloHudPage() {
         className="group relative flex items-center gap-2.5 h-10 px-3 rounded-full
                    border border-border bg-card/95 backdrop-blur-md shadow-lg
                    cursor-pointer transition-colors hover:bg-card"
-        title={isListening ? 'Solo Mode — listening' : `Active: ${active.name}`}
+        title={
+          isPaused
+            ? 'Recording paused — nothing is being captured'
+            : isListening
+              ? 'Solo Mode — listening'
+              : `Active: ${active.name}`
+        }
       >
-        {/* Status dot */}
+        {/* Status dot — amber while paused, so a paused session can never be
+            mistaken for a live one at a glance. */}
         <span className="relative flex items-center justify-center pointer-events-none">
-          {isListening ? (
+          {isPaused ? (
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
+          ) : isListening ? (
             <span className="w-2.5 h-2.5 rounded-full border-2 border-muted-foreground/70" />
           ) : (
             <>
@@ -383,8 +463,51 @@ export default function SoloHudPage() {
             isListening ? 'text-muted-foreground' : 'text-foreground'
           }`}
         >
-          {isListening ? 'Listening…' : active.name}
+          {/* Paused wins the front of the label (truncation eats the tail, so the
+              state stays readable) while keeping the project you're on. */}
+          {isPaused
+            ? active.name
+              ? `Paused · ${active.name}`
+              : 'Paused'
+            : isListening
+              ? 'Listening…'
+              : active.name}
         </span>
+
+        {/* Pause / resume — only while a recording exists. Same `no-drag` +
+            stopPropagation treatment as the caret, so the click reaches the
+            button instead of dragging the window or toggling the picker. */}
+        {isRecording && (
+          <button
+            type="button"
+            onClick={e => {
+              e.stopPropagation();
+              void togglePause();
+            }}
+            onDoubleClick={e => e.stopPropagation()}
+            disabled={pauseBusy}
+            aria-label={isPaused ? 'Resume recording' : 'Pause recording'}
+            title={isPaused ? 'Resume recording' : 'Pause recording'}
+            className={`no-drag pointer-events-auto flex items-center justify-center rounded p-0.5
+                       transition-colors disabled:opacity-50 focus-visible:outline-none
+                       focus-visible:ring-2 focus-visible:ring-ring ${
+                         isPaused
+                           ? 'text-amber-500 hover:text-amber-400'
+                           : 'text-muted-foreground hover:text-foreground'
+                       }`}
+          >
+            {isPaused ? (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                <polygon points="6 4 20 12 6 20" />
+              </svg>
+            ) : (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                <rect x="6" y="4" width="4" height="16" rx="1" />
+                <rect x="14" y="4" width="4" height="16" rx="1" />
+              </svg>
+            )}
+          </button>
+        )}
 
         {/* Caret — a real button (NOT pointer-events-none) so the click lands here
             instead of being swallowed by the pill's drag region. `no-drag` keeps
