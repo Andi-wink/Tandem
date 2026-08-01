@@ -36,8 +36,10 @@ import {
   sessionScopeFolder,
   tandemDirFor,
   maybeArchiveSessionFolder,
+  appendAgentResponse,
 } from '@/services/handoffService';
 import { invoke } from '@tauri-apps/api/core';
+import { notifyAgentResponse } from '@/lib/agentNotification';
 import { useScreenshots } from '@/contexts/ScreenshotContext';
 import { useClipboard } from '@/contexts/ClipboardContext';
 
@@ -791,10 +793,44 @@ export function useSoloModeRouter() {
 
         try {
           const content = await invoke<string | null>('read_file_if_exists', { path: responsePath });
-          if (content) {
+          if (content && content.trim()) {
+            // ARCHIVE FIRST. `response.md` is a mailbox we clear so the next
+            // reply is unambiguous, and clearing it used to be the only thing
+            // that happened to the agent's work: a 200-char toast for 4s, then
+            // the file was blanked. Away from the screen, the reply was gone.
+            let archivePath: string | null = null;
+            try {
+              archivePath = await appendAgentResponse(
+                entry.project.path,
+                entry.project.name,
+                content,
+                folder,
+              );
+            } catch (err) {
+              // Archive failed — keep response.md intact rather than destroying
+              // the only copy, and try again on the next poll.
+              console.error('[SoloRouter] Failed to archive agent response:', err);
+              continue;
+            }
+
+            // Surface it where he actually is: an OS notification reaches him in
+            // the editor, the toast carries the preview and a way to open the
+            // full text.
+            notifyAgentResponse(entry.project.name, content);
+            const saved = archivePath;
             toast.info(`Response from ${entry.project.name}`, {
-              description: content.slice(0, 200),
+              description: content.trim().slice(0, 400),
+              duration: 30_000,
+              action: {
+                label: 'Open',
+                onClick: () => {
+                  invoke('show_in_folder', { path: saved }).catch(err =>
+                    console.warn('[SoloRouter] Failed to reveal responses.md:', err),
+                  );
+                },
+              },
             });
+
             await invoke('save_transcript', { filePath: responsePath, content: '' });
           }
         } catch {
