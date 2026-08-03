@@ -18,6 +18,8 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { useClaude } from '@/contexts/ClaudeContext';
+import { deleteProject } from '@/services/projectService';
+import { forgetProjectDirUse } from '@/lib/projectDirHistory';
 
 /** localStorage flag for the Quick capture toggle. Default on when unset. */
 export const QUICK_CAPTURE_ENABLED_KEY = 'tandem.quickCapture.enabled';
@@ -56,6 +58,81 @@ export function QuickCaptureListener() {
         captureIntoPanel(content, 'Quick capture');
         toast.success('Added to the AI panel');
       }
+    }).then(track);
+
+    // A new client folder was created from an unrouted capture. Deliberately does NOT
+    // switch the active project: an inquiry arriving mid-recording must not silently
+    // re-point where the running meeting's captures are being filed.
+    listen<{
+      name: string;
+      path: string;
+      created: boolean;
+      written: string[];
+      projectId: string | null;
+    }>('inquiry-created', event => {
+      const p = event.payload;
+      if (!p?.name) return;
+      const description = p.created
+        ? p.projectId
+          ? 'brief.md and CLAUDE.md written'
+          : 'Folder created, but registering it as a project failed'
+        : 'Folder already existed, the capture was appended to brief.md';
+
+      toast.success(p.created ? `Created ${p.name}` : `Added to ${p.name}`, {
+        description,
+        duration: 15000,
+        action: {
+          label: 'Open in Antigravity',
+          onClick: () => {
+            invoke('open_in_antigravity', { path: p.path }).catch(err =>
+              toast.error('Could not open Antigravity', { description: String(err) }),
+            );
+          },
+        },
+        // Undo only where there is something safe to undo: an adopted folder was not
+        // ours to remove, and its brief.md append cannot be reversed by deleting a file.
+        cancel: p.created
+          ? {
+              label: 'Undo',
+              onClick: () => {
+                void (async () => {
+                  // Unregister first: the project row is the part that would otherwise
+                  // keep pointing at a folder we are about to remove.
+                  if (p.projectId) {
+                    try {
+                      await deleteProject(p.projectId);
+                    } catch (err) {
+                      console.error('[QuickCapture] inquiry unregister failed:', err);
+                    }
+                  }
+                  // Unlearn the frecency bump the creation recorded, so an undone
+                  // mis-created folder leaves no lasting boost in the picker recents.
+                  forgetProjectDirUse(p.path);
+                  try {
+                    const removed = await invoke<boolean>('undo_inquiry', {
+                      path: p.path,
+                      written: p.written ?? [],
+                    });
+                    toast.success(
+                      removed ? `Removed ${p.name}` : `Unregistered ${p.name}`,
+                      removed
+                        ? undefined
+                        : { description: 'The folder had other files in it, so it is still on disk.' },
+                    );
+                  } catch (err) {
+                    toast.error('Undo failed', { description: String(err) });
+                  }
+                })();
+              },
+            }
+          : undefined,
+      });
+    }).then(track);
+
+    listen<{ message: string }>('inquiry-ide-failed', event => {
+      toast.error('Could not open Antigravity', {
+        description: `${event.payload?.message ?? ''} The folder was still created.`,
+      });
     }).then(track);
 
     return () => {

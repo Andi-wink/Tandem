@@ -15,25 +15,61 @@
  * panel; Esc (or clicking away) dismisses and saves nothing. Tab cycles the routing suggestion.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { getMatchPool } from '@/services/clientFolderDiscovery';
+import { emit } from '@tauri-apps/api/event';
+import { getMatchPool, listClientFolders, type ClientFolder } from '@/services/clientFolderDiscovery';
 import { routeMeetingToProject } from '@/services/projectRouter';
 import { recordProjectDirUse } from '@/lib/projectDirHistory';
-import type { Project } from '@/services/projectService';
+import { createProject, type Project } from '@/services/projectService';
 import {
+  buildInquiryAppend,
+  buildInquiryBrief,
+  buildInquiryClaudeMd,
   buildNoteMarkdown,
   buildRouterInput,
   cycleIndex,
   defaultSelection,
+  deriveInquiryName,
+  isNewInquiryCandidate,
   orderRouteCandidates,
   quickCaptureFilename,
+  sanitizeFolderName,
   selectedClips,
   toggleChip,
+  NEW_INQUIRY_PREFIX,
   type QuickClip,
 } from '@/lib/quickCapture';
 
 const UNFILED_ID = '__unfiled__';
+
+/** What Rust's `create_inquiry` hands back. */
+interface InquiryResult {
+  path: string;
+  created: boolean;
+  written: string[];
+}
+
+/**
+ * Clients-root subfolders offered first as a destination for a new inquiry, mirroring
+ * new-client.ps1's `-In` choices so the bar and the terminal agree on where things go.
+ * Anything not listed still appears, alphabetically, after these.
+ */
+const PREFERRED_BASES = ['Claude', 'Sales Demos'];
+
+/** Cap on the "+ New in X" entries so the Tab cycle stays short. */
+const MAX_BASES = 3;
+
+/** Order the clients-root subfolders: preferred names first, then the rest. Pure. */
+function orderBases(folders: ClientFolder[]): ClientFolder[] {
+  const rank = (f: ClientFolder) => {
+    const i = PREFERRED_BASES.findIndex(p => p.toLowerCase() === f.name.toLowerCase());
+    return i === -1 ? PREFERRED_BASES.length : i;
+  };
+  return [...folders]
+    .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
+    .slice(0, MAX_BASES);
+}
 
 /** First ~80 chars of a clip for the preview chip, whitespace collapsed. */
 function preview(text: string): string {
@@ -50,6 +86,12 @@ export default function CapturePage() {
   const [candidateIndex, setCandidateIndex] = useState(0);
   const [defaultDir, setDefaultDir] = useState('');
   const [saving, setSaving] = useState(false);
+  const [bases, setBases] = useState<ClientFolder[]>([]);
+  const [inquiryName, setInquiryName] = useState('');
+  // Once the user edits the name we stop re-deriving it from the capture, otherwise
+  // every keystroke in the note would overwrite what they just typed.
+  const [nameTouched, setNameTouched] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const savedRef = useRef(false); // guard against double-save (Enter + blur race)
@@ -78,6 +120,12 @@ export default function CapturePage() {
       } catch {
         /* no projects: routing degrades to Unfiled */
       }
+      try {
+        const folders = await listClientFolders();
+        if (!cancelled) setBases(orderBases(folders));
+      } catch {
+        /* no clients root: the "+ New in X" entries simply never appear */
+      }
     })();
     // Focus the note input so the hotkey feels live.
     inputRef.current?.focus();
@@ -98,8 +146,20 @@ export default function CapturePage() {
       session_id: null,
       created_at: '',
     };
+    // "+ New in <base>" entries, appended after every real destination: creating a folder
+    // is the last resort in the cycle, never something you land on by pressing Tab once.
+    const newInquiries: Project[] = bases.map(b => ({
+      id: `${NEW_INQUIRY_PREFIX}${b.path}`,
+      name: `New in ${b.name}`,
+      path: b.path,
+      aliases: [],
+      auto_discovered: false,
+      session_id: null,
+      created_at: '',
+    }));
+
     if (pool.length === 0) {
-      setCandidates([unfiled]);
+      setCandidates([unfiled, ...newInquiries]);
       setCandidateIndex(0);
       return;
     }
@@ -123,14 +183,34 @@ export default function CapturePage() {
       const ordered = routed
         ? [...orderRouteCandidates(routed, pool, 3), unfiled]
         : [unfiled, ...orderRouteCandidates(null, pool, 3)];
-      setCandidates(ordered);
+      setCandidates([...ordered, ...newInquiries]);
       setCandidateIndex(0);
     }, 250);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [note, selection, buffer, pool, defaultDir]);
+  }, [note, selection, buffer, pool, defaultDir, bases]);
+
+  const routed = candidates[candidateIndex] ?? null;
+  const isUnfiled = !routed || routed.id === UNFILED_ID;
+  const isNewInquiry = !!routed && isNewInquiryCandidate(routed);
+
+  // Keep the name field prefilled from the capture until the user takes it over.
+  useEffect(() => {
+    if (nameTouched) return;
+    setInquiryName(deriveInquiryName(note, selectedClips(buffer, selection)));
+  }, [note, buffer, selection, nameTouched]);
+
+  // Switching in or out of inquiry mode swaps one input element for another, so the
+  // focused node is unmounted and focus falls back to <body>. The key handler lives on
+  // the container, so without this the bar would stop responding to Enter/Tab/Esc.
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, [isNewInquiry]);
+
+  const safeName = useMemo(() => sanitizeFolderName(inquiryName), [inquiryName]);
+  const previewPath = routed && safeName ? `${routed.path}\\${safeName}` : '';
 
   const dismiss = useCallback(() => {
     invoke('quick_capture_close').catch(() => {});
@@ -170,6 +250,77 @@ export default function CapturePage() {
     }
   }, [candidates, candidateIndex, buffer, selection, note, saving]);
 
+  /**
+   * Commit a "+ New in <base>" capture: create the folder, seed brief.md + CLAUDE.md,
+   * register it as a project, and hand the main window a toast with Undo.
+   *
+   * The captured text goes into brief.md and nowhere else. Writing a .tandem note too
+   * would file the same job post twice in one folder, which reads as a bug the first
+   * time you open it.
+   */
+  const createInquiry = useCallback(
+    async (openIde: boolean) => {
+      if (savedRef.current || saving) return;
+      const base = candidates[candidateIndex] ?? null;
+      if (!base || !isNewInquiryCandidate(base)) return;
+      const finalName = sanitizeFolderName(inquiryName);
+      if (!finalName) {
+        setError('Enter a name for the folder');
+        return;
+      }
+      const attached = selectedClips(buffer, selection);
+      const body = attached.map(c => c.text).join('\n\n');
+      savedRef.current = true;
+      setSaving(true);
+      setError(null);
+      try {
+        const result = await invoke<InquiryResult>('create_inquiry', {
+          basePath: base.path,
+          name: finalName,
+          brief: buildInquiryBrief({ name: finalName, body, note }),
+          briefAppend: buildInquiryAppend({ body, note }),
+          claudeMd: buildInquiryClaudeMd(finalName),
+        });
+
+        // Register it so it routes on its own next time. A failure here is not fatal:
+        // the folder and the brief exist, which is the part that cannot be redone by hand.
+        let projectId: string | null = null;
+        try {
+          projectId = (await createProject(finalName, result.path, [])).id;
+        } catch (err) {
+          console.error('[QuickCapture] inquiry project registration failed:', err);
+        }
+        recordProjectDirUse(result.path, finalName, null);
+
+        if (openIde) {
+          try {
+            await invoke('open_in_antigravity', { path: result.path });
+          } catch (err) {
+            // Report it rather than swallowing: the user pressed Ctrl+Enter precisely
+            // because they wanted the IDE, and the folder still got created.
+            console.error('[QuickCapture] open in Antigravity failed:', err);
+            await emit('inquiry-ide-failed', { message: String(err) });
+          }
+        }
+
+        await emit('inquiry-created', {
+          name: finalName,
+          path: result.path,
+          created: result.created,
+          written: result.written,
+          projectId,
+        });
+        dismiss();
+      } catch (err) {
+        savedRef.current = false;
+        setSaving(false);
+        console.error('[QuickCapture] create inquiry failed:', err);
+        setError(String(err).replace(/^Error:\s*/, ''));
+      }
+    },
+    [candidates, candidateIndex, inquiryName, buffer, selection, note, saving, dismiss],
+  );
+
   const saveAndClose = useCallback(async () => {
     const result = await persist();
     if (result) dismiss();
@@ -201,7 +352,10 @@ export default function CapturePage() {
       }
       if (e.key === 'Enter') {
         e.preventDefault();
-        if (e.ctrlKey || e.metaKey) void saveAndAsk();
+        // On a "+ New in X" destination the same two keys mean create, and create+open,
+        // so the muscle memory carries over: Enter commits, Ctrl+Enter commits and goes deeper.
+        if (isNewInquiry) void createInquiry(e.ctrlKey || e.metaKey);
+        else if (e.ctrlKey || e.metaKey) void saveAndAsk();
         else void saveAndClose();
         return;
       }
@@ -214,7 +368,13 @@ export default function CapturePage() {
       }
       // Bare digit toggles the matching clip chip, but only while that chip exists (so the note
       // can still contain digits when there are fewer clips than the pressed number).
-      if ((e.key === '1' || e.key === '2' || e.key === '3') && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      // Suppressed while naming a new folder: there the field is a name, and "Project 2"
+      // must be typeable without the 2 silently detaching a clip.
+      if (
+        !isNewInquiry &&
+        (e.key === '1' || e.key === '2' || e.key === '3') &&
+        !e.ctrlKey && !e.altKey && !e.metaKey
+      ) {
         const idx = Number(e.key) - 1;
         if (idx < buffer.length) {
           e.preventDefault();
@@ -222,11 +382,8 @@ export default function CapturePage() {
         }
       }
     },
-    [dismiss, saveAndAsk, saveAndClose, candidates.length, buffer.length],
+    [dismiss, saveAndAsk, saveAndClose, createInquiry, isNewInquiry, candidates.length, buffer.length],
   );
-
-  const routed = candidates[candidateIndex] ?? null;
-  const isUnfiled = !routed || routed.id === UNFILED_ID;
 
   return (
     <div
@@ -273,16 +430,34 @@ export default function CapturePage() {
 
       {/* Note input + routing chip */}
       <div className="flex items-center gap-2">
-        <input
-          ref={inputRef}
-          data-testid="capture-note"
-          type="text"
-          value={note}
-          onChange={e => setNote(e.target.value)}
-          placeholder="Add a note (optional)…"
-          className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground
-                     placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-        />
+        {isNewInquiry ? (
+          <input
+            ref={inputRef}
+            data-testid="inquiry-name"
+            type="text"
+            value={inquiryName}
+            onChange={e => {
+              setInquiryName(e.target.value);
+              setNameTouched(true);
+              setError(null);
+            }}
+            placeholder="Client or project name…"
+            aria-label="New folder name"
+            className="flex-1 rounded-lg border border-brand/60 bg-background px-3 py-2 text-sm text-foreground
+                       placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        ) : (
+          <input
+            ref={inputRef}
+            data-testid="capture-note"
+            type="text"
+            value={note}
+            onChange={e => setNote(e.target.value)}
+            placeholder="Add a note (optional)…"
+            className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground
+                       placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        )}
         <button
           type="button"
           data-testid="route-chip"
@@ -293,27 +468,54 @@ export default function CapturePage() {
           className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-2 text-sm transition-colors
                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring
                       ${
-                        isUnfiled
-                          ? 'border-border bg-muted/40 text-muted-foreground'
-                          : 'border-brand/60 bg-brand/10 text-foreground'
+                        isNewInquiry
+                          ? 'border-dashed border-brand/60 bg-brand/5 text-foreground'
+                          : isUnfiled
+                            ? 'border-border bg-muted/40 text-muted-foreground'
+                            : 'border-brand/60 bg-brand/10 text-foreground'
                       }`}
         >
-          <span className={`h-1.5 w-1.5 rounded-full ${isUnfiled ? 'bg-muted-foreground/60' : 'bg-brand'}`} />
+          {/* A dashed border and a "+" mark the one destination that does not exist yet. */}
+          {isNewInquiry ? (
+            <span className="text-brand" aria-hidden>+</span>
+          ) : (
+            <span className={`h-1.5 w-1.5 rounded-full ${isUnfiled ? 'bg-muted-foreground/60' : 'bg-brand'}`} />
+          )}
           <span className="max-w-[10rem] truncate" data-testid="route-name">
             {isUnfiled ? 'Unfiled' : routed?.name}
           </span>
         </button>
       </div>
 
-      {/* Hint row */}
+      {/* Hint row — in inquiry mode the left side shows where the folder will land, which
+          matters more than the hints: it is the last chance to notice a wrong base. */}
       <div className="flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
-        <span className="flex items-center gap-3">
-          <Hint keys="Enter" label="save" />
-          <Hint keys="Ctrl+Enter" label="save + ask AI" />
-          <Hint keys="Tab" label="reroute" />
-          <Hint keys="Esc" label="dismiss" />
-        </span>
-        {saving && <span className="text-brand">Saving…</span>}
+        {isNewInquiry ? (
+          <span className="flex min-w-0 items-center gap-3">
+            {error ? (
+              <span className="truncate text-destructive" data-testid="inquiry-error">{error}</span>
+            ) : (
+              <span className="truncate font-mono" data-testid="inquiry-path" title={previewPath}>
+                {previewPath || 'Enter a name…'}
+              </span>
+            )}
+          </span>
+        ) : (
+          <span className="flex items-center gap-3">
+            <Hint keys="Enter" label="save" />
+            <Hint keys="Ctrl+Enter" label="save + ask AI" />
+            <Hint keys="Tab" label="reroute" />
+            <Hint keys="Esc" label="dismiss" />
+          </span>
+        )}
+        {isNewInquiry && !saving && (
+          <span className="flex shrink-0 items-center gap-3">
+            <Hint keys="Enter" label="create" />
+            <Hint keys="Ctrl+Enter" label="create + open" />
+            <Hint keys="Tab" label="change" />
+          </span>
+        )}
+        {saving && <span className="shrink-0 text-brand">{isNewInquiry ? 'Creating…' : 'Saving…'}</span>}
       </div>
     </div>
   );

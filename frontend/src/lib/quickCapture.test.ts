@@ -9,6 +9,13 @@ import {
   buildRouterInput,
   orderRouteCandidates,
   cycleIndex,
+  sanitizeFolderName,
+  deriveInquiryName,
+  buildInquiryBrief,
+  buildInquiryClaudeMd,
+  isNewInquiryCandidate,
+  NEW_INQUIRY_PREFIX,
+  MAX_INQUIRY_NAME,
   CLIP_BUFFER_CAP,
   type QuickClip,
 } from './quickCapture';
@@ -142,5 +149,136 @@ describe('cycleIndex', () => {
     expect(cycleIndex(2, 3, 1)).toBe(0);
     expect(cycleIndex(0, 3, -1)).toBe(2);
     expect(cycleIndex(0, 0, 1)).toBe(0);
+  });
+});
+
+describe('sanitizeFolderName', () => {
+  it('strips the characters Windows forbids in a path segment', () => {
+    expect(sanitizeFolderName('Acme: Q3/Q4 <urgent>?')).toBe('Acme Q3 Q4 urgent');
+  });
+
+  it('keeps hyphens, ampersands and interior dots', () => {
+    expect(sanitizeFolderName('Brand-Upgrade & Co. Ltd')).toBe('Brand-Upgrade & Co. Ltd');
+  });
+
+  it('drops trailing dots and spaces, which Windows silently discards', () => {
+    // "Acme." on disk is really "Acme", so a read-back check would disagree with the OS.
+    expect(sanitizeFolderName('  Acme.  ')).toBe('Acme');
+    expect(sanitizeFolderName('Acme...')).toBe('Acme');
+  });
+
+  it('removes control characters', () => {
+    expect(sanitizeFolderName('Ac\u0000me\u0007')).toBe('Ac me');
+  });
+
+  it('suffixes reserved Windows device names at any casing', () => {
+    expect(sanitizeFolderName('con')).toBe('con_');
+    expect(sanitizeFolderName('COM1')).toBe('COM1_');
+    // Not reserved: only COM1-9 count, and CONSOLE merely starts with CON.
+    expect(sanitizeFolderName('CONSOLE')).toBe('CONSOLE');
+    expect(sanitizeFolderName('COM0')).toBe('COM0');
+  });
+
+  it('truncates to the cap and re-trims the exposed edge', () => {
+    expect(sanitizeFolderName('a'.repeat(80))).toHaveLength(MAX_INQUIRY_NAME);
+    // A cut landing on a space must not leave a trailing space behind.
+    expect(sanitizeFolderName('abcd efgh', 5)).toBe('abcd');
+  });
+
+  it('returns empty when nothing usable survives', () => {
+    expect(sanitizeFolderName('   ')).toBe('');
+    expect(sanitizeFolderName('///')).toBe('');
+    expect(sanitizeFolderName('...')).toBe('');
+  });
+});
+
+describe('deriveInquiryName', () => {
+  it('prefers the typed note over the clip', () => {
+    expect(deriveInquiryName('Acme Corp', [clip('a', 'Looking for a dev')])).toBe('Acme Corp');
+  });
+
+  it('falls back to the first meaningful line of the first clip', () => {
+    expect(deriveInquiryName('', [clip('a', '\n\n  Build a lead-scoring pipeline\nmore text')]))
+      .toBe('Build a lead-scoring pipeline');
+  });
+
+  it('strips job-board boilerplate, including stacked prefixes', () => {
+    expect(deriveInquiryName('', [clip('a', 'Urgent: Looking for an n8n developer')]))
+      .toBe('n8n developer');
+    expect(deriveInquiryName('', [clip('a', 'Hiring: Wanted - Shopify expert')]))
+      .toBe('Shopify expert');
+  });
+
+  it('cuts at the first sentence break rather than taking a paragraph', () => {
+    expect(deriveInquiryName('', [clip('a', 'Acme Corp. We need someone to fix our CRM.')]))
+      .toBe('Acme Corp');
+  });
+
+  it('returns empty when there is nothing to work with', () => {
+    expect(deriveInquiryName('', [])).toBe('');
+    expect(deriveInquiryName('', [clip('a', '   ')])).toBe('');
+  });
+});
+
+describe('buildInquiryBrief', () => {
+  const date = new Date(2026, 7, 3, 14, 32); // 2026-08-03 local
+
+  it('writes scannable front matter and the captured body verbatim', () => {
+    const md = buildInquiryBrief({ name: 'Acme Corp', body: 'Need an n8n dev.', date });
+    expect(md).toContain('# Acme Corp');
+    expect(md).toContain('- Created: 2026-08-03');
+    expect(md).toContain('- Status: Evaluating');
+    expect(md).toContain('Need an n8n dev.');
+    expect(md).toContain('## Questions for client');
+  });
+
+  it('says so instead of leaving the section blank when nothing was captured', () => {
+    expect(buildInquiryBrief({ name: 'Acme', body: '   ', date }))
+      .toContain('_Nothing was captured. Paste the job description here._');
+  });
+
+  it('includes the note only when one was typed', () => {
+    expect(buildInquiryBrief({ name: 'Acme', body: 'x', note: 'via LinkedIn', date }))
+      .toContain('## Capture note');
+    expect(buildInquiryBrief({ name: 'Acme', body: 'x', date })).not.toContain('## Capture note');
+  });
+
+  it('does not emit two headings where one is a prefix of the other', () => {
+    const md = buildInquiryBrief({ name: 'Acme', body: 'x', note: 'n', date });
+    const headings = md.split('\n').filter(l => l.startsWith('## '));
+    expect(new Set(headings).size).toBe(headings.length);
+    for (const a of headings) {
+      for (const b of headings) {
+        if (a !== b) expect(b.startsWith(a)).toBe(false);
+      }
+    }
+  });
+
+  it('ends with exactly one newline', () => {
+    const md = buildInquiryBrief({ name: 'Acme', body: 'x', date });
+    expect(md.endsWith('\n')).toBe(true);
+    expect(md.endsWith('\n\n')).toBe(false);
+  });
+
+  it('contains no em dashes', () => {
+    expect(buildInquiryBrief({ name: 'Acme', body: 'x', date })).not.toMatch(/[–—]/);
+  });
+});
+
+describe('buildInquiryClaudeMd', () => {
+  it('points at the brief and marks the scope unconfirmed', () => {
+    const md = buildInquiryClaudeMd('Acme Corp');
+    expect(md).toContain('# Acme Corp');
+    expect(md).toContain('[brief.md](brief.md)');
+    expect(md).toContain('unconfirmed');
+    expect(md).not.toMatch(/[–—]/);
+  });
+});
+
+describe('isNewInquiryCandidate', () => {
+  it('recognises only the synthetic create-new entries', () => {
+    expect(isNewInquiryCandidate({ id: `${NEW_INQUIRY_PREFIX}D:/x/Claude` })).toBe(true);
+    expect(isNewInquiryCandidate({ id: 'acme' })).toBe(false);
+    expect(isNewInquiryCandidate({ id: '__unfiled__' })).toBe(false);
   });
 });

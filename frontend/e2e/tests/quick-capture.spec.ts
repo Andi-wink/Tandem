@@ -92,3 +92,150 @@ test.describe('Quick capture bar (/capture)', () => {
     expect(calls.some(c => c.cmd === 'save_quick_capture')).toBe(false);
   });
 });
+
+/**
+ * Tab until the route chip is a "+ New in X" entry. Bounded so a regression that drops
+ * the entries fails the test instead of hanging it.
+ */
+async function cycleToNewInquiry(page: Page, max = 10): Promise<void> {
+  for (let i = 0; i < max; i++) {
+    const name = await page.getByTestId('route-name').textContent();
+    if (name?.startsWith('New in')) return;
+    await page.keyboard.press('Tab');
+  }
+  throw new Error('never reached a "+ New in" candidate');
+}
+
+test.describe('Quick capture bar: new inquiry', () => {
+  test('the create-new entries come last, after every real destination', async ({ tauriPage }) => {
+    await openCaptureBar(tauriPage);
+    await expect(tauriPage.getByTestId('route-name')).toHaveText('Acme', { timeout: 10_000 });
+    // One Tab must not land on a create-new entry: filing somewhere real is the common case.
+    await tauriPage.keyboard.press('Tab');
+    await expect(tauriPage.getByTestId('route-name')).not.toContainText('New in');
+  });
+
+  test('selecting one swaps the note field for a name field, prefilled from the capture', async ({ tauriPage }) => {
+    await openCaptureBar(tauriPage);
+    await expect(tauriPage.getByTestId('route-name')).toHaveText('Acme', { timeout: 10_000 });
+    await cycleToNewInquiry(tauriPage);
+
+    await expect(tauriPage.getByTestId('capture-note')).toHaveCount(0);
+    const nameField = tauriPage.getByTestId('inquiry-name');
+    await expect(nameField).toBeVisible();
+    // Derived from the clip: "Client is worried about the Acme onboarding cost".
+    await expect(nameField).toHaveValue(/Acme onboarding cost/);
+    await expect(tauriPage.getByTestId('inquiry-path')).toContainText('Client_projects');
+  });
+
+  test('the name field keeps keyboard focus after the swap', async ({ tauriPage }) => {
+    await openCaptureBar(tauriPage);
+    await expect(tauriPage.getByTestId('route-name')).toHaveText('Acme', { timeout: 10_000 });
+    await cycleToNewInquiry(tauriPage);
+    // Regression: the swap unmounts the focused note input. If focus fell to <body>, the
+    // container's key handler would go deaf and Enter would do nothing.
+    await expect(tauriPage.getByTestId('inquiry-name')).toBeFocused();
+  });
+
+  test('Enter creates the folder with a sanitized name and registers it', async ({ tauriPage }) => {
+    await openCaptureBar(tauriPage);
+    await expect(tauriPage.getByTestId('route-name')).toHaveText('Acme', { timeout: 10_000 });
+    await cycleToNewInquiry(tauriPage);
+
+    const chip = await tauriPage.getByTestId('route-name').textContent();
+    const baseName = chip!.replace('New in ', '');
+
+    await tauriPage.getByTestId('inquiry-name').fill('Acme: Q3/Q4 <rush>');
+    await expect(tauriPage.getByTestId('inquiry-path')).toContainText('Acme Q3 Q4 rush');
+    await tauriPage.getByTestId('inquiry-name').press('Enter');
+
+    await expect
+      .poll(async () => (await mockCalls(tauriPage)).some(c => c.cmd === 'create_inquiry'))
+      .toBe(true);
+
+    const calls = await mockCalls(tauriPage);
+    const create = calls.find(c => c.cmd === 'create_inquiry')!;
+    // The illegal characters never reach the filesystem layer.
+    expect(create.args.name).toBe('Acme Q3 Q4 rush');
+    expect(String(create.args.basePath)).toContain(baseName);
+    expect(String(create.args.brief)).toContain('# Acme Q3 Q4 rush');
+    expect(String(create.args.brief)).toContain('Acme onboarding cost'); // the captured clip
+    expect(String(create.args.claudeMd)).toContain('[brief.md](brief.md)');
+
+    // Registered as a project, and the bar closes.
+    const created = calls.find(c => c.cmd === 'project_create');
+    expect(created?.args.name).toBe('Acme Q3 Q4 rush');
+    expect(calls.some(c => c.cmd === 'quick_capture_close')).toBe(true);
+    // Enter alone must not launch the IDE.
+    expect(calls.some(c => c.cmd === 'open_in_antigravity')).toBe(false);
+  });
+
+  test('Ctrl+Enter also opens the folder in Antigravity', async ({ tauriPage }) => {
+    await openCaptureBar(tauriPage);
+    await expect(tauriPage.getByTestId('route-name')).toHaveText('Acme', { timeout: 10_000 });
+    await cycleToNewInquiry(tauriPage);
+
+    await tauriPage.getByTestId('inquiry-name').fill('Globex Rebuild');
+    await tauriPage.getByTestId('inquiry-name').press('Control+Enter');
+
+    await expect
+      .poll(async () => (await mockCalls(tauriPage)).some(c => c.cmd === 'open_in_antigravity'))
+      .toBe(true);
+    const calls = await mockCalls(tauriPage);
+    const open = calls.find(c => c.cmd === 'open_in_antigravity')!;
+    expect(String(open.args.path)).toContain('Globex Rebuild');
+  });
+
+  test('an empty name refuses to create and says why', async ({ tauriPage }) => {
+    await openCaptureBar(tauriPage);
+    await expect(tauriPage.getByTestId('route-name')).toHaveText('Acme', { timeout: 10_000 });
+    await cycleToNewInquiry(tauriPage);
+
+    // Only characters that sanitize away to nothing.
+    await tauriPage.getByTestId('inquiry-name').fill('///');
+    await tauriPage.getByTestId('inquiry-name').press('Enter');
+
+    await expect(tauriPage.getByTestId('inquiry-error')).toBeVisible();
+    const calls = await mockCalls(tauriPage);
+    expect(calls.some(c => c.cmd === 'create_inquiry')).toBe(false);
+    expect(calls.some(c => c.cmd === 'quick_capture_close')).toBe(false);
+  });
+
+  test('typing a digit in the name does not detach a clip', async ({ tauriPage }) => {
+    await openCaptureBar(tauriPage);
+    await expect(tauriPage.getByTestId('route-name')).toHaveText('Acme', { timeout: 10_000 });
+    await cycleToNewInquiry(tauriPage);
+
+    // "Project 2" must be typeable: in note mode the bare 2 toggles the second clip.
+    await tauriPage.getByTestId('inquiry-name').fill('Project 2');
+    await expect(tauriPage.getByTestId('inquiry-name')).toHaveValue('Project 2');
+    await expect(tauriPage.getByTestId('clip-chip-1')).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  test('an edited name is not overwritten when the capture changes', async ({ tauriPage }) => {
+    await openCaptureBar(tauriPage);
+    await expect(tauriPage.getByTestId('route-name')).toHaveText('Acme', { timeout: 10_000 });
+    await cycleToNewInquiry(tauriPage);
+
+    await tauriPage.getByTestId('inquiry-name').fill('My Chosen Name');
+    // Attaching another clip re-runs the derivation; the typed name must survive it.
+    await tauriPage.getByTestId('clip-chip-1').click();
+    await expect(tauriPage.getByTestId('clip-chip-1')).toHaveAttribute('aria-pressed', 'true');
+    await expect(tauriPage.getByTestId('inquiry-name')).toHaveValue('My Chosen Name');
+  });
+
+  test('Esc while naming creates nothing', async ({ tauriPage }) => {
+    await openCaptureBar(tauriPage);
+    await expect(tauriPage.getByTestId('route-name')).toHaveText('Acme', { timeout: 10_000 });
+    await cycleToNewInquiry(tauriPage);
+
+    await tauriPage.getByTestId('inquiry-name').fill('Should Not Exist');
+    await tauriPage.getByTestId('inquiry-name').press('Escape');
+
+    await expect
+      .poll(async () => (await mockCalls(tauriPage)).some(c => c.cmd === 'quick_capture_close'))
+      .toBe(true);
+    const calls = await mockCalls(tauriPage);
+    expect(calls.some(c => c.cmd === 'create_inquiry')).toBe(false);
+  });
+});

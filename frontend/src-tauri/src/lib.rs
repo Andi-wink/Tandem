@@ -1401,6 +1401,10 @@ pub fn run() {
             quick_capture::commands::set_quick_capture_enabled,
             quick_capture::commands::save_quick_capture,
             quick_capture::commands::quick_capture_send_to_ai,
+            // New inquiry (create a client folder from an unrouted capture)
+            quick_capture::commands::create_inquiry,
+            quick_capture::commands::undo_inquiry,
+            quick_capture::commands::open_in_antigravity,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

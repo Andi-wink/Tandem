@@ -160,3 +160,184 @@ export function cycleIndex(current: number, length: number, delta: number): numb
   if (length <= 0) return 0;
   return (((current + delta) % length) + length) % length;
 }
+
+// ─── New inquiry (create a client folder straight from the bar) ──────────────
+//
+// A capture that matches no project is the moment a new client actually enters the
+// system (an Upwork invite, a cold email). These helpers turn that capture into a
+// folder under the clients root. Everything here is pure; the filesystem work lives
+// in the Rust `create_inquiry` command, which re-validates the name independently.
+
+/** Prefix marking a synthetic "create a new folder here" candidate in the route cycle. */
+export const NEW_INQUIRY_PREFIX = '__new_inquiry__:';
+
+/** True when a route candidate is a "+ New in <base>" entry rather than a real destination. */
+export function isNewInquiryCandidate(project: Pick<Project, 'id'>): boolean {
+  return typeof project.id === 'string' && project.id.startsWith(NEW_INQUIRY_PREFIX);
+}
+
+/** Longest folder name we will produce. Keeps paths well clear of MAX_PATH once
+ *  `.tandem/notes/<dated file>.md` is appended underneath. */
+export const MAX_INQUIRY_NAME = 60;
+
+/** Windows reserved device names, which are illegal as a folder name at any casing. */
+const RESERVED_NAMES = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+  'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
+]);
+
+/**
+ * Make `raw` safe to use as a single folder name on Windows and POSIX.
+ *
+ * Strips the characters Windows forbids (`<>:"/\|?*`) plus control characters,
+ * collapses whitespace, and trims the leading/trailing dots and spaces that
+ * Explorer silently drops (a folder named "Acme." is really "Acme", which would
+ * make our read-back check disagree with the OS). Reserved device names get an
+ * underscore suffix. Returns '' when nothing usable survives, which the caller
+ * treats as "not ready to commit". Pure.
+ */
+export function sanitizeFolderName(raw: string, max = MAX_INQUIRY_NAME): string {
+  const cleaned = raw
+    .replace(/[<>:"/\\|?*]/g, ' ')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[ -]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max)
+    // Re-trim AFTER truncation: slicing can expose a new trailing space, and a
+    // trailing dot or space is silently dropped by Windows.
+    .replace(/[. ]+$/, '')
+    .replace(/^[. ]+/, '');
+  if (!cleaned) return '';
+  return RESERVED_NAMES.has(cleaned.toUpperCase()) ? `${cleaned}_` : cleaned;
+}
+
+/** Job-board boilerplate that makes a worthless folder name if we grab it verbatim. */
+const NAME_STOPWORDS = [
+  'looking for', 'seeking', 'need a', 'need an', 'i need', 'we need',
+  'hiring', 'wanted', 'urgent', 'new job', 'job post', 'invitation to interview',
+  'you have been invited', 'apply now',
+  // Articles, stripped in the same pass: removing "Looking for" off
+  // "Looking for an n8n developer" otherwise leaves the stranded "an".
+  'a ', 'an ', 'the ',
+];
+
+/**
+ * Guess a folder name from the captured text so the field is prefilled rather than empty.
+ *
+ * Prefers the user's own note (they typed it deliberately). Otherwise takes the first
+ * meaningful line of the first clip, drops leading job-board boilerplate, and cuts at
+ * the first sentence-ish break. This is a starting point the user always edits before
+ * committing, so a mediocre guess is acceptable and an empty field is not. Pure.
+ */
+export function deriveInquiryName(note: string, clips: QuickClip[]): string {
+  const fromNote = sanitizeFolderName(note);
+  if (fromNote) return fromNote;
+
+  const firstClip = clips[0]?.text ?? '';
+  const firstLine = firstClip
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .find(l => l.length > 2) ?? '';
+
+  let candidate = firstLine;
+  // Strip leading boilerplate repeatedly ("Urgent: Looking for an n8n dev" -> "n8n dev").
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const lowered = candidate.toLowerCase();
+    for (const stop of NAME_STOPWORDS) {
+      if (lowered.startsWith(stop)) {
+        candidate = candidate.slice(stop.length).replace(/^[\s:,-]+/, '');
+        changed = true;
+        break;
+      }
+    }
+  }
+  // Cut at the first hard break so we get a phrase, not a paragraph.
+  candidate = candidate.split(/[.!?|–—]|\s[-]\s/)[0] ?? candidate;
+  return sanitizeFolderName(candidate);
+}
+
+export interface InquiryBriefInput {
+  name: string;
+  /** The captured job post / message body. May be empty. */
+  body: string;
+  /** Free-text note typed in the bar, if the name came from somewhere else. */
+  note?: string;
+  date?: Date;
+}
+
+/**
+ * Build `brief.md` for a new inquiry: front matter the eye can scan, the captured
+ * body verbatim, then the empty sections that get filled in while qualifying the
+ * job. Deliberately mirrors new-client.ps1 so the terminal and the bar produce the
+ * same file. Deterministic given `date`. No em dashes. Pure.
+ */
+export function buildInquiryBrief(input: InquiryBriefInput): string {
+  const date = input.date ?? new Date();
+  const stamp = `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+  const body = input.body.trim();
+  const note = (input.note ?? '').trim();
+
+  const lines: string[] = [
+    `# ${input.name}`,
+    '',
+    '- Source: Upwork',
+    `- Created: ${stamp}`,
+    '- Status: Evaluating',
+    '',
+  ];
+  if (note) {
+    // "Capture note", not "Note": the brief already has a "## Notes" section further
+    // down, and two headings where one is a prefix of the other is a trap for both
+    // the reader and any tooling that greps this file.
+    lines.push('## Capture note', '', note, '');
+  }
+  lines.push('## Job description', '');
+  lines.push(body || '_Nothing was captured. Paste the job description here._');
+  lines.push('', '## Notes', '', '## Questions for client', '', '## Estimate / approach', '');
+  return lines.join('\n').replace(/\n+$/, '\n');
+}
+
+/**
+ * Build the block appended to an EXISTING `brief.md` when the folder is already there
+ * (the client contacted you twice, or you scaffolded it from the terminal earlier).
+ *
+ * Appending rather than overwriting is the whole point: the existing brief may already
+ * carry your estimate and questions. Deterministic given `date`. Pure.
+ */
+export function buildInquiryAppend(input: { body: string; note?: string; date?: Date }): string {
+  const date = input.date ?? new Date();
+  const body = input.body.trim();
+  const note = (input.note ?? '').trim();
+  const lines = ['', `## Follow-up capture: ${formatStamp(date)}`, ''];
+  if (note) lines.push(note, '');
+  if (body) lines.push(body, '');
+  return lines.join('\n').replace(/\n+$/, '\n');
+}
+
+/**
+ * Build the project-root `CLAUDE.md` for a new inquiry.
+ *
+ * This is the file Claude Code reads when the folder is opened in the IDE, so its
+ * whole job is to point at the brief and state what has NOT been decided yet, which
+ * stops a fresh session from inventing scope. Pure.
+ */
+export function buildInquiryClaudeMd(name: string): string {
+  return [
+    `# ${name}`,
+    '',
+    'Prospective client inquiry. Nothing has been agreed yet.',
+    '',
+    `The captured job description is in [brief.md](brief.md). Read it before proposing`,
+    'anything, and treat its scope as unconfirmed: the budget, the timeline and the',
+    'stack are the client\'s wishes, not commitments.',
+    '',
+    '## Status',
+    '',
+    'Evaluating. No proposal sent, no work started.',
+    '',
+  ].join('\n');
+}
