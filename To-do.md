@@ -2,6 +2,15 @@
 
 ## Open
 
+### Live realtime transcription: one meeting lost 43% of the call (found 2026-08-04)
+First-pass scoring of the shipped `scribe_v2_realtime` path against a batch `scribe_v2` reference over the same recorded audio ([run_meeting_engine_compare.py](audio_testing/run_meeting_engine_compare.py), commit 0cf4791). Aug 4 09:00 German client call: 29.3 min of audio recorded (wall clock 08:00:47 to 08:29:53 confirms it), transcript stops dead at 16:05 mid-sentence, and 1,414 reference words (43% of the call, incl. pricing and scope discussion) never reached the transcript. Timelines were verified drift-free (< 0.5s across 14 anchors), so this is real data loss, not a scoring artifact. The other two 16-min meetings covered their full speech; their audio tails held no speech.
+- [ ] Root-cause the stop: no Rust logs are written to disk (stdout only), so reproduce with `RUST_LOG=debug` captured to a file and watch for the realtime WS dying (auto-commit / stall edge / watchdog) with no reconnect while capture continues.
+- [ ] Surface it at runtime: transcription that stops while recording continues must raise a visible error (ties to the review's #8 "silent transcription death" — `recording-error` still has zero frontend listeners).
+- [ ] Language detection flips script mid-call on the German meeting: transcript contains Chinese characters at 00:00 and Hebrew at 15:40. Consider pinning the language when the user knows it.
+- [ ] Quality on covered regions vs batch: 14.3% / 21.5% / 24.3% disagreement (pooled 19.4%), dominated by INSERTIONS (286 / 370 words) of which only 41 / 78 are detected repetition loops ("i think it's a good idea" x3, "get it to uh you know" x7). Needs Andrew's proofing pass on 2 short windows to split engine stutter from speech the mixed-track reference missed.
+- [ ] True old-vs-new head-to-head not run yet: this pass used full-file batch as reference, not the OLD in-app 12s-chunked batch path. Replicate that chunking over the same meeting audio for a like-for-like number.
+- [ ] Meeting 2026-08-04_13-55-15 never merged its audio: 146 `.checkpoints/*.mp4` chunks and no `audio.mp4`.
+
 ### Solo mode: typed note added INTO the transcript (requested, never implemented, 2026-07-23)
 Andrew's intent: while in solo mode, take a quick note and have it appear in the transcript itself (as a transcript entry alongside the spoken text). Verified missing across all 11 worktrees (committed + uncommitted) on 2026-07-23. Closest existing features, neither of which does this: the in-call jot strip (notes stay separate, enhanced FROM the transcript, [meetingJots.ts](frontend/src/lib/meetingJots.ts)) and Alt+Shift+N quick capture (files a note to a project as markdown, [quickCapture.ts](frontend/src/lib/quickCapture.ts)). Likely shape: a note input in solo mode / solo HUD that appends a typed segment into TranscriptContext + the saved transcript with a "note" marker.
 
