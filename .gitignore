@@ -89,3 +89,13 @@ __pycache__/
 
 # Dogfooding — local meeting recordings
 meetings/
+
+# Client-derived conversation data — NEVER commit. This repo is public.
+# .tandem/ holds verbatim call transcripts, the session feed, task handoffs
+# and screenshots captured during live calls. See research/gdpr-review-*.md (F1).
+.tandem/
+Tandem meeting notes/
+*/live-transcript.md
+
+# Privacy review maps where every plaintext credential on the machine lives.
+research/gdpr-review-*.md
