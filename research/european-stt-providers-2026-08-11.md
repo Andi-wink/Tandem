@@ -41,6 +41,17 @@ That means the honest comparison is not 6.00% vs 5.3%. It is "Tandem's Scribe pi
 
 **Hosted-API caveats, from yesterday's review:** Mistral is EU-sited but **not transfer-clean** — their own materials allow temporary transfer outside the EU under Art 46 SCCs, a US endpoint is selectable, and trust.mistral.ai/subprocessors lists US/worldwide sub-processors. ZDR is **Scale-plan-only, stateless endpoints only**; without it, inputs *and outputs* are kept 30 rolling days for abuse monitoring. Audio *is* in scope for ZDR when you have it.
 
+**What the Scale plan actually costs (checked 2026-08-11):** nothing fixed. Scale is the **pay-as-you-go tier**, not a subscription — "Scale plan (pay-as-you-go) — unlocks Tier 1 and above". No monthly fee, no minimum spend, no commitment; you add a payment method and pay per token / audio-minute. Rate-limit tiers then climb on *cumulative billed usage* (Tier 2 >$20, Tier 3 >$100, Tier 4 >$500, beyond >$2,000, then contact support); prepaid credit top-ups do **not** raise limits, only consumption does. The ~$20k/month figure on third-party sites is **Enterprise**, a different product that ZDR does not require. Naming note: current docs say "Free mode" / "pay-as-you-go" and list Free/Pro/Education/Team/Enterprise, while the ZDR and rate-limit help articles still say "Scale plan" — same thing, mid-rename.
+
+At $0.36/audio-hr, ~10h of client calls a month is ~$3.60, or ~$7 given that Tandem's realtime engine feeds continuously including silence (~2x wall-clock billing). Nowhere near Tier 2.
+
+**ZDR is free but discretionary, and that is the real gate:**
+- You must submit a request giving "sufficient detail of your legitimate reasons"; it is "reviewed and approved or denied at their discretion". Until approved, 30-day retention of inputs and outputs applies.
+- Scope is **stateless endpoints only**. Explicitly excluded: agents, batch processing files, conversations, libraries, `/v1/files`, Vibe and Chat. `/v1/realtime` is stateless so the live path is in scope.
+- **VERIFY:** whether Mistral's *batch* transcription requires a `/v1/files` upload or accepts a URL. If it needs `/v1/files`, ZDR does **not** cover Tandem's batch shadow-flush fallback — which fires precisely when the WS path fails.
+
+This is the argument for self-hosting holding up. $0.36/hr is not the obstacle; the discretionary approval, the stateless-only carve-out and the Art 46 transfer position are. Self-hosted Voxtral is Apache 2.0, costs nothing, needs nobody's approval and has no carve-outs.
+
 **Self-hosted:** `vllm serve mistralai/Voxtral-Mini-4B-Realtime-2602`, single GPU ≥16GB BF16. The 3090's 24GB clears it. OpenAI-Realtime-compatible WS, so the client shape is standard.
 
 ### 2. Gladia — Solaria (Paris, France)
@@ -104,6 +115,7 @@ Gate: [wer_gate.py](../audio_testing/wer_gate.py) against [wer_baseline.json](..
 
 - [Artificial Analysis — Speech to Text Streaming leaderboard](https://artificialanalysis.ai/speech-to-text/streaming) and [AA-WER Streaming methodology](https://artificialanalysis.ai/articles/new-streaming-speech-to-text-benchmark-aa-wer-streaming)
 - [Voxtral Mini 4B Realtime on Hugging Face](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602), [Mistral audio docs](https://docs.mistral.ai/capabilities/audio/), [Voxtral Realtime paper](https://arxiv.org/html/2602.11298v1)
+- [Mistral: can I activate ZDR?](https://help.mistral.ai/en/articles/347612-can-i-activate-zero-data-retention-zdr), [Mistral: API rate limits and tiers](https://help.mistral.ai/en/articles/698531-why-am-i-hitting-api-rate-limits-and-how-do-i-increase-them), [Mistral subscriptions docs](https://docs.mistral.ai/admin/billing-usage/subscriptions)
 - [Gladia Solaria-3](https://www.gladia.io/solaria-3), [Gladia pricing](https://www.gladia.io/pricing), [Gladia live STT docs](https://docs.gladia.io/chapters/live-stt/getting-started), [Gladia security](https://www.gladia.io/security)
 - [Speechmatics pricing](https://www.speechmatics.com/pricing), [Speechmatics deployments](https://docs.speechmatics.com/deployments), [Melia announcement](https://www.speechmatics.com/company/articles-and-news/introducing-melia-multilingual-speech-to-text-model)
 - [EU AI gateways compared (EdenAI / OVHcloud / Scaleway)](https://www.edenai.co/post/european-ai-gateways-comparing-edenai-ovhcloud-ai-endpoints-and-scaleway-generative-apis)
