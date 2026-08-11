@@ -30,6 +30,7 @@ import { Bot } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ProjectPickerDialog } from '@/components/ProjectPickerDialog';
+import { ConsentDialog } from '@/components/ConsentDialog';
 import { useSoloMode } from '@/contexts/SoloModeContext';
 import { useSoloModeRouter } from '@/hooks/useSoloModeRouter';
 import { useProjectAutoRoute } from '@/hooks/useProjectAutoRoute';
@@ -76,7 +77,7 @@ export default function Home() {
   const { setIsMeetingActive, isCollapsed: sidebarCollapsed, refetchMeetings, currentMeeting, serverAddress } = useSidebar();
   const { modals, messages, showModal, hideModal } = useModalState(transcriptModelConfig);
   const { isRecordingDisabled, setIsRecordingDisabled } = useRecordingStateSync(isRecording, setIsRecordingState, setIsMeetingActive);
-  const { handleRecordingStart } = useRecordingStart(isRecording, setIsRecordingState, showModal);
+  const { handleRecordingStart, consentDialog } = useRecordingStart(isRecording, setIsRecordingState, showModal);
 
   // Get handleRecordingStop function and setIsStopping (state comes from global context)
   const { handleRecordingStop, setIsStopping } = useRecordingStop(
@@ -497,6 +498,10 @@ export default function Home() {
         messages={messages}
         onClose={hideModal}
       />
+
+      {/* Pre-record consent gate. Opens when start_recording returns CONSENT_REQUIRED, and
+          replays the blocked start once consent has been recorded. */}
+      <ConsentDialog {...consentDialog} />
 
       {/* F020: Handoff dialog */}
       <HandoffDialog

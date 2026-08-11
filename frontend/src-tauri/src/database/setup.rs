@@ -30,6 +30,10 @@ pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), Strin
             .await
             .map_err(|e| format!("Failed to initialize database manager: {}", e))?;
 
+        // Load the persisted transcription language into the in-memory cache before anything can
+        // start a recording. Without this the cache stays on "auto" for the whole session.
+        crate::hydrate_language_preference(db_manager.pool()).await;
+
         app.manage(AppState { db_manager });
         info!("Database initialized successfully");
     }

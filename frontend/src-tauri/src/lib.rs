@@ -41,6 +41,7 @@ pub mod calendar_ics;
 pub mod canvas;
 pub mod clipboard;
 pub mod console_utils;
+pub mod consent;
 pub mod quick_capture;
 pub mod database;
 mod migration;
@@ -63,7 +64,7 @@ use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
 use log::{error as log_error, info as log_info};
 use notifications::commands::NotificationManagerState;
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::RwLock;
 
 // Global language preference storage (default to "auto" for automatic language detection)
@@ -103,6 +104,36 @@ async fn start_recording<R: Runtime>(
         return Err("Recording already in progress".to_string());
     }
 
+    // CONSENT GATE. Enforced here, not in the UI, because recording is reachable from the record
+    // button, the sidebar event, a calendar seed, the Alt+Shift+E shortcut and the tray menu.
+    // Guarding one React component guards one of those paths; guarding the command guards all of
+    // them, and a future sixth path too. Consent must exist BEFORE capture starts: § 201 Abs. 1
+    // Nr. 1 StGB is complete at the moment of fixation, so a post-hoc notice does not cure it.
+    let consent_grant = {
+        let gate_enabled = match app.try_state::<crate::state::AppState>() {
+            Some(state) => consent::is_enabled(state.db_manager.pool()).await,
+            // Database not up yet. Fail closed: no consent store means no provable consent.
+            None => true,
+        };
+
+        if gate_enabled {
+            match consent::take_valid() {
+                Some(grant) => {
+                    log_info!("Consent grant {} accepted for this recording", grant.id);
+                    Some(grant)
+                }
+                None => {
+                    log_info!("Recording blocked: no valid consent grant");
+                    // The frontend matches on this exact string to open the consent dialog.
+                    let _ = app.emit("consent-required", ());
+                    return Err(consent::CONSENT_REQUIRED.to_string());
+                }
+            }
+        } else {
+            None
+        }
+    };
+
     // Call the actual audio recording system with meeting name
     match audio::recording_commands::start_recording_with_devices_and_meeting(
         app.clone(),
@@ -115,6 +146,23 @@ async fn start_recording<R: Runtime>(
     {
         Ok(_) => {
             tray::update_tray_menu(&app);
+
+            // Stamp when the consented recording actually began. The gap between granted_at and
+            // recording_started_at is the thing an auditor checks, so record it rather than
+            // inferring it.
+            if let (Some(grant), Some(state)) =
+                (consent_grant.as_ref(), app.try_state::<crate::state::AppState>())
+            {
+                if let Err(e) = database::repositories::consent::ConsentRepository::mark_recording_started(
+                    state.db_manager.pool(),
+                    &grant.id,
+                    meeting_name.as_deref(),
+                )
+                .await
+                {
+                    log_error!("Failed to stamp consent record {}: {}", grant.id, e);
+                }
+            }
 
             log_info!("Recording started successfully");
 
@@ -140,6 +188,9 @@ async fn start_recording<R: Runtime>(
         }
         Err(e) => {
             log_error!("Failed to start audio recording: {}", e);
+            // The grant was consumed above. Do not leave the gate armed for a recording that
+            // never began: the user should re-confirm consent on the next attempt.
+            consent::clear();
             Err(format!("Failed to start recording: {}", e))
         }
     }
@@ -748,29 +799,208 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
     }
 }
 
-// Language preference commands
+// ===== Consent gate commands =====
+
+/// Records consent for the call that is about to start, then arms the gate so the very next
+/// `start_recording` is permitted. Writing the log row first is deliberate: if the write fails
+/// the gate stays closed, because unprovable consent is not consent (GDPR Art 7(1)).
 #[tauri::command]
-async fn get_language_preference() -> Result<String, String> {
+async fn record_consent(
+    state: tauri::State<'_, crate::state::AppState>,
+    input: database::repositories::consent::ConsentInput,
+) -> Result<String, String> {
+    let pool = state.db_manager.pool();
+
+    // Capture what was actually consented to, not just that consent happened. The engine matters
+    // legally: sending audio to a cloud vendor is a separate offence limb in several
+    // jurisdictions (e.g. § 201 Abs. 1 Nr. 2 StGB), so "local or cloud" belongs in the record.
+    let language = get_language_preference_internal();
+    let (engine, processing) =
+        match database::repositories::setting::SettingsRepository::get_transcript_config(pool).await
+        {
+            Ok(Some(cfg)) => {
+                let processing = match cfg.provider.as_str() {
+                    "parakeet" | "localWhisper" => "local",
+                    _ => "cloud",
+                };
+                (Some(cfg.provider), Some(processing.to_string()))
+            }
+            _ => (None, None),
+        };
+
+    let id = database::repositories::consent::ConsentRepository::record(
+        pool,
+        &input,
+        language.as_deref(),
+        engine.as_deref(),
+        processing.as_deref(),
+    )
+    .await
+    .map_err(|e| {
+        log_error!("Failed to write consent record: {}", e);
+        format!("Failed to record consent: {}", e)
+    })?;
+
+    consent::arm(id.clone(), input.meeting_title.clone());
+    log_info!(
+        "Consent recorded ({}), method={}, jurisdiction={:?}, participants={}",
+        id,
+        input.method,
+        input.jurisdiction,
+        input.participants.len()
+    );
+    Ok(id)
+}
+
+/// Most recent consent records, newest first, so the log is inspectable from Settings.
+#[tauri::command]
+async fn list_consent_log(
+    state: tauri::State<'_, crate::state::AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<database::repositories::consent::ConsentRecord>, String> {
+    database::repositories::consent::ConsentRepository::list(
+        state.db_manager.pool(),
+        limit.unwrap_or(100).clamp(1, 1000),
+    )
+    .await
+    .map_err(|e| {
+        log_error!("Failed to list consent log: {}", e);
+        e.to_string()
+    })
+}
+
+/// Whether the pre-record consent gate is enforced. Defaults to true.
+#[tauri::command]
+async fn get_consent_gate_enabled(
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<bool, String> {
+    Ok(consent::is_enabled(state.db_manager.pool()).await)
+}
+
+#[tauri::command]
+async fn set_consent_gate_enabled(
+    state: tauri::State<'_, crate::state::AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    if !enabled {
+        log_info!("Consent gate DISABLED by user — recordings will start without a consent record");
+    }
+    consent::set_enabled(state.db_manager.pool(), enabled)
+        .await
+        .map_err(|e| {
+            log_error!("Failed to save consent gate setting: {}", e);
+            e.to_string()
+        })
+}
+
+/// All-party-consent warning for a jurisdiction, or null. Drives the escalated wording in the
+/// consent dialog for Germany, Greece, Portugal, Switzerland and France.
+#[tauri::command]
+fn consent_jurisdiction_warning(jurisdiction: String) -> Option<String> {
+    consent::all_party_warning(&jurisdiction).map(|s| s.to_string())
+}
+
+// Language preference commands
+//
+// The in-memory `LANGUAGE_PREFERENCE` static is a cache in front of the `app_settings` row, not
+// the source of truth. It exists because `get_language_preference_internal()` is called
+// synchronously from the transcription hot path, which cannot await a DB read. Every write goes
+// to SQLite first, so the choice now survives a restart.
+
+/// Writes the in-memory cache. Separate from the command so startup hydration can reuse it.
+fn set_language_cache(language: &str) {
+    if let Ok(mut guard) = LANGUAGE_PREFERENCE.lock() {
+        *guard = language.to_string();
+    }
+}
+
+/// Loads the persisted language preference into the in-memory cache. Called once per
+/// `AppState` registration so a recording started before the UI mounts still sees the
+/// user's pinned language rather than "auto".
+pub async fn hydrate_language_preference(pool: &sqlx::SqlitePool) {
+    match database::repositories::setting::SettingsRepository::get_language_preference(pool).await {
+        Ok(Some(stored)) => {
+            log_info!("Hydrated language preference from database: {}", stored);
+            set_language_cache(&stored);
+        }
+        Ok(None) => log_info!("No persisted language preference; staying on auto-detect"),
+        Err(e) => log_error!("Failed to hydrate language preference: {}", e),
+    }
+}
+
+#[tauri::command]
+async fn get_language_preference<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    // Prefer the persisted value. Falls back to the cache when the database is not up yet
+    // (first launch, before AppState is managed).
+    if let Some(state) = app.try_state::<crate::state::AppState>() {
+        match database::repositories::setting::SettingsRepository::get_language_preference(
+            state.db_manager.pool(),
+        )
+        .await
+        {
+            Ok(Some(stored)) => {
+                set_language_cache(&stored);
+                log_info!("Retrieved language preference: {} (persisted)", stored);
+                return Ok(stored);
+            }
+            Ok(None) => {}
+            Err(e) => log_error!("Failed to read persisted language preference: {}", e),
+        }
+    }
+
     let language = LANGUAGE_PREFERENCE
         .lock()
         .map_err(|e| format!("Failed to get language preference: {}", e))?;
-    log_info!("Retrieved language preference: {}", &*language);
+    log_info!("Retrieved language preference: {} (cache)", &*language);
     Ok(language.clone())
 }
 
 #[tauri::command]
-async fn set_language_preference(language: String) -> Result<(), String> {
-    let mut lang_pref = LANGUAGE_PREFERENCE
-        .lock()
-        .map_err(|e| format!("Failed to set language preference: {}", e))?;
+async fn set_language_preference<R: Runtime>(
+    app: AppHandle<R>,
+    language: String,
+) -> Result<(), String> {
     log_info!("Setting language preference to: {}", language);
-    *lang_pref = language;
+
+    // Persist first: a cache update that is not durable is the bug this replaces.
+    if let Some(state) = app.try_state::<crate::state::AppState>() {
+        database::repositories::setting::SettingsRepository::save_language_preference(
+            state.db_manager.pool(),
+            &language,
+        )
+        .await
+        .map_err(|e| {
+            log_error!("Failed to persist language preference: {}", e);
+            format!("Failed to persist language preference: {}", e)
+        })?;
+    } else {
+        log_error!("Database not ready — language preference set for this session only");
+    }
+
+    set_language_cache(&language);
     Ok(())
 }
 
 // Internal helper function to get language preference (for use within Rust code)
 pub fn get_language_preference_internal() -> Option<String> {
     LANGUAGE_PREFERENCE.lock().ok().map(|lang| lang.clone())
+}
+
+/// True when the user has pinned an explicit language that is not English. Used to gate
+/// English-only post-processing (domain-vocabulary fuzzy correction, English hallucination
+/// phrases, the English Whisper initial prompt) that actively corrupts other languages.
+///
+/// Deliberately conservative: "auto" and "auto-translate" are treated as English-ish, because
+/// auto-detect on this stack still resolves to English the large majority of the time and the
+/// English post-processing is a measured win there.
+pub fn language_is_non_english() -> bool {
+    match get_language_preference_internal() {
+        Some(lang) => {
+            let l = lang.trim().to_ascii_lowercase();
+            !(l.is_empty() || l == "auto" || l == "auto-translate" || l == "en" || l.starts_with("en-"))
+        }
+        None => false,
+    }
 }
 
 /// Supervisors for the agent-whiteboard servers (app server :5174 + MCP canvas server :3939). Set in
@@ -1311,6 +1541,11 @@ pub fn run() {
             // Language preference commands
             get_language_preference,
             set_language_preference,
+            record_consent,
+            list_consent_log,
+            get_consent_gate_enabled,
+            set_consent_gate_enabled,
+            consent_jurisdiction_warning,
             // Notification system commands
             notifications::commands::get_notification_settings,
             notifications::commands::set_notification_settings,

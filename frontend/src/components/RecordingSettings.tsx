@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Switch } from '@/components/ui/switch';
-import { FolderOpen } from 'lucide-react';
+import { FolderOpen, ShieldCheck } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { DeviceSelection, SelectedDevices } from '@/components/DeviceSelection';
+import { getConsentGateEnabled, setConsentGateEnabled } from '@/services/consentService';
 import Analytics from '@/lib/analytics';
 import { toast } from 'sonner';
 
@@ -29,6 +30,8 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showRecordingNotification, setShowRecordingNotification] = useState(true);
+  // Defaults to true so a load failure never renders the gate as "off" when it is actually on.
+  const [consentGateEnabled, setConsentGateEnabledState] = useState(true);
 
   // Load recording preferences on component mount
   useEffect(() => {
@@ -67,6 +70,38 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     };
     loadNotificationPref();
   }, []);
+
+  // Load the pre-record consent gate setting
+  useEffect(() => {
+    getConsentGateEnabled()
+      .then(setConsentGateEnabledState)
+      .catch((error) => console.error('Failed to load consent gate setting:', error));
+  }, []);
+
+  const handleConsentGateToggle = async (enabled: boolean) => {
+    try {
+      setConsentGateEnabledState(enabled);
+      await setConsentGateEnabled(enabled);
+      if (enabled) {
+        toast.success('Consent gate enabled');
+      } else {
+        // Not a neutral preference: turning this off removes the only record that consent was
+        // ever obtained, which is what GDPR Art 7(1) requires you to be able to produce.
+        toast.warning('Consent gate disabled', {
+          description:
+            'Recordings will start without a consent record. In Germany, Greece, Portugal, Switzerland and France, recording without every participant’s consent is a criminal offence.',
+          duration: 8000,
+        });
+      }
+      await Analytics.track('consent_gate_toggled', { enabled: enabled.toString() });
+    } catch (error) {
+      console.error('Failed to save consent gate setting:', error);
+      // Put the switch back: a UI that says "off" while the gate is on (or vice versa) is worse
+      // than the failed write itself.
+      setConsentGateEnabledState(!enabled);
+      toast.error('Failed to save consent setting');
+    }
+  };
 
   const handleAutoSaveToggle = async (enabled: boolean) => {
     const newPreferences = { ...preferences, auto_save: enabled };
@@ -213,12 +248,33 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
         </div>
       )}
 
+      {/* Consent gate. Placed above the notification toggle because it is the control that
+          actually does the compliance work; the toast below is only a confirmation. */}
+      <div className="flex items-center justify-between p-4 border rounded-lg">
+        <div className="flex-1 pr-4">
+          <div className="font-medium flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4 text-primary" aria-hidden="true" />
+            Ask for consent before recording
+          </div>
+          <div className="text-sm text-muted-foreground">
+            Confirm who agreed, and how, before capture starts. Writes a consent record you can
+            produce later. Recording a call without every participant&apos;s consent is a criminal
+            offence in Germany, Greece, Portugal, Switzerland and France.
+          </div>
+        </div>
+        <Switch
+          checked={consentGateEnabled}
+          onCheckedChange={handleConsentGateToggle}
+          aria-label="Ask for consent before recording"
+        />
+      </div>
+
       {/* Recording Notification Toggle */}
       <div className="flex items-center justify-between p-4 border rounded-lg">
-        <div className="flex-1">
+        <div className="flex-1 pr-4">
           <div className="font-medium">Recording Start Notification</div>
           <div className="text-sm text-muted-foreground">
-            Show reminder to inform participants when recording starts
+            Show a confirmation toast when recording starts
           </div>
         </div>
         <Switch

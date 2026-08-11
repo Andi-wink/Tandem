@@ -450,6 +450,53 @@ impl SettingsRepository {
         }
         Ok(())
     }
+
+    // ===== TRANSCRIPTION LANGUAGE =====
+
+    /// Gets the persisted transcription language preference (ISO-639-1, or the "auto" /
+    /// "auto-translate" sentinels). Returns None when never set, so the caller supplies the
+    /// default.
+    ///
+    /// This lived only in a process-global `LazyLock<Mutex<String>>` until 2026-08-11, which meant
+    /// choosing German survived exactly until the app closed and then silently reverted to
+    /// auto-detect. Auto-detect is what let one German client call flip script mid-call (Chinese
+    /// at 00:00, Hebrew at 15:40).
+    pub async fn get_language_preference(
+        pool: &SqlitePool,
+    ) -> std::result::Result<Option<String>, sqlx::Error> {
+        let value: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM app_settings WHERE key = 'language_preference' LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+        Ok(value.filter(|v| !v.trim().is_empty()))
+    }
+
+    /// Persists the transcription language preference.
+    pub async fn save_language_preference(
+        pool: &SqlitePool,
+        language: &str,
+    ) -> std::result::Result<(), sqlx::Error> {
+        let trimmed = language.trim();
+        if trimmed.is_empty() {
+            sqlx::query("DELETE FROM app_settings WHERE key = 'language_preference'")
+                .execute(pool)
+                .await?;
+            return Ok(());
+        }
+        sqlx::query(
+            r#"
+            INSERT INTO app_settings (key, value)
+            VALUES ('language_preference', $1)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            "#,
+        )
+        .bind(trimmed)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

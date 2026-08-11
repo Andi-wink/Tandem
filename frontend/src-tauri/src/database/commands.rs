@@ -161,6 +161,7 @@ pub async fn import_and_initialize_database(
         })?;
 
     // Update app state with the new manager
+    crate::hydrate_language_preference(db_manager.pool()).await;
     app.manage(AppState { db_manager });
 
     info!("Legacy database imported and initialized successfully");
@@ -185,6 +186,7 @@ pub async fn initialize_fresh_database(app: AppHandle) -> Result<(), String> {
         })?;
 
     // Update app state with the new manager
+    crate::hydrate_language_preference(db_manager.pool()).await;
     app.manage(AppState { db_manager: db_manager.clone() });
 
     // Set default model configuration for fresh installs
