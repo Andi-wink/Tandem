@@ -62,7 +62,7 @@ impl TranscriptionEngine {
                 .await
                 .map_err(|e| e.to_string()),
             Self::Parakeet(engine) => engine
-                .transcribe_audio(audio)
+                .transcribe_audio(audio, language.as_deref())
                 .await
                 .map_err(|e| e.to_string()),
             Self::Provider(provider) => provider

@@ -351,8 +351,9 @@ pub async fn parakeet_transcribe_audio(audio_data: Vec<f32>) -> Result<String, S
     };
 
     if let Some(engine) = engine {
+        let language = crate::get_language_preference_internal();
         engine
-            .transcribe_audio(audio_data)
+            .transcribe_audio(audio_data, language.as_deref())
             .await
             .map_err(|e| format!("Parakeet transcription failed: {}", e))
     } else {

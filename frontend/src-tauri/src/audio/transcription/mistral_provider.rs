@@ -124,14 +124,60 @@ impl MistralProvider {
         self.model.starts_with("voxtral-small")
     }
 
+    /// Maps Tandem's picker value to what Voxtral accepts, or None for auto-detect.
+    ///
+    /// Tandem stores ISO-639-1 codes plus the "auto" / "auto-translate" sentinels. Those
+    /// sentinels are not language codes: this provider used to forward them verbatim, POSTing
+    /// `language=auto` and getting either a 400 or a silently ignored field. ElevenLabs has had a
+    /// dedicated mapper for this since it was added; Mistral had none.
+    fn voxtral_language_code(raw: Option<&str>) -> Option<String> {
+        let t = raw?.trim().to_ascii_lowercase();
+        if t.is_empty() || t == "auto" || t == "auto-translate" {
+            return None;
+        }
+        // Voxtral takes ISO-639-1, which is already what the picker stores. Strip any region
+        // suffix ("de-DE" -> "de") since the API expects the bare language.
+        Some(t.split(['-', '_']).next().unwrap_or(&t).to_string())
+    }
+
+    /// Human-readable language name for the chat-route instruction. Falls back to the code
+    /// itself, which still tells the model more than nothing.
+    fn language_display_name(code: &str) -> &str {
+        match code {
+            "en" => "English",
+            "de" => "German",
+            "fr" => "French",
+            "es" => "Spanish",
+            "it" => "Italian",
+            "pt" => "Portuguese",
+            "nl" => "Dutch",
+            "hi" => "Hindi",
+            "ar" => "Arabic",
+            other => other,
+        }
+    }
+
     /// Audio-understanding fallback: send the WAV as base64 in a chat message
     /// with a "transcribe verbatim" instruction and read the assistant's reply
     /// as the transcript. Slower and costlier than the dedicated STT endpoint.
     async fn transcribe_via_chat(
         &self,
         wav_bytes: Vec<u8>,
+        language: Option<&str>,
     ) -> std::result::Result<TranscriptResult, TranscriptionError> {
         let b64 = base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
+
+        // An LLM handed an English instruction over German audio is a translation risk, not just
+        // a missed hint. Name the language explicitly when the user has pinned one.
+        let prompt = match language {
+            Some(lang) => format!(
+                "{} The audio is in {} ({}). Transcribe it in that language; do not translate.",
+                CHAT_TRANSCRIBE_PROMPT,
+                Self::language_display_name(lang),
+                lang
+            ),
+            None => CHAT_TRANSCRIBE_PROMPT.to_string(),
+        };
 
         let body = serde_json::json!({
             "model": self.model,
@@ -143,7 +189,7 @@ impl MistralProvider {
                         "type": "input_audio",
                         "input_audio": { "data": b64, "format": "wav" }
                     },
-                    { "type": "text", "text": CHAT_TRANSCRIBE_PROMPT }
+                    { "type": "text", "text": prompt }
                 ]
             }]
         });
@@ -220,13 +266,16 @@ impl TranscriptionProvider for MistralProvider {
             self.model
         );
 
-        if self.is_chat_model() {
-            return self.transcribe_via_chat(wav_bytes).await;
-        }
+        // Resolve the language once, up front, so BOTH backends see it. The chat route used to
+        // return before any language handling ran, which meant `voxtral-small-*` transcribed
+        // German audio under an English instruction with no hint at all.
+        let lang = Self::voxtral_language_code(
+            language.or_else(|| self.language.clone()).as_deref(),
+        );
 
-        // 2. Build multipart form. Per-call `language` argument wins over the
-        //    instance default if both are present.
-        let lang = language.or_else(|| self.language.clone());
+        if self.is_chat_model() {
+            return self.transcribe_via_chat(wav_bytes, lang.as_deref()).await;
+        }
 
         let file_part = reqwest::multipart::Part::bytes(wav_bytes)
             .file_name("audio.wav")
@@ -243,9 +292,7 @@ impl TranscriptionProvider for MistralProvider {
             .part("file", file_part);
 
         if let Some(l) = lang {
-            if !l.is_empty() {
-                form = form.text("language", l);
-            }
+            form = form.text("language", l);
         }
 
         // 3. POST to Voxtral. NOTE: never log self.api_key.

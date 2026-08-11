@@ -25,15 +25,22 @@ impl TranscriptionProvider for ParakeetProvider {
         audio: Vec<f32>,
         language: Option<String>,
     ) -> std::result::Result<TranscriptResult, TranscriptionError> {
-        // Log language preference warning if set (Parakeet doesn't support it yet)
+        // Parakeet TDT v3 is multilingual and does its own language identification; there is no
+        // language token to send. The hint is still forwarded because it gates the English-only
+        // post-processing inside the engine. Warn once per non-English call so the limitation is
+        // visible in the log rather than silently assumed to be honoured.
         if let Some(ref lang) = language {
-            warn!(
-                "Parakeet doesn't support language preference '{}' yet - transcribing in default language",
-                lang
-            );
+            let l = lang.trim().to_ascii_lowercase();
+            if !(l.is_empty() || l == "auto" || l == "auto-translate" || l == "en") {
+                warn!(
+                    "Parakeet cannot be steered to '{}': the model auto-detects language. \
+                     English post-processing disabled for this chunk.",
+                    lang
+                );
+            }
         }
 
-        match self.engine.transcribe_audio(audio).await {
+        match self.engine.transcribe_audio(audio, language.as_deref()).await {
             Ok(text) => Ok(TranscriptResult {
                 text: text.trim().to_string(),
                 confidence: None, // Parakeet doesn't provide confidence scores

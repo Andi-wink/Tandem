@@ -421,11 +421,37 @@ impl WhisperEngine {
         final_text
     }
 
+    /// Whisper initial prompt for a given language code (as passed to `set_language`, so `None`
+    /// means auto-detect).
+    ///
+    /// The prompt conditions language as much as vocabulary, so an English-only prompt is an
+    /// active harm on non-English audio. Auto-detect keeps the English prompt because on this
+    /// stack auto still resolves to English the large majority of the time; pin the language to
+    /// get the German prompt.
+    fn initial_prompt_for(language_code: Option<&str>) -> &'static str {
+        const EN: &str =
+            "Claude Code, n8n, Tandem, Excalidraw, Meetily, Anthropic, API, JSON, webhook, workflow";
+        // German lead-in written in German so the decoder is conditioned on German, with the
+        // domain terms kept in English because that is how they are actually spoken.
+        const DE: &str = "Wir sprechen über das Projekt und die nächsten Schritte. \
+                          Claude Code, n8n, Tandem, Excalidraw, Anthropic, API, JSON, Webhook, Workflow";
+
+        match language_code {
+            Some(l) if l.eq_ignore_ascii_case("de") || l.to_ascii_lowercase().starts_with("de-") => DE,
+            _ => EN,
+        }
+    }
+
     // Check for obviously meaningless patterns
     fn is_meaningless_output(text: &str) -> bool {
         let text_lower = text.to_lowercase();
 
-        // Check for common meaningless patterns
+        // Check for common meaningless patterns.
+        //
+        // These are Whisper's stock hallucinations on silence/noise, learned from its YouTube
+        // training data. The list was English-only until 2026-08-11, which meant German
+        // hallucinations (the notorious ZDF/Untertitel family) passed straight through into
+        // transcripts while their English equivalents were dropped.
         let meaningless_patterns = [
             "thank you for watching",
             "thanks for watching",
@@ -436,6 +462,18 @@ impl WhisperEngine {
             "um um um",
             "uh uh uh",
             "ah ah ah",
+            // German equivalents
+            "untertitel im auftrag",
+            "untertitel von",
+            "untertitelung im auftrag",
+            "vielen dank fürs zuschauen",
+            "vielen dank für's zuschauen",
+            "danke fürs zuschauen",
+            "bis zum nächsten mal",
+            "abonniert den kanal",
+            "musik läuft",
+            "applaus",
+            "gelächter",
         ];
 
         for pattern in &meaningless_patterns {
@@ -570,10 +608,13 @@ impl WhisperEngine {
         params.set_token_timestamps(true);  // Keep for any timestamp-aware features
 
         // Domain vocabulary hint — biases recognition toward project-specific terms that
-        // Whisper commonly misrecognizes (e.g. "Claude Code" → "Claude Cowell", "n8n" → "innate")
-        params.set_initial_prompt(
-            "Claude Code, n8n, Tandem, Excalidraw, Meetily, Anthropic, API, JSON, webhook, workflow"
-        );
+        // Whisper commonly misrecognizes (e.g. "Claude Code" → "Claude Cowell", "n8n" → "innate").
+        //
+        // Whisper's initial prompt is a strong *language and style* conditioner, not just a
+        // vocabulary hint: feeding an all-English prompt ahead of German audio biases the decoder
+        // toward English and toward hallucinated English. Use a prompt written in the target
+        // language, keeping the domain terms (which stay English in German speech anyway).
+        params.set_initial_prompt(Self::initial_prompt_for(language_code));
 
         // PERFORMANCE: Disable ALL whisper.cpp internal printing
         // This reduces C library log spam significantly
@@ -705,9 +746,7 @@ impl WhisperEngine {
         params.set_token_timestamps(true);  // Keep for any timestamp-aware features
 
         // Domain vocabulary hint (same as transcribe_audio_with_confidence)
-        params.set_initial_prompt(
-            "Claude Code, n8n, Tandem, Excalidraw, Meetily, Anthropic, API, JSON, webhook, workflow"
-        );
+        params.set_initial_prompt(Self::initial_prompt_for(language_code));
 
         params.set_print_special(false);
         params.set_print_progress(false);

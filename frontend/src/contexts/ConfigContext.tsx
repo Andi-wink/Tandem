@@ -131,7 +131,11 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   });
 
   // Language preference state
-  const [selectedLanguage, setSelectedLanguage] = useState('auto-translate');
+  // Must match the Rust default (`LANGUAGE_PREFERENCE` in lib.rs, "auto"). It was
+  // 'auto-translate' here, which means "translate everything into English": the UI claimed a mode
+  // Rust was not in, and any failure to load the stored value left a German call showing an
+  // English-translation mode it was not actually using.
+  const [selectedLanguage, setSelectedLanguage] = useState('auto');
 
   // UI preferences state
   const [showConfidenceIndicator, setShowConfidenceIndicator] = useState<boolean>(() => {
@@ -343,9 +347,10 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
           console.log('Loaded language preference:', language);
         }
       } catch (error) {
-        console.log('No language preference found or failed to load, using default (auto-translate):', error);
-        // Default to 'auto-translate' (Auto Detect with English translation) if no preference is saved
-        setSelectedLanguage('auto-translate');
+        console.log('No language preference found or failed to load, using default (auto):', error);
+        // Fall back to plain auto-detect, matching Rust. Falling back to 'auto-translate' here
+        // silently promised English translation on a call the backend was transcribing verbatim.
+        setSelectedLanguage('auto');
       }
     };
     loadLanguagePreference();

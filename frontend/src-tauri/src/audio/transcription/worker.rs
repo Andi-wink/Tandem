@@ -585,7 +585,16 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
             }
         }
         TranscriptionEngine::Parakeet(parakeet_engine) => {
-            match parakeet_engine.transcribe_audio(speech_samples).await {
+            // This arm, not ParakeetProvider, is what actually runs (Parakeet is constructed as
+            // TranscriptionEngine::Parakeet, never as a Provider). Until 2026-08-11 it never read
+            // the language preference at all, so a German call got the English post-processing
+            // path with no warning anywhere.
+            let language = crate::get_language_preference_internal();
+
+            match parakeet_engine
+                .transcribe_audio(speech_samples, language.as_deref())
+                .await
+            {
                 Ok(text) => {
                     // Apply the same repetition filter used by Whisper to catch
                     // hallucinated repetitive output (e.g. "AAAAAAA", "um um um")

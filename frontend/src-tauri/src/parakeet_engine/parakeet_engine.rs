@@ -450,8 +450,19 @@ impl ParakeetEngine {
         self.current_model.read().await.is_some()
     }
 
-    /// Transcribe audio samples using the loaded Parakeet model
-    pub async fn transcribe_audio(&self, audio_data: Vec<f32>) -> Result<String> {
+    /// Transcribe audio samples using the loaded Parakeet model.
+    ///
+    /// `language` is the user's pinned preference (ISO-639-1, or the "auto"/"auto-translate"
+    /// sentinels). Parakeet TDT v3 is a multilingual model that performs its own language
+    /// identification and exposes no language token, so the hint cannot steer the acoustic decode.
+    /// It is still load-bearing: it gates the English-only post-processing below, which otherwise
+    /// fuzzy-matches every German word longer than three characters against an English domain
+    /// wordlist.
+    pub async fn transcribe_audio(
+        &self,
+        audio_data: Vec<f32>,
+        language: Option<&str>,
+    ) -> Result<String> {
         let mut model_guard = self.current_model.write().await;
         let model = model_guard
             .as_mut()
@@ -475,14 +486,43 @@ impl ParakeetEngine {
         // returned directly). Two cheap, measured fixes:
         //  #1 de-stutter: collapse TDT runaway repetitions ("a a a a", "st st st").
         //  #3 domain correction: fix known vocabulary misfires (n8n, Shopify, ...).
-        let cleaned = Self::apply_domain_corrections(&Self::apply_phrase_corrections(
-            &Self::collapse_runaways(&result.text),
-        ));
+        //
+        // #1 is language-neutral (it collapses identical repeated tokens) and always runs.
+        // #3 is an English wordlist matched at 0.86 Levenshtein similarity against every token of
+        // four characters or more, so on non-English audio it is a corruption source rather than a
+        // correction. Skip it whenever the user has pinned a non-English language.
+        let destuttered = Self::collapse_runaways(&result.text);
+        let cleaned = if Self::english_post_processing_applies(language) {
+            Self::apply_domain_corrections(&Self::apply_phrase_corrections(&destuttered))
+        } else {
+            log::debug!(
+                "Parakeet: skipping English domain correction (language preference: {})",
+                language.unwrap_or("unset")
+            );
+            destuttered
+        };
         if cleaned != result.text {
             log::debug!("Parakeet transcription result (cleaned): '{}'", cleaned);
         }
 
         Ok(cleaned)
+    }
+
+    /// Whether the English-only domain/phrase correction passes should run for this language
+    /// preference. True for English, unset, and the auto sentinels; false for any explicit
+    /// non-English language.
+    fn english_post_processing_applies(language: Option<&str>) -> bool {
+        match language {
+            None => true,
+            Some(raw) => {
+                let l = raw.trim().to_ascii_lowercase();
+                l.is_empty()
+                    || l == "auto"
+                    || l == "auto-translate"
+                    || l == "en"
+                    || l.starts_with("en-")
+            }
+        }
     }
 
     /// #1 Gentle de-stutter: collapse only consecutive identical tokens repeated
