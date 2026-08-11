@@ -2,6 +2,27 @@
 
 ## Open
 
+### Replacing ElevenLabs Scribe: European STT options (2026-08-11)
+Follow-on from [research/gdpr-review-2026-08-10.md](research/gdpr-review-2026-08-10.md). Two research docs written: [european-stt-providers-2026-08-11.md](research/european-stt-providers-2026-08-11.md) (build path) and [european-notetaker-services-2026-08-11.md](research/european-notetaker-services-2026-08-11.md) (buy path). Key finding: no European provider beats Scribe v2 Realtime on streaming accuracy (3.64% AA-WER vs Voxtral Realtime's 5.3%), so this is a compliance trade, not an accuracy upgrade.
+- [ ] **Voxtral self-hosting feasibility** — assessment in flight, verdict to land in `research/voxtral-selfhost-feasibility-2026-08-11.md`. Blocked on machine headroom, see the disk/RAM item below.
+- [ ] [audio_testing/run_voxtral_realtime_wer.py](audio_testing/run_voxtral_realtime_wer.py) exists but was **never executed or verified** (the agent that wrote it died). Treat as unreviewed scaffolding, do not trust it.
+- [ ] Ground-truth bias is unresolved and blocks any Mistral-vs-Scribe number: refs in `audio_testing/elevenlabs/` are ElevenLabs-authored, so scoring a rival against them counts Voxtral's *correct* words as errors wherever Scribe misheard. Quantify via the human-proofed windows in [audio_testing/proofing/](audio_testing/proofing/) before reporting any WER.
+- [ ] Gladia Solaria-3 (French, EU-resident, #1 on real customer calls, beats Scribe 9.6% vs 9.9%) is **batch only**, live path is the weaker Solaria-1. Candidate for the post-call/summary path, not the live path.
+
+### Buy-vs-build: European notetaker services (2026-08-11)
+- [ ] Get **tl;dv's sub-processor list** (trust.tldv.io or security@tldv.io). German, EU-only hosting, strongest feature set of the group, but the chain is unverified so it cannot be ranked yet.
+- [ ] Same for Leexi, Happy Scribe, Noota, MeetGeek: specifically who does STT and who does the LLM summarisation.
+- [ ] Verified for jamie: its Art 28 DPA names **ElevenLabs and Soniox as transcription sub-processors**, Modal for GPU, Anthropic/OpenAI for notes. Buying European does not remove US processors, it makes them the vendor's contractual problem. Decide whether that trade is the one we want.
+- [ ] **VERIFY** (still open from the GDPR review): whether any client contract carries confidentiality or sub-processor clauses that a cloud notetaker would breach.
+- [ ] Unfixed by any vendor choice: lawful basis, the § 201 StGB consent flow, and Art 15(4) third-party redaction. No purchase closes these.
+
+### Machine headroom blocks local-model work (2026-08-11)
+Measured while diagnosing a system-wide slowdown. Not caused by the Voxtral test (no weights were ever downloaded, newest HF cache entry is Dec 2025), but it does gate any local inference work.
+- [ ] **RAM: 2.5 GB free of 31.9 GB.** Antigravity alone is 10.4 GB across 96 processes; `claude` is 5.6 GB across 31 processes (orphaned sessions). Commit charge 68 GB of a 115.9 GB limit, so it pages constantly.
+- [ ] **C: 45.7 GB free of ~953 GB (under 5%).** D: has 1296 GB free.
+- [ ] `docker_data.vhdx` is **106.4 GB** (written 2026-08-11 11:50). Inspect with `docker system df` once the daemon is up, then `docker image prune -a`. WSL2 vhdx files never auto-shrink, so reclaiming space needs a separate compact step.
+- [ ] Before any local-inference work: relocate the Docker data-root and `HF_HOME` to D:. Self-hosting Voxtral means a vLLM image plus weights, plausibly ~30 GB, against 45.7 GB of C: headroom.
+
 ### Live realtime transcription: one meeting lost 43% of the call (found 2026-08-04)
 First-pass scoring of the shipped `scribe_v2_realtime` path against a batch `scribe_v2` reference over the same recorded audio ([run_meeting_engine_compare.py](audio_testing/run_meeting_engine_compare.py), commit 0cf4791). Aug 4 09:00 German client call: 29.3 min of audio recorded (wall clock 08:00:47 to 08:29:53 confirms it), transcript stops dead at 16:05 mid-sentence, and 1,414 reference words (43% of the call, incl. pricing and scope discussion) never reached the transcript. Timelines were verified drift-free (< 0.5s across 14 anchors), so this is real data loss, not a scoring artifact. The other two 16-min meetings covered their full speech; their audio tails held no speech.
 - [ ] Root-cause the stop: no Rust logs are written to disk (stdout only), so reproduce with `RUST_LOG=debug` captured to a file and watch for the realtime WS dying (auto-commit / stall edge / watchdog) with no reconnect while capture continues.
