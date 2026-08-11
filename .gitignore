@@ -2,6 +2,9 @@
 
 /experiments
 
+# Local Hugging Face weight cache (self-hosted Voxtral eval) — never commit.
+/hf_cache
+
 # dependencies
 /node_modules
 **/models
@@ -99,3 +102,7 @@ Tandem meeting notes/
 
 # Privacy review maps where every plaintext credential on the machine lives.
 research/gdpr-review-*.md
+
+# Candid assessment of our own compliance gaps. Neutral market/engine research
+# (european-notetaker-services-*, german-asr-*) stays tracked and is safe to publish.
+research/german-calls-*.md
