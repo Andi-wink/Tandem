@@ -3,7 +3,37 @@
  * Presidio endpoints for on-device PII detection and surrogate replacement.
  */
 
+import { invoke } from '@tauri-apps/api/core';
 import { BACKEND } from '@/services/claudeService';
+
+// ---------------------------------------------------------------------------
+// Transcription language (for language-correct NER)
+// ---------------------------------------------------------------------------
+
+/**
+ * Cached transcription language preference. Resolved from the Rust side rather than React
+ * context so any caller gets it without a provider dependency. Short TTL so a mid-session
+ * language change is picked up without a restart.
+ */
+let _languageCache: { value: string | null; at: number } | null = null;
+const LANGUAGE_TTL_MS = 30_000;
+
+async function getTranscriptionLanguage(): Promise<string | null> {
+  const now = Date.now();
+  if (_languageCache && now - _languageCache.at < LANGUAGE_TTL_MS) {
+    return _languageCache.value;
+  }
+  try {
+    const value = await invoke<string>('get_language_preference');
+    _languageCache = { value: value || null, at: now };
+    return _languageCache.value;
+  } catch {
+    // Not running under Tauri (browser dev), or the command failed. The backend falls back to
+    // sniffing the text, so this is not fatal.
+    _languageCache = { value: null, at: now };
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,7 +55,11 @@ export interface AnonymizeResult {
 
 export interface AnonymizeHealthStatus {
   available: boolean;
-  model: string | null;
+  /** Loaded spaCy models keyed by language code, e.g. `{ en: 'en_core_web_sm', de: 'de_core_news_sm' }`. */
+  models?: Record<string, string>;
+  /** Languages the backend can actually analyse. Anything else falls back to `default_language`. */
+  languages?: string[];
+  default_language?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -41,7 +75,13 @@ export async function anonymizeTexts(
   meetingId: string,
   entityMap?: Record<string, string>,
   detectJson: boolean = true,
+  language?: string | null,
 ): Promise<AnonymizeResult> {
+  // Default to the app's transcription language so every caller gets language-correct NER
+  // without having to thread it through. Pass an explicit value to override.
+  const resolvedLanguage =
+    language === undefined ? await getTranscriptionLanguage() : language;
+
   const res = await fetch(`${BACKEND}/api/anonymize`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -50,6 +90,10 @@ export async function anonymizeTexts(
       meeting_id: meetingId,
       entity_map: entityMap || null,
       detect_json: detectJson,
+      // Transcription language, so a German call is analysed with the German NER model rather
+      // than the English one (which invents PERSON entities out of German greetings and misses
+      // German phone numbers entirely).
+      language: resolvedLanguage || null,
     }),
   });
 
@@ -109,9 +153,9 @@ export async function getReverseMap(
 export async function checkAnonymizationHealth(): Promise<AnonymizeHealthStatus> {
   try {
     const res = await fetch(`${BACKEND}/api/anonymize/health`);
-    if (!res.ok) return { available: false, model: null };
+    if (!res.ok) return { available: false, models: {}, languages: [] };
     return await res.json();
   } catch {
-    return { available: false, model: null };
+    return { available: false, models: {}, languages: [] };
   }
 }

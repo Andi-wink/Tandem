@@ -13,6 +13,12 @@ claude-agent-sdk>=0.1.39
 presidio-analyzer>=2.2.0
 presidio-anonymizer>=2.2.0
 spacy>=3.7.0
+# spaCy NER models. English is required; German is required for German client calls (without it
+# the analyzer silently falls back to English NER, which invents PERSON entities out of German
+# greetings and misses German phone numbers). Install any others you need the same way:
+#   python -m spacy download <model>
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+de_core_news_sm @ https://github.com/explosion/spacy-models/releases/download/de_core_news_sm-3.8.0/de_core_news_sm-3.8.0-py3-none-any.whl
 faker>=22.0.0
 nameparser>=1.1.0
 # F044: Document parsing for AI context basket

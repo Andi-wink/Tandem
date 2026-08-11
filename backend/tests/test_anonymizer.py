@@ -649,3 +649,120 @@ class TestPresidioAvailability:
             results, entity_map, entities = await anonymize_texts(texts, "m-no-presidio-batch")
             assert results == texts
             assert entities == []
+
+
+# ---------------------------------------------------------------------------
+# Multi-language analysis (German)
+# ---------------------------------------------------------------------------
+
+
+class TestLanguageResolution:
+    """Language selection for analysis.
+
+    Until 2026-08-11 the analyzer was hardcoded to en_core_web_sm, so German client calls (the
+    ones with the strictest legal exposure) were analysed with an English model: it invented
+    PERSON entities out of German greetings and missed German phone numbers entirely.
+    """
+
+    def test_english_is_always_loaded(self):
+        assert "en" in anonymizer.LOADED_LANGUAGES
+
+    def test_explicit_language_is_used_when_a_model_exists(self):
+        for lang in anonymizer.LOADED_LANGUAGES:
+            assert anonymizer._resolve_language(lang, "") == lang
+
+    def test_region_suffix_is_stripped(self):
+        assert anonymizer._resolve_language("en-GB", "") == "en"
+        if "de" in anonymizer.LOADED_LANGUAGES:
+            assert anonymizer._resolve_language("de_DE", "") == "de"
+
+    def test_unsupported_language_falls_back_rather_than_raising(self):
+        # Klingon has no spaCy model. Falling back beats crashing the anonymizer, which would
+        # otherwise send raw text to the AI panel.
+        assert anonymizer._resolve_language("tlh", "") in anonymizer.LOADED_LANGUAGES
+
+    def test_auto_falls_back_to_default_for_short_text(self):
+        # Too little signal to guess: do not gamble on a language.
+        assert anonymizer._resolve_language("auto", "Hallo") == anonymizer.ANALYSIS_LANGUAGE
+
+    @pytest.mark.skipif(
+        "de" not in anonymizer.LOADED_LANGUAGES, reason="German spaCy model not installed"
+    )
+    def test_auto_detects_german_from_umlauts(self):
+        assert anonymizer._resolve_language("auto", "Können wir das nächste Woche besprechen?") == "de"
+
+    @pytest.mark.skipif(
+        "de" not in anonymizer.LOADED_LANGUAGES, reason="German spaCy model not installed"
+    )
+    def test_auto_detects_german_from_function_words(self):
+        text = (
+            "ja also wir haben das jetzt so gemacht und die Kollegen sind auch schon "
+            "informiert worden aber wir muessen noch mal darueber reden"
+        )
+        assert anonymizer._resolve_language("auto", text) == "de"
+
+    def test_auto_keeps_english_for_english_text(self):
+        text = (
+            "Right, so we have done that already and the team has been informed, "
+            "but we still need to talk about the timeline before we commit to anything."
+        )
+        assert anonymizer._resolve_language("auto", text) == "en"
+
+
+@pytest.mark.skipif(
+    "de" not in anonymizer.LOADED_LANGUAGES, reason="German spaCy model not installed"
+)
+class TestGermanAnonymization:
+    """End-to-end German detection, the case the English-only pipeline got wrong."""
+
+    GERMAN_TEXT = (
+        "Guten Tag, hier ist Andreas Mueller von der Bergmann GmbH in Muenchen. "
+        "Meine Nummer ist 089 12345678 und die E-Mail andreas@bergmann.de."
+    )
+
+    @pytest.mark.asyncio
+    async def test_german_person_is_detected_with_correct_boundary(self):
+        _out, _map, entities = await anonymize_text(
+            self.GERMAN_TEXT, "m-de-person", language="de"
+        )
+        clear_registry("m-de-person")
+        persons = [e["original"] for e in entities if e["entity_type"] == "PERSON"]
+        assert "Andreas Mueller" in persons
+
+    @pytest.mark.asyncio
+    async def test_german_greeting_is_not_mistaken_for_a_person(self):
+        """The English model reads "Guten Tag" and "Meine Nummer" as names."""
+        _out, _map, entities = await anonymize_text(
+            self.GERMAN_TEXT, "m-de-greeting", language="de"
+        )
+        clear_registry("m-de-greeting")
+        persons = [e["original"] for e in entities if e["entity_type"] == "PERSON"]
+        assert "Guten Tag" not in persons
+        assert "Meine Nummer" not in persons
+
+    @pytest.mark.asyncio
+    async def test_german_phone_number_is_detected(self):
+        """Needs the German context words; the built-in list is English, so a German number in a
+        German sentence scored below the surrogate threshold and was passed through in the clear."""
+        _out, _map, entities = await anonymize_text(
+            self.GERMAN_TEXT, "m-de-phone", language="de"
+        )
+        clear_registry("m-de-phone")
+        kinds = {e["entity_type"] for e in entities}
+        assert "PHONE_NUMBER" in kinds
+
+    @pytest.mark.asyncio
+    async def test_german_phone_number_is_removed_from_output(self):
+        out, _map, _entities = await anonymize_text(
+            self.GERMAN_TEXT, "m-de-phone-out", language="de"
+        )
+        clear_registry("m-de-phone-out")
+        assert "089 12345678" not in out
+
+    @pytest.mark.asyncio
+    async def test_batch_accepts_language(self):
+        texts = ["Andreas Mueller ruft an.", "Die Bergmann GmbH sitzt in Muenchen."]
+        out, _map, _entities = await anonymize_texts(texts, "m-de-batch", language="de")
+        clear_registry("m-de-batch")
+        assert len(out) == 2
+        assert "Andreas Mueller" not in out[0]

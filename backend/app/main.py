@@ -1027,6 +1027,10 @@ class AnonymizeRequest(BaseModel):
     meeting_id: str
     entity_map: Optional[dict] = None
     detect_json: bool = True
+    # Analysis language (ISO-639-1, or the "auto"/"auto-translate" sentinels the transcription
+    # picker stores). Send the meeting's transcription language so a German call is analysed with
+    # the German NER model; omitted or "auto" falls back to sniffing the text.
+    language: Optional[str] = None
 
 class AnonymizeResponse(BaseModel):
     sanitized: List[str]
@@ -1054,10 +1058,11 @@ async def anonymize_endpoint(req: AnonymizeRequest):
         meeting_id=req.meeting_id,
         entity_map=req.entity_map,
         detect_json=req.detect_json,
+        language=req.language,
     )
     logger.info(
-        "Anonymized %d texts for meeting %s: %d entities found",
-        len(req.texts), req.meeting_id, len(entities_found),
+        "Anonymized %d texts for meeting %s (language: %s): %d entities found",
+        len(req.texts), req.meeting_id, req.language or "auto", len(entities_found),
     )
     return AnonymizeResponse(
         sanitized=sanitized,
@@ -1094,8 +1099,11 @@ async def anonymize_health():
     """Check if the anonymization service is available."""
     return {
         "available": anonymizer.is_available(),
-        "model": "en_core_web_sm" if anonymizer.is_available() else None,
-        "language": anonymizer.ANALYSIS_LANGUAGE,
+        # All loaded spaCy models, keyed by language. Previously hardcoded to en_core_web_sm,
+        # which hid the fact that non-English calls were analysed with an English model.
+        "models": anonymizer.LOADED_MODELS,
+        "languages": anonymizer.LOADED_LANGUAGES,
+        "default_language": anonymizer.ANALYSIS_LANGUAGE,
     }
 
 

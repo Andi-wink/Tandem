@@ -33,21 +33,89 @@ logger = logging.getLogger(__name__)
 # Module-level initialization (loaded ONCE at import time)
 # ---------------------------------------------------------------------------
 
-_nlp_config = {
-    "nlp_engine_name": "spacy",
-    "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
+# Candidate spaCy models, in preference order per language. Only the ones actually installed are
+# loaded, so a machine without the German model degrades to English rather than failing to import.
+#
+# German matters specifically: the anonymizer was English-only until 2026-08-11, which meant that
+# on a German client call (the calls with the strictest legal exposure) German names, orgs and
+# locations were NOT detected before the context basket was sent to the AI panel. The anonymizer
+# was inert on exactly the conversations it existed to protect.
+_MODEL_CANDIDATES: dict[str, list[str]] = {
+    "en": ["en_core_web_sm"],
+    "de": ["de_core_news_sm"],
+    "fr": ["fr_core_news_sm"],
+    "es": ["es_core_news_sm"],
+    "it": ["it_core_news_sm"],
+    "nl": ["nl_core_news_sm"],
 }
+
+
+def _installed_models() -> list[dict[str, str]]:
+    """Returns the spaCy models present on this machine, as Presidio nlp_configuration entries."""
+    import importlib.util
+
+    found = []
+    for lang_code, candidates in _MODEL_CANDIDATES.items():
+        for model_name in candidates:
+            if importlib.util.find_spec(model_name) is not None:
+                found.append({"lang_code": lang_code, "model_name": model_name})
+                break
+    return found
+
+
+_models = _installed_models()
+if not _models:
+    # Preserve the historical default so the failure mode is an explicit load error rather than an
+    # empty model list.
+    _models = [{"lang_code": "en", "model_name": "en_core_web_sm"}]
+
+_nlp_config = {"nlp_engine_name": "spacy", "models": _models}
+
+# Languages the analyzer can actually serve. Anything else falls back to the default.
+LOADED_LANGUAGES: list[str] = [m["lang_code"] for m in _models]
+LOADED_MODELS: dict[str, str] = {m["lang_code"]: m["model_name"] for m in _models}
+
+# German context words for the phone recognizer. Presidio scores a bare number at 0.4, below the
+# 0.7 surrogate threshold, and only lifts it when a context word sits nearby. The built-in context
+# list is English ("phone", "mobile", "cell"), so a German phone number in a German sentence stayed
+# under threshold and was never surrogated.
+_DE_PHONE_CONTEXT = [
+    "telefon", "telefonnummer", "nummer", "rufnummer", "handy", "handynummer",
+    "mobil", "mobilnummer", "durchwahl", "festnetz", "erreichbar", "anrufen", "tel",
+]
 
 try:
     _nlp_engine = NlpEngineProvider(nlp_configuration=_nlp_config).create_engine()
-    _analyzer = AnalyzerEngine(nlp_engine=_nlp_engine)
+    _analyzer = AnalyzerEngine(
+        nlp_engine=_nlp_engine, supported_languages=LOADED_LANGUAGES
+    )
+
+    if "de" in LOADED_LANGUAGES:
+        try:
+            from presidio_analyzer.predefined_recognizers import PhoneRecognizer
+
+            _analyzer.registry.add_recognizer(
+                PhoneRecognizer(
+                    context=_DE_PHONE_CONTEXT,
+                    supported_language="de",
+                    supported_regions=("DE", "AT", "CH", "US", "UK"),
+                )
+            )
+        except Exception as e:  # non-fatal: German NER still works without it
+            logger.warning("Could not register German phone recognizer: %s", e)
+
     _anonymizer_engine = AnonymizerEngine()
     _presidio_available = True
-    logger.info("Presidio PII anonymizer initialized (model: en_core_web_sm)")
+    logger.info(
+        "Presidio PII anonymizer initialized (models: %s)",
+        ", ".join(f"{k}={v}" for k, v in LOADED_MODELS.items()),
+    )
 except Exception as e:
     _analyzer = None
     _anonymizer_engine = None
     _presidio_available = False
+    LOADED_LANGUAGES = []
+    LOADED_MODELS = {}
     logger.warning("Presidio not available: %s. Anonymization disabled.", e)
 
 # ---------------------------------------------------------------------------
@@ -79,9 +147,85 @@ REDACT_THRESHOLD = 0.3
 
 ALL_ENTITIES = SURROGATE_ENTITIES + REDACT_ENTITIES
 
-# Default analysis language (Presidio/spaCy language code).
-# Change this to match the installed spaCy model (e.g. "de" for German, "es" for Spanish).
+# Default analysis language (Presidio/spaCy language code). Used when the caller does not name
+# one, and as the fallback when a requested language has no model installed.
 ANALYSIS_LANGUAGE = os.environ.get("TANDEM_PII_LANGUAGE", "en")
+
+# Languages already warned about, so an unsupported request logs once rather than per chunk.
+_warned_languages: set[str] = set()
+
+# German function words that are rare-to-absent in English. Used only to pick between models we
+# have actually loaded, never to reject text.
+_GERMAN_MARKERS = frozenset(
+    """der die das und ist nicht ich wir sie mit für auf von dem den des eine einen einem
+       auch noch schon aber oder wenn dann weil dass wie was wer wo sehr mehr sind war
+       haben hat hatte werden wird wurde kann können muss müssen soll sollen ja nein
+       vielen danke bitte genau also über unter zwischen""".split()
+)
+
+
+def _looks_german(text: str) -> bool:
+    """Cheap German detector for the 'auto' case: umlaut/ß density plus function-word hits.
+
+    Deliberately dependency-free and deliberately conservative. It only ever chooses between
+    models that are already loaded, and a wrong answer degrades detection quality rather than
+    breaking anything. It is not a general language identifier and should not be used as one.
+    """
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(ch in lowered for ch in "äöüß"):
+        return True
+    words = re.findall(r"[a-zäöüß]+", lowered)
+    if len(words) < 8:
+        # Too short to judge; do not guess.
+        return False
+    hits = sum(1 for w in words if w in _GERMAN_MARKERS)
+    return hits / len(words) >= 0.12
+
+
+def _resolve_language(requested: Optional[str], text: str = "") -> str:
+    """Picks the analysis language actually used for a call.
+
+    - None / "" / "auto" / "auto-translate": sniff the text, else fall back to the default.
+    - An explicit code with a loaded model: use it.
+    - An explicit code with no model: warn once, fall back to the default.
+    """
+    default = ANALYSIS_LANGUAGE if ANALYSIS_LANGUAGE in LOADED_LANGUAGES else (
+        LOADED_LANGUAGES[0] if LOADED_LANGUAGES else "en"
+    )
+
+    code = (requested or "").strip().lower()
+    code = code.split("-")[0].split("_")[0]
+
+    if code in ("", "auto", "autotranslate"):
+        if "de" in LOADED_LANGUAGES and _looks_german(text):
+            return "de"
+        return default
+
+    if code in LOADED_LANGUAGES:
+        return code
+
+    if code not in _warned_languages:
+        _warned_languages.add(code)
+        logger.warning(
+            "No spaCy model installed for language '%s' (have: %s). "
+            "Falling back to '%s'. Install with: python -m spacy download %s",
+            code,
+            ", ".join(LOADED_LANGUAGES) or "none",
+            default,
+            _MODEL_CANDIDATES.get(code, ["<unknown model>"])[0],
+        )
+    return default
+
+
+def _analyze(text: str, language: Optional[str]) -> list[RecognizerResult]:
+    """Single entry point for Presidio analysis, so language resolution happens in one place."""
+    return _analyzer.analyze(
+        text=text,
+        entities=ALL_ENTITIES,
+        language=_resolve_language(language, text),
+    )
 
 # UUID pattern for false-positive filtering
 _UUID_PATTERN = re.compile(
@@ -350,19 +494,21 @@ def _filter_uuid_false_positives(
 # ---------------------------------------------------------------------------
 
 
-def _anonymize_json_values(obj: Any, registry: EntityRegistry) -> Any:
+def _anonymize_json_values(
+    obj: Any, registry: EntityRegistry, language: Optional[str] = None
+) -> Any:
     """Recursively anonymize string values in JSON, preserving structure.
 
     Note: JSON values are individual strings (not the original text), so we
     can't pre-compute analysis for these. Each string value is analyzed once.
     """
     if isinstance(obj, str):
-        anonymized, _results = _anonymize_text_segment(obj, registry)
+        anonymized, _results = _anonymize_text_segment(obj, registry, language=language)
         return anonymized
     elif isinstance(obj, dict):
-        return {k: _anonymize_json_values(v, registry) for k, v in obj.items()}
+        return {k: _anonymize_json_values(v, registry, language) for k, v in obj.items()}
     elif isinstance(obj, list):
-        return [_anonymize_json_values(item, registry) for item in obj]
+        return [_anonymize_json_values(item, registry, language) for item in obj]
     else:
         return obj  # numbers, booleans, null — pass through
 
@@ -371,6 +517,7 @@ def _anonymize_text_segment(
     text: str,
     registry: EntityRegistry,
     precomputed_results: list[RecognizerResult] | None = None,
+    language: Optional[str] = None,
 ) -> tuple[str, list[RecognizerResult]]:
     """Anonymize a single text string using Presidio.
 
@@ -390,11 +537,7 @@ def _anonymize_text_segment(
     if precomputed_results is not None:
         results = precomputed_results
     else:
-        results = _analyzer.analyze(
-            text=text,
-            entities=ALL_ENTITIES,
-            language=ANALYSIS_LANGUAGE,
-        )
+        results = _analyze(text, language)
         results = _filter_uuid_false_positives(text, results)
 
     # Apply thresholds
@@ -509,6 +652,7 @@ async def anonymize_text(
     meeting_id: str,
     entity_map: Optional[dict[str, str]] = None,
     detect_json: bool = True,
+    language: Optional[str] = None,
 ) -> tuple[str, dict[str, str], list[dict]]:
     """Anonymize PII in text.
 
@@ -517,6 +661,9 @@ async def anonymize_text(
         meeting_id: Meeting identifier for consistent surrogates.
         entity_map: Optional existing entity map to extend.
         detect_json: Whether to detect and handle JSON blocks specially.
+        language: Analysis language (ISO-639-1, or the "auto" sentinels). Pass the meeting's
+            transcription language so German calls get German NER. Falls back to sniffing the
+            text, then to ANALYSIS_LANGUAGE.
 
     Returns:
         Tuple of (anonymized_text, updated_entity_map, entities_found).
@@ -529,9 +676,7 @@ async def anonymize_text(
 
     # Single analysis pass for the full text — reused for clustering,
     # anonymization, and entity reporting (avoids 3x redundant calls).
-    all_results = _analyzer.analyze(
-        text=text, entities=ALL_ENTITIES, language=ANALYSIS_LANGUAGE
-    )
+    all_results = _analyze(text, language)
     all_results = _filter_uuid_false_positives(text, all_results)
 
     # Extract PERSON names from the single pass for clustering
@@ -548,7 +693,7 @@ async def anonymize_text(
     if detect_json:
         parsed, is_json = _try_parse_json_block(text)
         if is_json:
-            anonymized_obj = _anonymize_json_values(parsed, registry)
+            anonymized_obj = _anonymize_json_values(parsed, registry, language)
             anonymized_text = json.dumps(anonymized_obj, indent=2, ensure_ascii=False)
             # Use _anonymize_text_segment just for threshold filtering to
             # get the filtered results for reporting, without re-analyzing
@@ -576,10 +721,14 @@ async def anonymize_texts(
     meeting_id: str,
     entity_map: Optional[dict[str, str]] = None,
     detect_json: bool = True,
+    language: Optional[str] = None,
 ) -> tuple[list[str], dict[str, str], list[dict]]:
     """Anonymize PII in multiple texts (batch).
 
     Uses a shared entity registry so surrogates are consistent across all texts.
+
+    `language` is the analysis language (ISO-639-1, or the "auto" sentinels). Resolution is
+    per-text, so a mixed batch still gets the right model per segment.
     """
     if not _presidio_available:
         return texts, entity_map or {}, []
@@ -591,9 +740,7 @@ async def anonymize_texts(
     per_text_results: list[list[RecognizerResult]] = []
     all_person_names: list[str] = []
     for text in texts:
-        results = _analyzer.analyze(
-            text=text, entities=ALL_ENTITIES, language=ANALYSIS_LANGUAGE
-        )
+        results = _analyze(text, language)
         results = _filter_uuid_false_positives(text, results)
         per_text_results.append(results)
         all_person_names.extend(
@@ -611,7 +758,7 @@ async def anonymize_texts(
         if detect_json:
             parsed, is_json = _try_parse_json_block(text)
             if is_json:
-                anon_obj = _anonymize_json_values(parsed, registry)
+                anon_obj = _anonymize_json_values(parsed, registry, language)
                 sanitized.append(json.dumps(anon_obj, indent=2, ensure_ascii=False))
                 # Get filtered results for reporting without re-analyzing
                 _anon_unused, filtered = _anonymize_text_segment(
@@ -637,6 +784,7 @@ def _collect_entities_found(
     text: str,
     registry: EntityRegistry,
     precomputed_results: list[RecognizerResult] | None = None,
+    language: Optional[str] = None,
 ) -> list[dict]:
     """Collect a summary of entities found in text.
 
@@ -664,7 +812,7 @@ def _collect_entities_found(
         return entities
 
     # Fallback: full analysis (for callers without precomputed results)
-    results = _analyzer.analyze(text=text, entities=ALL_ENTITIES, language=ANALYSIS_LANGUAGE)
+    results = _analyze(text, language)
     results = _filter_uuid_false_positives(text, results)
 
     entities = []
