@@ -18,6 +18,13 @@ Tolerances (absolute WER percentage points):
   pooled regression      > +1.5   -> fail
   any single-clip regress > +5.0  -> fail
 
+Per-language WER (from the `lang` field in clips_index.json) is printed alongside
+pooled and included in --json as `by_lang`. It is DIAGNOSTIC ONLY: the baseline is
+still pooled + per-clip, so an English win can currently still mask a German
+regression. Splitting the tolerances by language is backlog item P2.
+The gate always scores the unpinned ("auto") language path, which is what the
+shipped default does and what wer_baseline.json was measured under.
+
 NOTE: this scores the faithful Python replica of the Rust engine. It tracks the
 shipped code only while the two are kept in sync (see To-do.md for the planned
 Rust --transcribe-file entry point that would let the gate score the real binary).
@@ -109,13 +116,26 @@ def main():
     print(f"\nPooled WER: {pooled*100:.2f}%  (baseline {base['pooled']*100:.2f}%, "
           f"delta {pooled_delta*100:+.2f}pp)")
     for stem, w, b, d in per_clip:
+        lang = res["clips"][stem].get("lang", "?")
         flag = "  <-- REGRESSION" if d > clip_tol else ("  (improved)" if d < -0.005 else "")
-        print(f"  {stem}: {w*100:5.1f}%  (baseline {b*100:5.1f}%, {d*100:+.1f}pp){flag}")
+        print(f"  {stem} [{lang}]: {w*100:5.1f}%  (baseline {b*100:5.1f}%, "
+              f"{d*100:+.1f}pp){flag}")
+
+    # Per-language WER. The baseline is pooled-only (P2 will split the tolerances),
+    # so this is reported for diagnosis and does not gate.
+    from run_tandem_meeting_wer import format_by_lang
+    print("\nPer-language WER (diagnostic; baseline is pooled-only until P2):")
+    for line in format_by_lang(res):
+        print(line)
 
     if args.json:
         print(json.dumps({"pooled": pooled, "baseline": base["pooled"],
                           "pooled_delta": pooled_delta,
                           "clips": {s: c["wer"] for s, c in res["clips"].items()},
+                          "by_lang": {lg: {"wer": g["wer"], "S": g["S"], "D": g["D"],
+                                           "I": g["I"], "N": g["N"], "clips": g["clips"]}
+                                      for lg, g in res.get("by_lang", {}).items()},
+                          "pin_language": res.get("pin_language", False),
                           "pass": not failures}))
 
     if failures:

@@ -446,10 +446,39 @@ def collapse_runaways(text: str, min_run: int = 3) -> str:
     return " ".join(out)
 
 
-def postprocess(text: str, do_reps=True, do_domain=True, gentle=True) -> str:
+def english_post_processing_applies(language=None) -> bool:
+    """Exact port of ParakeetEngine::english_post_processing_applies (parakeet_engine.rs:514).
+
+    True for None/unset, empty, "auto", "auto-translate", "en" and any "en-*" tag
+    (case-insensitive, surrounding whitespace trimmed). False for every other
+    explicit language, which is what makes the German path skip the English-only
+    domain/phrase correction passes.
+    """
+    if language is None:
+        return True
+    l = language.strip().lower()
+    return (
+        l == ""
+        or l == "auto"
+        or l == "auto-translate"
+        or l == "en"
+        or l.startswith("en-")
+    )
+
+
+def postprocess(text: str, do_reps=True, do_domain=True, gentle=True, language=None) -> str:
+    """Mirror of ParakeetEngine::transcribe_audio's post-processing tail.
+
+    `collapse_runaways` (#1) is language-neutral and always runs. The domain/phrase
+    correction (#3/#3b) is an English wordlist fuzzy-matched at 0.86 similarity
+    against every token of 4+ characters, so it only runs when the pinned language
+    preference is English-ish. `language=None` (the default) keeps every existing
+    caller on the previous unconditional behaviour, exactly as the Rust engine does
+    for an unset preference.
+    """
     if do_reps:
         text = collapse_runaways(text) if gentle else clean_repetitive_text(text)
-    if do_domain:
+    if do_domain and english_post_processing_applies(language):
         text = apply_domain_corrections(apply_phrase_corrections(text))
     return text
 
