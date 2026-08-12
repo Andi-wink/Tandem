@@ -37,10 +37,60 @@ through [wer_gate.py](wer_gate.py) against [wer_baseline.json](wer_baseline.json
 - **The compiled domain wordlist is dead weight on this benchmark.** `apply_domain_corrections`
   fires on 0 of 16 buffers across all 5 scored clips. The only correction that fires anywhere is
   the phrase rule `N A N` -> `n8n` on clip_04 (worth +1.875 pp). Measure before extending it.
+- **THE HARNESS DOES NOT SCORE THE SHIPPED CONFIG** (found 2026-08-11, iteration 2, verified
+  independently). Commit `1d0c869` (2026-06-03) changed the Rust engine from 25s to 12s buffers and
+  added a 1 second left-context overlap on every flush, touching zero files under `audio_testing/`.
+  **The harness is the stale side, not the Rust.** Parakeet falls through the `_ =>` default arm at
+  [pipeline.rs:86](../frontend/src-tauri/src/audio/pipeline.rs#L86) to `FlushProfile::LOCAL`
+  (12s), and `dedup_overlap_prefix` at [worker.rs:280](../frontend/src-tauri/src/audio/transcription/worker.rs#L280)
+  does run for Parakeet. Scoring what actually ships gives pooled **22.830%** (S=80 D=38 I=24),
+  against the gate's 21.543% (D=62).
+  Pooled is only 1.29 pp optimistic, but **the error mix is badly wrong: the gate measures a 10.0%
+  deletion rate where the shipped pipeline has 6.1%**, so the gate overstates the deletion problem
+  by 39%. Iteration 2 spent itself sizing a problem bigger than the one that ships.
+- **Content loss is in the decode, but only by elimination.** VAD loses 2 words across the whole
+  benchmark, and the buffer join is lossless (verified 107=107 on all 5 clips). Everything else is
+  the decoder. But no mechanism has been established, and two proposed ones were falsified:
+  - ~~emission rate decays with buffer length (4.67 w/s at 3s -> 1.82 w/s at 24.7s)~~ **FALSE, a
+    denominator artefact.** Holding the audio window fixed at 3s and growing only the buffer,
+    recall is flat at 70% -> 70%, Pearson r = +0.056. The apparent decay is buffers containing
+    proportionally more silence.
+  - ~~the 14-word block at ref 100-113 is a distinct failure~~ **NOT SPECIAL.** Decoding every
+    4.82s window of clip_07 gives mean recall 25.0%, median 12.7%, with 9 of 20 windows at 0.0%.
+    The "block" scores 15.4%, the **60th percentile, better than the median window**. The real
+    shape is buffer-wide under-emission (buf2 recall 26.5%), not a discrete dropout.
+- **English and German respond OPPOSITELY to more context, so they are not the same bug.** Growing
+  context recovers clip_02's missing block (1/9 -> 7/9 words) and does NOT recover clip_07's
+  (3/14 -> 0/14 -> 5/14). Do not merge P5 and P1b.
+- **`collapse_runaways` is net strongly positive but is self-harming on German.** Removing it costs
+  +17.5 pp pooled (21.543 -> 39.068), so keep it. But on clip_07 it converts 10 substitutions into
+  deletions (S37/D37 with it, S48/D27 without), meaning **10 of the 37 German deletions are
+  self-inflicted** rather than model under-emission.
+- **The German reference itself may be imperfect.** At the disputed span, Scribe's own average
+  logprob is -0.405 against -0.183 elsewhere, and reference word 105 (`das`) has **zero duration**
+  (47.08 -> 47.08). Audio level there is fine (2 dB louder than clip average, no clipped samples).
+  Overlapping speech cannot be excluded without diarization. Some of the "German error" may be
+  reference error.
 - **Parakeet cannot be steered by a language hint.** TDT v3 auto-detects and exposes no language
   token. Language only gates post-processing. Do not file items that assume otherwise.
 
 ## Priority queue
+
+### P0b — Make the harness score the SHIPPED config (NEW, now blocks everything)
+Raised by iteration 2 QA and independently reproduced to the digit. Until this lands, every number
+this loop produces describes a pipeline that has not shipped since 2026-06-03, and the deletion
+rate it reports is 39% too high, which is exactly the quantity iteration 2 spent itself analysing.
+- Set the harness buffer to the shipped `FlushProfile::LOCAL` (12s / 192_000 samples), not 25s.
+- Model the 1 second left-context overlap prepended on every flush, **and** the
+  `dedup_overlap_prefix` pass in `worker.rs` that removes the duplicated prefix. Modelling the
+  overlap without the dedupe is what produced the misleading 25.884% figure; with it, 22.830%.
+- Note the dedupe is exact-match and catches only 20 of 44 insertions, so overlap is a real
+  accuracy cost, not free context. Report S/D/I, not just pooled.
+- Check whether `SHIPPED_MIN_SAMPLES = 25 * 16000` was a deliberate experiment result (the comment
+  says "#5; 12s->25s, exp E6") that the Rust then diverged from, or simply never updated. Say which
+  in the commit message.
+- **Then, and only then, re-baseline (P2).** Expect pooled ~22.8%, D to fall from 62 to 38, and
+  S+I to rise from 72 to 104.
 
 ### P0 — Teach the harness about language, and report per-language WER
 **Why first:** the Rust engine changed on 2026-08-11 to gate English-only domain correction on the
@@ -62,11 +112,26 @@ the 2026-08-04 German client call in `To-do.md` is another source), target 270-3
 minimum, and produce references the same way the existing ones were made.
 **Carries the ground-truth caveat**: new references cut the same way are still Scribe's output.
 
-### P1b — Find the dropped German blocks (NEW, was P5, promoted)
-The 14-word contiguous drop at ref positions 100-113 of clip_07, plus 3 more blocks, are 31 of the
-37 deletions. Instrument the VAD/buffer path for that clip: which buffer boundary do the missing
-words fall on, is the audio present in the segment, and does Parakeet emit nothing or does the
-concatenation lose it? This is the single largest identified chunk of German error.
+### P1b — Find the dropped German blocks — **PARTLY ANSWERED, RESCOPED** (iteration 2, FAILED QA)
+What the iteration established and QA upheld: **VAD and the join are not the loss stage** (VAD
+loses 2 words across the whole benchmark, both English; join verified lossless on all 5 clips). By
+elimination the decoder is where content is lost.
+
+What QA falsified: the buffer-length decay mechanism (denominator artefact, r = +0.056 under a
+fair denominator), the "14-word block" framing (that span is the 60th percentile of clip_07
+windows, better than median), and the claim that English shares the mechanism (opposite responses
+to added context). See the corrected standing facts above.
+
+Remaining, in order:
+- [ ] **Rerun the whole question against the shipped config (P0b first).** 10 of the 37 German
+      deletions are `collapse_runaways` artefacts and the gate overstates deletions by 39%, so the
+      real German deletion problem is materially smaller than the 37 this item was built on.
+- [ ] Establish a decoder mechanism with positive evidence, not elimination. The one concrete
+      untested lead: both Rust and Python **ignore the TDT duration head** in the greedy decode
+      (which is why a `BLANK_PENALTY` exists at all). Building a duration-aware decode would test
+      it. That is a real piece of work, not a tweak.
+- [ ] Rule out reference error and overlapping speech at the disputed span before attributing it
+      to the model (Scribe's own logprob is degraded there; one reference word has zero duration).
 
 ### P1 — German-aware normalisation, applied symmetrically
 **Demoted after iteration 1**: addressable surface is ~4.9 pp of the 53.5 pp, not the bulk of it.
