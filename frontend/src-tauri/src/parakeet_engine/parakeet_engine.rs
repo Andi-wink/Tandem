@@ -511,7 +511,11 @@ impl ParakeetEngine {
     /// Whether the English-only domain/phrase correction passes should run for this language
     /// preference. True for English, unset, and the auto sentinels; false for any explicit
     /// non-English language.
-    fn english_post_processing_applies(language: Option<&str>) -> bool {
+    ///
+    /// This is the single source of truth for the predicate inside the crate: callers that need
+    /// to describe or log the behaviour (e.g. `ParakeetProvider`) must call this rather than
+    /// re-implementing it, so the log can never contradict what the engine actually does.
+    pub(crate) fn english_post_processing_applies(language: Option<&str>) -> bool {
         match language {
             None => true,
             Some(raw) => {

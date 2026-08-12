@@ -29,9 +29,11 @@ impl TranscriptionProvider for ParakeetProvider {
         // language token to send. The hint is still forwarded because it gates the English-only
         // post-processing inside the engine. Warn once per non-English call so the limitation is
         // visible in the log rather than silently assumed to be honoured.
-        if let Some(ref lang) = language {
-            let l = lang.trim().to_ascii_lowercase();
-            if !(l.is_empty() || l == "auto" || l == "auto-translate" || l == "en") {
+        // The predicate itself lives on the engine; calling it here (rather than re-implementing
+        // it) is what guarantees this warning matches the post-processing the engine performs.
+        if let Some(lang) = language.as_deref() {
+            if !crate::parakeet_engine::ParakeetEngine::english_post_processing_applies(Some(lang))
+            {
                 warn!(
                     "Parakeet cannot be steered to '{}': the model auto-detects language. \
                      English post-processing disabled for this chunk.",
