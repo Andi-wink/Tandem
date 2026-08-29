@@ -287,6 +287,12 @@ Recovered the orphaned F022 work onto `feature/speaker-diarization` (rebased off
 - [ ] End-to-end product test: install deps, download model via Settings, diarize a real recording, verify speaker badges render (recovered UI compiles; not yet runtime-tested).
 - [ ] Cleanup: once recovery is confirmed good, delete the stale `D:/Dev-projects/Tandem-f022-orphan` directory (kept as the recovery source).
 
+### Handover Document (F063) - built on feature/solo-handover-doc, not yet run in the app
+Verbatim no-AI export offered next to "Generate Summary" after a recording. tsc clean, 482 vitest tests pass, output verified against a generated sample. Remaining:
+- [ ] Live app pass: record a short solo session (type a note with a link, take a screenshot, copy something), stop, click "Create handover document", confirm HANDOVER.md renders with the screenshot visible and the links section correct. Needs a CUDA rebuild in the [Tandem-handover](../Tandem-handover) worktree.
+- [ ] Decide whether this should merge with the existing F020 HANDOFF.md export ([handoffExport.ts](frontend/src/lib/handoffExport.ts)), which builds a similar timeline for Claude Code but adds AI conversation + task YAML and never includes notes or links. Two overlapping documents is a smell.
+- [ ] Naming collision to watch: "handover" already means a mid-call meeting switch in [handoffService.ts](frontend/src/services/handoffService.ts) (I5b), and "handoff" means the F020 export.
+
 ## Done
 - Security: the Anthropic/Claude API key no longer sits in plaintext in the `settings` table. It now lives in the OS credential store (Windows Credential Manager / macOS Keychain via the `keyring` crate); `save`/`get`/`delete` for the `claude` provider delegate to [secure_store.rs](frontend/src-tauri/src/database/secure_store.rs). On startup, any pre-existing plaintext `anthropicApiKey` is migrated into the secure store and the column is blanked ([manager.rs](frontend/src-tauri/src/database/manager.rs)). `cargo check --lib` clean; secure_store + settings repository tests pass. Other provider keys (Groq, OpenAI, etc.) remain in SQLite, matching CLAUDE.md.
 - Established transcription WER baseline for the current engine (Parakeet TDT v3 int8) vs ElevenLabs ground truth: 31.4% pooled (exact meeting pipeline).
