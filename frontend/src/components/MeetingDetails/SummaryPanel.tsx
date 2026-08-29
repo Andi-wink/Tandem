@@ -51,6 +51,9 @@ interface SummaryPanelProps {
   onTemplateSelect: (templateId: string, templateName: string) => void;
   isModelConfigLoading?: boolean;
   onOpenModelSettings?: (openFn: () => void) => void;
+  /** Build the no-AI handover document (verbatim transcript, notes, screenshots, links). */
+  onGenerateHandover?: () => void;
+  isGeneratingHandover?: boolean;
 }
 
 export function SummaryPanel({
@@ -86,7 +89,9 @@ export function SummaryPanel({
   selectedTemplate,
   onTemplateSelect,
   isModelConfigLoading = false,
-  onOpenModelSettings
+  onOpenModelSettings,
+  onGenerateHandover,
+  isGeneratingHandover = false
 }: SummaryPanelProps) {
   const isSummaryLoading = summaryStatus === 'processing' || summaryStatus === 'summarizing' || summaryStatus === 'regenerating';
 
@@ -121,6 +126,8 @@ export function SummaryPanel({
                 hasTranscripts={transcripts.length > 0}
                 isModelConfigLoading={isModelConfigLoading}
                 onOpenModelSettings={onOpenModelSettings}
+                onGenerateHandover={onGenerateHandover}
+                isGeneratingHandover={isGeneratingHandover}
               />
             </div>
 
@@ -161,6 +168,8 @@ export function SummaryPanel({
               hasTranscripts={transcripts.length > 0}
               isModelConfigLoading={isModelConfigLoading}
               onOpenModelSettings={onOpenModelSettings}
+              onGenerateHandover={onGenerateHandover}
+              isGeneratingHandover={isGeneratingHandover}
             />
           </div>
           {/* Loading spinner */}
@@ -189,6 +198,8 @@ export function SummaryPanel({
               hasTranscripts={transcripts.length > 0}
               isModelConfigLoading={isModelConfigLoading}
               onOpenModelSettings={onOpenModelSettings}
+              onGenerateHandover={onGenerateHandover}
+              isGeneratingHandover={isGeneratingHandover}
             />
           </div>
           {/* Empty state message */}
@@ -196,6 +207,8 @@ export function SummaryPanel({
             onGenerate={() => onGenerateSummary(customPrompt)}
             hasModel={modelConfig.provider !== null && modelConfig.model !== null}
             isGenerating={isSummaryLoading}
+            onGenerateHandover={onGenerateHandover}
+            isGeneratingHandover={isGeneratingHandover}
           />
         </div>
       ) : transcripts?.length > 0 && (

@@ -16,7 +16,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Sparkles, Settings, Loader2, FileText, Check, Square } from 'lucide-react';
+import { Sparkles, Settings, Loader2, FileText, Check, Square, ScrollText } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
@@ -38,6 +38,9 @@ interface SummaryGeneratorButtonGroupProps {
   hasTranscripts?: boolean;
   isModelConfigLoading?: boolean;
   onOpenModelSettings?: (openFn: () => void) => void;
+  /** Build the no-AI handover document (verbatim transcript, notes, screenshots, links). */
+  onGenerateHandover?: () => void;
+  isGeneratingHandover?: boolean;
 }
 
 export function SummaryGeneratorButtonGroup({
@@ -53,7 +56,9 @@ export function SummaryGeneratorButtonGroup({
   onTemplateSelect,
   hasTranscripts = true,
   isModelConfigLoading = false,
-  onOpenModelSettings
+  onOpenModelSettings,
+  onGenerateHandover,
+  isGeneratingHandover = false
 }: SummaryGeneratorButtonGroupProps) {
   const [isCheckingModels, setIsCheckingModels] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
@@ -282,6 +287,34 @@ export function SummaryGeneratorButtonGroup({
             <>
               <Sparkles className="xl:mr-2" size={18} />
               <span className="hidden lg:inline xl:inline">Generate Summary</span>
+            </>
+          )}
+        </Button>
+      )}
+
+      {/* Handover document: the no-AI alternative to a summary. Sits next to Generate Summary because
+          this is the moment the user is deciding what they want out of the call, and it needs no model,
+          so it stays enabled even when no provider is configured. */}
+      {onGenerateHandover && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            Analytics.trackButtonClick('generate_handover_doc', 'meeting_details');
+            onGenerateHandover();
+          }}
+          disabled={isGeneratingHandover}
+          title="Create a handover document: the full transcript in order, with your notes, screenshots and links. No AI."
+        >
+          {isGeneratingHandover ? (
+            <>
+              <Loader2 className="animate-spin xl:mr-2" size={18} />
+              <span className="hidden lg:inline xl:inline">Building...</span>
+            </>
+          ) : (
+            <>
+              <ScrollText className="xl:mr-2" size={18} />
+              <span className="hidden lg:inline xl:inline">Handover doc</span>
             </>
           )}
         </Button>
