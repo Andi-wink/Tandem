@@ -1357,6 +1357,7 @@ pub fn run() {
             screenshot::commands::save_screenshots_json,
             screenshot::commands::load_screenshots_json,
             screenshot::commands::save_annotated_screenshot,
+            screenshot::commands::screenshot_embed_data_uri,
             screenshot::commands::set_active_solo_project,
             // Clipboard capture commands
             clipboard::commands::read_clipboard_content,

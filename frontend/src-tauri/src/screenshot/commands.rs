@@ -461,3 +461,24 @@ fn get_screenshots_dir<R: Runtime>(app: &AppHandle<R>) -> Result<std::path::Path
         Ok(capture::get_screenshots_dir(&app_data))
     }
 }
+
+/// Read an image from disk and return it as a JPEG data URI scaled for document embedding.
+///
+/// Used by the handover export so the generated HTML carries its own images and stays readable
+/// when it is moved or emailed. Missing files return an error rather than a placeholder, so the
+/// caller can decide whether to fall back to a plain file reference.
+#[tauri::command]
+pub async fn screenshot_embed_data_uri(
+    file_path: String,
+    max_width: Option<u32>,
+) -> Result<String, String> {
+    let path = PathBuf::from(&file_path);
+    if !path.exists() {
+        return Err(format!("Image not found: {}", file_path));
+    }
+    let width = max_width.unwrap_or(capture::EMBED_MAX_WIDTH);
+    capture::generate_embed_data_uri(&path, width).map_err(|e| {
+        error!("Failed to embed image {}: {}", file_path, e);
+        format!("Failed to embed image: {}", e)
+    })
+}

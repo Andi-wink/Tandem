@@ -18,9 +18,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { Transcript, ScreenshotData, ClipboardData } from '@/types';
 import type { Jot, JotsFile } from '@/lib/meetingJots';
-import { buildHandoverTimeline, collectLinks, generateHandoverMarkdown } from '@/lib/handoverDoc';
+import { buildHandoverTimeline, collectLinks, generateHandoverMarkdown, type HandoverItem } from '@/lib/handoverDoc';
+import { generateHandoverHtml } from '@/lib/handoverHtml';
 
 export const HANDOVER_FILENAME = 'HANDOVER.md';
+export const HANDOVER_HTML_FILENAME = 'HANDOVER.html';
 
 export interface GenerateHandoverArgs {
   meetingId: string;
@@ -79,25 +81,44 @@ export function useHandoverDoc(): UseHandoverDocReturn {
       try {
         const jots = await readJots(folderPath);
         const timeline = buildHandoverTimeline(transcripts, screenshots, clipboardItems, jots);
-        const markdown = generateHandoverMarkdown({
+        const data = {
           meetingName,
           date: date || new Date().toISOString(),
           durationSeconds: durationFromTranscripts(transcripts),
           timeline,
           links: collectLinks(timeline),
           folderPath,
-        });
+        };
 
+        // Markdown references its images relatively, so it renders wherever it sits next to the
+        // meeting folder's screenshots/ directory and stays small and diff-friendly.
         const filePath = joinPath(folderPath, HANDOVER_FILENAME);
-        await invoke('save_transcript', { filePath, content: markdown });
+        await invoke('save_transcript', { filePath, content: generateHandoverMarkdown(data) });
+
+        // HTML inlines the images instead, so the single file can be sent to someone else and still
+        // render, and prints to a clean PDF. Failing to build it must not lose the markdown, which is
+        // already written above.
+        try {
+          const images = await embedImages(timeline);
+          await invoke('save_transcript', {
+            filePath: joinPath(folderPath, HANDOVER_HTML_FILENAME),
+            content: generateHandoverHtml(data, images),
+          });
+        } catch (htmlErr) {
+          console.error('[handover] Markdown written but the HTML export failed:', htmlErr);
+          toast.warning('Saved the markdown, but not the readable HTML', {
+            description: 'HANDOVER.md is in the meeting folder. The HTML version could not be built.',
+          });
+        }
 
         const counts = { speech: 0, note: 0, screenshot: 0, clipboard: 0 } as Record<string, number>;
         for (const item of timeline) counts[item.type]++;
 
         toast.success('Handover document saved', {
           description:
-            `${HANDOVER_FILENAME}: ${counts.speech} transcript segments, ${counts.note} notes, ` +
-            `${counts.screenshot} screenshots, ${counts.clipboard} clipboard items.`,
+            `${counts.speech} transcript segments, ${counts.note} notes, ${counts.screenshot} screenshots, ` +
+            `${counts.clipboard} clipboard items. Saved as ${HANDOVER_FILENAME} and ` +
+            `${HANDOVER_HTML_FILENAME} (open the HTML and print to PDF).`,
           action: {
             label: 'Open folder',
             onClick: () => {
@@ -124,6 +145,37 @@ export function useHandoverDoc(): UseHandoverDocReturn {
   );
 
   return { generateHandover, isGenerating };
+}
+
+/**
+ * Resolve every image in the timeline to a data URI, scaled down for embedding by the Rust side.
+ *
+ * One image failing (deleted file, unreadable format) must not cost the whole export, so failures are
+ * simply left out of the map and render as a visible placeholder in the document.
+ */
+async function embedImages(timeline: HandoverItem[]): Promise<Map<string, string>> {
+  const paths = [
+    ...new Set(
+      timeline
+        .filter(i => i.type === 'screenshot' || (i.type === 'clipboard' && i.contentType === 'image'))
+        .map(i => i.filePath)
+        .filter((p): p is string => !!p),
+    ),
+  ];
+
+  const entries = await Promise.all(
+    paths.map(async (filePath): Promise<[string, string] | null> => {
+      try {
+        const dataUri = await invoke<string>('screenshot_embed_data_uri', { filePath });
+        return [filePath, dataUri];
+      } catch (err) {
+        console.warn('[handover] Could not embed image, leaving a placeholder:', filePath, err);
+        return null;
+      }
+    }),
+  );
+
+  return new Map(entries.filter((e): e is [string, string] => e !== null));
 }
 
 /**
