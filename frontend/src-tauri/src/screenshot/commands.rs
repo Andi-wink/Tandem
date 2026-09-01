@@ -245,6 +245,11 @@ pub async fn load_screenshots_json(folder_path: String) -> Result<Vec<Screenshot
 
     let screenshots_dir = folder.join("screenshots");
     let mut results: Vec<ScreenshotData> = Vec::new();
+    // Files named in the manifest but absent on disk. This used to be a silent skip, which hid a real
+    // bug for a week: Solo screenshot routing stayed pointed at a previous session's folder, so the
+    // manifest was written next to the meeting while the images went elsewhere, and the meeting simply
+    // showed no screenshots with nothing anywhere saying why. Count them and say so.
+    let mut missing: Vec<String> = Vec::new();
 
     for entry in entries {
         let file_path = screenshots_dir.join(&entry.file_name);
@@ -254,6 +259,7 @@ pub async fn load_screenshots_json(folder_path: String) -> Result<Vec<Screenshot
                 "Screenshot file not found, skipping: {}",
                 file_path.display()
             );
+            missing.push(entry.file_name.clone());
             continue;
         }
 
@@ -287,6 +293,16 @@ pub async fn load_screenshots_json(folder_path: String) -> Result<Vec<Screenshot
         results.len(),
         json_path.display()
     );
+    if !missing.is_empty() {
+        error!(
+            "{} of {} screenshot(s) named in screenshots.json are missing from {}: {}.              The manifest and the image files are in different places, which usually means capture              routing was pointed at another folder while this meeting was recorded.",
+            missing.len(),
+            missing.len() + results.len(),
+            screenshots_dir.display(),
+            missing.join(", ")
+        );
+    }
+
     Ok(results)
 }
 
@@ -481,4 +497,78 @@ pub async fn screenshot_embed_data_uri(
         error!("Failed to embed image {}: {}", file_path, e);
         format!("Failed to embed image: {}", e)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Write a screenshots.json manifest naming `files`, and create only those in `on_disk`.
+    fn fixture(files: &[&str], on_disk: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entries: Vec<String> = files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                format!(
+                    r#"{{"id":"id-{i}","file_name":"{f}","timestamp":"10:00:00","recording_elapsed_secs":{i}.0,"width":10,"height":10,"capture_mode":"region"}}"#
+                )
+            })
+            .collect();
+        fs::write(
+            dir.path().join("screenshots.json"),
+            format!(r#"{{"screenshots":[{}]}}"#, entries.join(",")),
+        )
+        .expect("write manifest");
+
+        if !on_disk.is_empty() {
+            let shots = dir.path().join("screenshots");
+            fs::create_dir_all(&shots).expect("mkdir screenshots");
+            for f in on_disk {
+                // A one-pixel PNG, so thumbnail generation has something real to decode.
+                let png: &[u8] = &[
+                    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49,
+                    0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02,
+                    0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44,
+                    0x41, 0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x03, 0x01, 0x01,
+                    0x00, 0x18, 0xDD, 0x8D, 0xB0, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
+                    0xAE, 0x42, 0x60, 0x82,
+                ];
+                fs::write(shots.join(f), png).expect("write png");
+            }
+        }
+        dir
+    }
+
+    /// The exact shape of the routing bug: the manifest lands in the meeting folder while the images
+    /// are written somewhere else entirely. The loader must not pretend the meeting had no
+    /// screenshots, and must not fail either: it returns what it has and reports the rest.
+    #[tokio::test]
+    async fn manifest_without_images_returns_empty_rather_than_erroring() {
+        let dir = fixture(&["a.png", "b.png"], &[]);
+        let got = load_screenshots_json(dir.path().to_string_lossy().to_string())
+            .await
+            .expect("should not error when images are missing");
+        assert!(got.is_empty(), "no image files exist, so nothing loads");
+    }
+
+    #[tokio::test]
+    async fn loads_only_the_images_that_exist() {
+        let dir = fixture(&["a.png", "b.png"], &["a.png"]);
+        let got = load_screenshots_json(dir.path().to_string_lossy().to_string())
+            .await
+            .expect("load");
+        assert_eq!(got.len(), 1, "one of the two manifest entries is on disk");
+        assert!(got[0].file_path.ends_with("a.png"));
+    }
+
+    #[tokio::test]
+    async fn absent_manifest_is_not_an_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let got = load_screenshots_json(dir.path().to_string_lossy().to_string())
+            .await
+            .expect("a meeting with no screenshots is normal, not a failure");
+        assert!(got.is_empty());
+    }
 }

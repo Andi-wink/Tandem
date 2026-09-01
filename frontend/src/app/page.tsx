@@ -23,6 +23,7 @@ import { useHandoffExport } from '@/hooks/useHandoffExport';
 import { useLiveTranscriptWriter } from '@/hooks/useLiveTranscriptWriter';
 import { HandoffDialog } from '@/components/HandoffDialog';
 import { indexedDBService } from '@/services/indexedDBService';
+import { setActiveSoloProject } from '@/services/screenshotService';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 import { useClaude } from '@/contexts/ClaudeContext';
@@ -412,6 +413,15 @@ export default function Home() {
       // All reads go through refs so this eslint-disabled effect never re-fires mid-call.
       const isSolo = recordingStateRef.current.recordingMode === 'solo';
       if (!isSolo) {
+        // Belt and braces against stale Solo screenshot routing. The Rust routing global is cleared on
+        // every stop path now, but a crash or a force-quit mid-session leaves it set, and the value
+        // survives for the life of the process. A meeting is never routed to a Solo session folder, so
+        // clearing unconditionally here means a meeting's screenshots can only ever land in its own
+        // folder, whatever happened in the session before it.
+        void setActiveSoloProject(null).catch(err =>
+          console.warn('[Recording] Failed to clear stale screenshot routing:', err),
+        );
+
         const seed = peekRecordingSeed();
         if (seed) {
           // Started from a calendar event (agenda/palette).
