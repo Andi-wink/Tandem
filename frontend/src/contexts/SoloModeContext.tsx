@@ -51,6 +51,10 @@ interface SoloModeState {
   detectedTasks: SoloTask[];
   isProcessing: boolean;
   routingModel: string;
+  /** When false, the routing LLM is never called: no warmup, no analysis cycles.
+   *  Deterministic routing still works (the spoken "switch to X" fast path), and the
+   *  project is otherwise chosen by hand in the HUD. */
+  routingEnabled: boolean;
   /** `.tandem`-relative filing subfolder for the CURRENTLY active project. All
    *  Solo Mode artifacts are written under {projectPath}/.tandem/{sessionFolder}/.
    *  Set per active project by the router (useSoloModeRouter.performProjectSwitch):
@@ -71,6 +75,7 @@ interface SoloModeContextType extends SoloModeState {
   clearActiveProject: () => void;
   addTask: (task: SoloTask) => void;
   setRoutingModel: (model: string) => void;
+  setRoutingEnabled: (enabled: boolean) => void;
   /** Null re-scopes filing to the `.tandem` root — used when routing to a plain
    *  project while holding a previous chat's session-scoped folder. */
   setSessionFolder: (folder: string | null) => void;
@@ -102,6 +107,11 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     detectedTasks: [],
     isProcessing: false,
     sessionFolder: null,
+    // Default on: automatic routing is the feature's whole point for a new user. Only an
+    // explicit "0" turns it off, so a cleared or corrupt value fails back to working.
+    routingEnabled: typeof window === 'undefined'
+      ? true
+      : localStorage.getItem('tandem-solo-routing-enabled') !== '0',
     routingModel: (() => {
       if (typeof window === 'undefined') return DEFAULT_ROUTING_MODEL;
       const savedVersion = localStorage.getItem('tandem-solo-routing-model-version');
@@ -278,6 +288,11 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     setState(prev => ({ ...prev, routingModel: model }));
   }, []);
 
+  const setRoutingEnabled = useCallback((enabled: boolean) => {
+    localStorage.setItem('tandem-solo-routing-enabled', enabled ? '1' : '0');
+    setState(prev => ({ ...prev, routingEnabled: enabled }));
+  }, []);
+
   const setSessionFolder = useCallback((folder: string | null) => {
     setState(prev => ({ ...prev, sessionFolder: folder }));
   }, []);
@@ -297,9 +312,10 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     clearActiveProject,
     addTask,
     setRoutingModel,
+    setRoutingEnabled,
     setSessionFolder,
     getActiveProjectHistory,
-  }), [state, startSoloSession, stopSoloSession, switchProject, clearActiveProject, addTask, setRoutingModel, setSessionFolder, getActiveProjectHistory]);
+  }), [state, startSoloSession, stopSoloSession, switchProject, clearActiveProject, addTask, setRoutingModel, setRoutingEnabled, setSessionFolder, getActiveProjectHistory]);
 
   return (
     <SoloModeContext.Provider value={contextValue}>

@@ -350,20 +350,25 @@ export default function Home() {
   const handleBeforeRecord = async (startFn: () => void) => {
     // Solo mode: check model availability, skip project dir modal
     if (recordingState.recordingMode === 'solo') {
-      try {
-        const models = await invoke<Array<{ name: string }>>('get_ollama_models', { endpoint: null });
-        const modelName = soloMode.routingModel;
-        const hasModel = models.some(m => m.name === modelName || m.name.startsWith(modelName.split(':')[0]));
-        if (!hasModel) {
-          toast.warning(`Routing model "${modelName}" not found`, {
-            description: `Pull it with: ollama pull ${modelName}`,
-            duration: 8000,
+      // Only worth checking when something is actually going to call the model. With automatic
+      // routing off, warning that Ollama is unreachable would be noise about a dependency this
+      // session does not have.
+      if (soloMode.routingEnabled) {
+        try {
+          const models = await invoke<Array<{ name: string }>>('get_ollama_models', { endpoint: null });
+          const modelName = soloMode.routingModel;
+          const hasModel = models.some(m => m.name === modelName || m.name.startsWith(modelName.split(':')[0]));
+          if (!hasModel) {
+            toast.warning(`Routing model "${modelName}" not found`, {
+              description: `Pull it with: ollama pull ${modelName}`,
+              duration: 8000,
+            });
+          }
+        } catch {
+          toast.warning('Ollama not reachable, solo routing will be limited', {
+            description: 'Ensure Ollama is running for project routing.',
           });
         }
-      } catch {
-        toast.warning('Ollama not reachable — solo routing will be limited', {
-          description: 'Ensure Ollama is running for project routing.',
-        });
       }
 
       soloMode.startSoloSession();

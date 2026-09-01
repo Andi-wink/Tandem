@@ -103,6 +103,7 @@ export function useSoloModeRouter() {
     isActive,
     activeProject,
     routingModel,
+    routingEnabled,
     projectHistory,
     sessionFolder,
     switchProject,
@@ -123,6 +124,9 @@ export function useSoloModeRouter() {
 
   const routingModelRef = useRef(routingModel);
   routingModelRef.current = routingModel;
+
+  const routingEnabledRef = useRef(routingEnabled);
+  routingEnabledRef.current = routingEnabled;
 
   const screenshotsRef = useRef(screenshots);
   screenshotsRef.current = screenshots;
@@ -180,8 +184,12 @@ export function useSoloModeRouter() {
     fetchProjects();
     projectRefreshRef.current = setInterval(fetchProjects, PROJECT_REFRESH_MS);
 
-    // Pre-warm the routing model into VRAM so the first cycle doesn't cold-start
-    warmupModel(routingModelRef.current);
+    // Pre-warm the routing model into VRAM so the first cycle doesn't cold-start. Skipped when
+    // automatic routing is off: loading a 12B model costs seconds and gigabytes of VRAM, and
+    // nothing in this session would ever call it.
+    if (routingEnabledRef.current) {
+      warmupModel(routingModelRef.current);
+    }
 
     return () => {
       if (projectRefreshRef.current) clearInterval(projectRefreshRef.current);
@@ -327,6 +335,27 @@ export function useSoloModeRouter() {
     const newSegments = currentTranscripts.slice(lastProcessedIndexRef.current);
     if (newSegments.length === 0) return;
     if (requireMinSegments && newSegments.length < MIN_NEW_SEGMENTS) return;
+
+    // LLM off: keep the deterministic half of routing and skip the expensive half. An explicit
+    // "switch to <project>" still lands, because that path is a plain string match over registered
+    // project names and costs nothing. What stops is intent/note extraction and LLM-inferred
+    // switches, which is exactly what "I will pick the project myself" means.
+    //
+    // The cursor advances unconditionally here. It is held back on the LLM path only so a transient
+    // Ollama failure can retry that window; with no LLM in play there is nothing to retry, and
+    // leaving it parked would replay the same segments through the fast path on every cycle.
+    if (!routingEnabledRef.current) {
+      const fastMatch = detectProjectSwitchFastPath(
+        newSegments.map(s => s.text).join(' '),
+        projects,
+      );
+      lastProcessedIndexRef.current = currentTranscripts.length;
+      if (fastMatch && fastMatch.id !== activeProjectRef.current?.id) {
+        console.log(`[SoloRouter] Fast-path switch → ${fastMatch.name} (routing LLM off)`);
+        await performProjectSwitch(fastMatch, currentTranscripts.length);
+      }
+      return;
+    }
 
     isRoutingRef.current = true;
     console.log(`[SoloRouter] Analyzing ${newSegments.length} new segments`);
