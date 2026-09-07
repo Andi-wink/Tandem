@@ -2065,7 +2065,7 @@
       "priority": "medium",
       "status": "complete",
       "branch": "feature/custom-dictionary",
-      "commit": "fa404a1",
+      "commit": "033775e",
       "steps": [
         "Add Custom Dictionary tab/section in Settings page with CRUD for word entries (term + optional common mistranscriptions)",
         "Store dictionary entries in Rust SQLite (new table: custom_dictionary with columns: id, term, aliases/patterns, created_at)",
