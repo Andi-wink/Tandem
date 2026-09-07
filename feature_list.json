@@ -2063,8 +2063,8 @@
       "name": "Custom Transcription Dictionary",
       "description": "User-editable dictionary of commonly mistranscribed words/phrases (e.g. n8n, domain-specific jargon) to improve Whisper transcription accuracy. Two-pronged approach: (1) inject terms into Whisper initial_prompt to bias decoding, (2) post-transcription regex find-and-replace for deterministic corrections.",
       "priority": "medium",
-      "status": "planned",
-      "branch": null,
+      "status": "complete",
+      "branch": "feature/custom-dictionary",
       "commit": null,
       "steps": [
         "Add Custom Dictionary tab/section in Settings page with CRUD for word entries (term + optional common mistranscriptions)",
@@ -2073,7 +2073,7 @@
         "After Whisper returns text, apply regex replacements from dictionary entries (case-insensitive pattern matching)",
         "Add import/export for dictionary (JSON format) so users can share domain-specific dictionaries"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F056",
