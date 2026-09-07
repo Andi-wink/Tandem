@@ -33,6 +33,28 @@ use std::collections::HashMap;
 /// alias "Claude" fires on the first word of a term that is already correct.
 /// A single left-to-right pass cannot do that: every character of the input is
 /// consumed by at most one match, and matched text is never rescanned.
+///
+/// WHAT THAT DOES AND DOES NOT GUARANTEE. Within one pass, no substitution can
+/// feed another, so already-correct text always survives and the pathologies
+/// above are gone. It is NOT a guarantee that re-running the pass is a no-op in
+/// every conceivable dictionary, because a replacement can end up adjacent to
+/// untouched text on its LEFT and the pair can form an alias that the first pass
+/// never saw. With ("why zed", alias "ex") and ("W", alias "double why"),
+/// "double ex here" corrects to "double why zed here", and a hypothetical second
+/// pass would then see the newly adjacent "double why" and produce "W zed here".
+///
+/// This is safe in practice because every live path applies EXACTLY ONE pass:
+/// the batch worker, the realtime partial and commit bridges, and the canvas
+/// clip command each call `apply_corrections` once on provider output. The one
+/// place that compares corrected text against corrected text, the worker's
+/// overlap dedupe, compares two strings that each had one pass applied, never a
+/// once-corrected string against a twice-corrected one.
+///
+/// A second pass is guaranteed stable only when no term's first word can combine
+/// with a preceding word to form another entry's alias. That holds for every
+/// ordinary dictionary, which is why `every_correction_is_a_fixed_point_across_a_mixed_dictionary`
+/// passes, and `a_second_pass_is_not_guaranteed_stable_for_left_joining_aliases`
+/// pins the contrived shape where it does not.
 #[derive(Debug, Default)]
 pub struct CompiledDictionary {
     /// Terms in the order the user created them. This is the order they reach
@@ -194,9 +216,12 @@ fn is_word_char(c: char) -> bool {
 /// pass. PURE: no I/O, no globals, the same input always gives the same output.
 /// This is what the transcription workers call on every segment.
 ///
-/// Idempotent by construction: text that is already correct matches as a TERM,
-/// and a term match is emitted unchanged. An empty dictionary returns the input
-/// unchanged, which is the common case and costs nothing.
+/// Text that is already correct matches as a TERM and is emitted unchanged, so a
+/// correct transcript is never damaged and no substitution can feed another
+/// within the pass. Callers must still apply exactly one pass; see the
+/// `CompiledDictionary` docs for the narrow shape in which a second pass is not
+/// a no-op. An empty dictionary returns the input unchanged, which is the common
+/// case and costs nothing.
 pub fn apply_corrections(text: &str, dict: &CompiledDictionary) -> String {
     let matcher = match &dict.matcher {
         Some(m) => m,
@@ -436,6 +461,26 @@ mod tests {
             let once = apply_corrections(input, &d);
             assert_eq!(apply_corrections(&once, &d), once, "not a fixed point: {}", input);
         }
+    }
+
+    #[test]
+    fn a_second_pass_is_not_guaranteed_stable_for_left_joining_aliases() {
+        // Documents the boundary of the fixed-point property rather than a bug.
+        // A replacement can land next to untouched text on its LEFT, and the
+        // pair can form an alias the first pass never saw. Every live caller
+        // applies exactly one pass, so this shape is unreachable in the app; the
+        // test exists so a future caller that loops corrections finds out here.
+        let d = dict(&[("why zed", &["ex"]), ("W", &["double why"])]);
+
+        let once = apply_corrections("double ex here", &d);
+        assert_eq!(once, "double why zed here", "one pass is what callers get");
+
+        let twice = apply_corrections(&once, &d);
+        assert_eq!(
+            twice, "W zed here",
+            "a second pass sees the newly adjacent \"double why\""
+        );
+        assert_ne!(once, twice, "this dictionary shape is not a fixed point");
     }
 
     // ─── Prompt assembly ────────────────────────────────────────────────────

@@ -38,6 +38,56 @@ impl DictionaryRepository {
         .await
     }
 
+    /// Every entry in USER CREATION ORDER, for export. Export must not use the
+    /// alphabetical `list_entries` ordering: creation order decides which terms
+    /// survive the capped decoder prompt, so an alphabetical export would
+    /// silently reshuffle prompt priority when the file is imported elsewhere.
+    pub async fn list_entries_in_creation_order(
+        pool: &SqlitePool,
+    ) -> std::result::Result<Vec<CustomDictionaryEntry>, sqlx::Error> {
+        sqlx::query_as::<_, CustomDictionaryEntry>(
+            "SELECT * FROM custom_dictionary ORDER BY created_at ASC, rowid ASC",
+        )
+        .fetch_all(pool)
+        .await
+    }
+
+    /// Upsert keyed on the term itself, for import.
+    ///
+    /// Takes a connection rather than the pool so the caller can run a whole
+    /// import inside one transaction. Conflict resolution is delegated to the
+    /// `term COLLATE NOCASE` unique index, which makes each row a single
+    /// statement and closes the check-then-insert race that a separate lookup
+    /// would leave open.
+    pub async fn upsert_by_term(
+        conn: &mut sqlx::SqliteConnection,
+        term: &str,
+        aliases_json: &str,
+        enabled: bool,
+    ) -> std::result::Result<(), sqlx::Error> {
+        let id = Uuid::new_v4().to_string();
+        let enabled_i: i64 = if enabled { 1 } else { 0 };
+
+        sqlx::query(
+            r#"
+            INSERT INTO custom_dictionary (id, term, aliases, enabled)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT(term COLLATE NOCASE) DO UPDATE SET
+                aliases = excluded.aliases,
+                enabled = excluded.enabled,
+                updated_at = datetime('now')
+            "#,
+        )
+        .bind(&id)
+        .bind(term)
+        .bind(aliases_json)
+        .bind(enabled_i)
+        .execute(conn)
+        .await?;
+
+        Ok(())
+    }
+
     /// Insert when `id` is None or unknown, update otherwise. Returns the stored row.
     pub async fn upsert_entry(
         pool: &SqlitePool,
@@ -185,6 +235,72 @@ mod tests {
             .map(|e| e.term)
             .collect();
         assert_eq!(terms, vec!["zulu", "alpha", "mike"]);
+    }
+
+    #[tokio::test]
+    async fn upsert_by_term_merges_on_the_term_and_rolls_back_with_its_transaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        // Committed transaction: both rows land, and the case variant MERGES
+        // onto the existing term rather than creating a second row.
+        let mut tx = pool.begin().await.unwrap();
+        DictionaryRepository::upsert_by_term(tx.as_mut(), "n8n", r#"["n eight n"]"#, true)
+            .await
+            .unwrap();
+        DictionaryRepository::upsert_by_term(tx.as_mut(), "N8N", r#"["innate"]"#, false)
+            .await
+            .unwrap();
+        DictionaryRepository::upsert_by_term(tx.as_mut(), "Tandem", r#"["tandum"]"#, true)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let rows = DictionaryRepository::list_entries(&pool).await.unwrap();
+        assert_eq!(rows.len(), 2, "the case variant must merge, not duplicate");
+        let n8n = rows.iter().find(|r| r.term.eq_ignore_ascii_case("n8n")).unwrap();
+        assert_eq!(n8n.aliases, r#"["innate"]"#, "the later import wins");
+        assert_eq!(n8n.enabled, 0);
+
+        // Rolled-back transaction: a partial import leaves nothing behind.
+        let mut tx = pool.begin().await.unwrap();
+        DictionaryRepository::upsert_by_term(tx.as_mut(), "Excalidraw", "[]", true)
+            .await
+            .unwrap();
+        drop(tx); // no commit: sqlx rolls back
+
+        let rows = DictionaryRepository::list_entries(&pool).await.unwrap();
+        assert_eq!(rows.len(), 2, "an uncommitted import must not persist");
+        assert!(!rows.iter().any(|r| r.term == "Excalidraw"));
+    }
+
+    #[tokio::test]
+    async fn export_ordering_is_creation_order_not_alphabetical() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        for term in ["zulu", "alpha", "mike"] {
+            DictionaryRepository::upsert_entry(&pool, None, term, "[]", true)
+                .await
+                .unwrap();
+        }
+
+        let exported: Vec<String> = DictionaryRepository::list_entries_in_creation_order(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.term)
+            .collect();
+        assert_eq!(exported, vec!["zulu", "alpha", "mike"]);
+
+        // The UI list stays alphabetical; only export changed.
+        let listed: Vec<String> = DictionaryRepository::list_entries(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.term)
+            .collect();
+        assert_eq!(listed, vec!["alpha", "mike", "zulu"]);
     }
 
     #[tokio::test]

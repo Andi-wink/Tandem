@@ -187,6 +187,11 @@ pub async fn delete_dictionary_entry(
 
 /// Import a JSON array of entries. Merging is by term (case-insensitive), so
 /// re-importing the same file updates rows instead of duplicating them.
+///
+/// The whole import runs in ONE transaction. A dictionary is a set the user
+/// curates as a unit, and a half-applied import is worse than a rejected one:
+/// they cannot tell which half landed, and re-running it is the natural
+/// response. All or nothing makes that retry safe.
 #[tauri::command]
 pub async fn import_dictionary(
     state: tauri::State<'_, AppState>,
@@ -199,6 +204,11 @@ pub async fn import_dictionary(
     let mut imported = 0usize;
     let mut skipped = 0usize;
 
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("Could not start the import: {}", e))?;
+
     for entry in incoming {
         let term = entry.term.trim().to_string();
         if term.is_empty() {
@@ -206,20 +216,19 @@ pub async fn import_dictionary(
             continue;
         }
 
-        let existing_id = DictionaryRepository::find_by_term(pool, &term)
-            .await
-            .map_err(|e| format!("Failed to look up '{}': {}", term, e))?
-            .map(|row| row.id);
-
         let aliases = normalize_aliases(&entry.aliases);
         let aliases_json = serde_json::to_string(&aliases)
             .map_err(|e| format!("Failed to encode aliases for '{}': {}", term, e))?;
 
-        DictionaryRepository::upsert_entry(pool, existing_id, &term, &aliases_json, entry.enabled)
+        DictionaryRepository::upsert_by_term(tx.as_mut(), &term, &aliases_json, entry.enabled)
             .await
-            .map_err(|e| format!("Failed to import '{}': {}", term, e))?;
+            .map_err(|e| format!("Failed to import '{}': {}. Nothing was imported.", term, e))?;
         imported += 1;
     }
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Could not finish the import: {}", e))?;
 
     if let Err(e) = cache::refresh(pool).await {
         warn!("F056: dictionary cache refresh failed after import: {}", e);
@@ -234,7 +243,9 @@ pub async fn import_dictionary(
 #[tauri::command]
 pub async fn export_dictionary(state: tauri::State<'_, AppState>) -> Result<String, String> {
     let pool = state.db_manager.pool();
-    let rows = DictionaryRepository::list_entries(pool)
+    // Creation order, not the alphabetical order the UI list uses: importing
+    // this file on another machine must reproduce the same prompt priority.
+    let rows = DictionaryRepository::list_entries_in_creation_order(pool)
         .await
         .map_err(|e| format!("Failed to read dictionary: {}", e))?;
 
