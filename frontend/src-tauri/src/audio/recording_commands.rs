@@ -533,6 +533,12 @@ fn spawn_realtime_bridge<R: Runtime>(
                     // identical clock value. Derive the recording's wall-clock
                     // start from the monotonic start Instant and add the segment's
                     // audio offset. Falls back to now() before/after a recording.
+                    // F056: the custom dictionary is provider-agnostic, so the
+                    // realtime (Scribe WebSocket) commit path gets the same
+                    // deterministic correction pass as the batch worker before
+                    // the segment is emitted and persisted.
+                    let text = crate::dictionary::cache::correct(&text);
+
                     let update = TranscriptUpdate {
                         text,
                         timestamp: wall_clock_for_audio_time(audio_start_time),
