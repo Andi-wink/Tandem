@@ -55,20 +55,24 @@ impl WhisperEngine {
     const BASE_VOCABULARY_PROMPT: &'static str =
         "Claude Code, n8n, Tandem, Excalidraw, Meetily, Anthropic, API, JSON, webhook, workflow";
 
-    /// The `initial_prompt` handed to whisper.cpp: the base vocabulary above plus
-    /// the user's enabled custom-dictionary terms (F056).
+    /// The `initial_prompt` handed to whisper.cpp: the user's enabled
+    /// custom-dictionary terms (F056) followed by the base vocabulary above.
     ///
-    /// whisper.cpp caps the prompt at roughly 224 tokens and silently drops the
-    /// overflow, which would eat into the base terms. The user terms are
-    /// therefore appended (never prepended) and capped by
-    /// `dictionary::PROMPT_CHAR_BUDGET` before they get here, so the base list
-    /// always survives and the user list is cut at a term boundary.
+    /// The user terms come FIRST on purpose. whisper.cpp caps the prompt at
+    /// roughly 224 tokens and keeps the LAST n_take tokens, counting back from
+    /// the END of prompt_past (whisper.cpp:5673), so it is the HEAD of the
+    /// prompt that gets dropped on overflow, not the tail. Putting the base
+    /// vocabulary last therefore guarantees the shipped terms survive, and any
+    /// overflow eats into the user list instead. The user list is separately
+    /// capped at a term boundary by `dictionary::PROMPT_CHAR_BUDGET`, and is
+    /// ordered oldest-created-first, so the terms a user added most recently
+    /// are the last to be dropped.
     fn initial_prompt() -> String {
         let user_terms = crate::dictionary::cache::decoder_prompt_terms();
         if user_terms.is_empty() {
             Self::BASE_VOCABULARY_PROMPT.to_string()
         } else {
-            format!("{}, {}", Self::BASE_VOCABULARY_PROMPT, user_terms)
+            format!("{}, {}", user_terms, Self::BASE_VOCABULARY_PROMPT)
         }
     }
 

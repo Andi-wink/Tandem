@@ -22,12 +22,25 @@ export interface DictionaryEntry {
   updated_at?: string;
 }
 
-/** Split the alias input on commas or newlines, so a user can paste either shape. */
+/**
+ * Split the alias input on commas or newlines, so a user can paste either shape.
+ *
+ * Deduplicates case-insensitively after trimming. Two reasons: a duplicate alias
+ * is a no-op in the Rust matcher anyway, and the alias strings are used directly
+ * as React keys in the chip lists below, where a repeat would collide.
+ */
 function parseAliases(raw: string): string[] {
-  return raw
-    .split(/[,\n]/)
-    .map(a => a.trim())
-    .filter(a => a.length > 0);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of raw.split(/[,\n]/)) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+  }
+  return out;
 }
 
 // ─── Editor ─────────────────────────────────────────────────────────────────

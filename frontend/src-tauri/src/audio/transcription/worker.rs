@@ -316,13 +316,13 @@ pub fn start_transcription_task<R: Runtime>(
                                         // a tail that was already corrected on
                                         // its own emission is unchanged here.
                                         let transcript = {
-                                            let dict = crate::dictionary::cache::snapshot();
-                                            if dict.entries.is_empty() {
+                                            let snap = crate::dictionary::cache::snapshot();
+                                            if snap.dictionary.is_empty() {
                                                 transcript
                                             } else {
                                                 crate::dictionary::apply_corrections(
                                                     &transcript,
-                                                    &dict.entries,
+                                                    &snap.dictionary,
                                                 )
                                             }
                                         };

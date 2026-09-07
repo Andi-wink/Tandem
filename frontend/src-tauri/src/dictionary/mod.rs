@@ -4,7 +4,7 @@
 // ("n8n" heard as "n eight n", "Tandem" as "tandum"). It is applied in two
 // independent places, because neither alone is sufficient:
 //
-//   1. DECODER BIAS. The term list is appended to the Whisper `initial_prompt`
+//   1. DECODER BIAS. The term list is added to the Whisper `initial_prompt`
 //      so the decoder is nudged toward the right spelling in the first place.
 //      This only works for providers that expose a prompt/keyterm field, and it
 //      is a hint, never a guarantee.
@@ -21,41 +21,81 @@ pub mod cache;
 pub mod commands;
 
 use regex::{Regex, RegexBuilder};
+use std::collections::HashMap;
 
-/// One dictionary term with its aliases pre-compiled into match regexes.
-#[derive(Debug, Clone)]
-pub struct CompiledEntry {
-    /// The correct spelling every matching alias is rewritten to.
-    pub term: String,
-    /// One regex per alias, longest alias first (see `compile_entries`).
-    pub patterns: Vec<Regex>,
+/// A dictionary compiled into a single matcher.
+///
+/// The whole dictionary is ONE regex alternation rather than a regex per alias
+/// applied in sequence. Sequential per-alias passes are not composable: an
+/// earlier pass rewrites text that a later pass then matches again. With the
+/// entry (term "Claude Code", alias "Claude"), sequential passes turn
+/// "ask Claude Code about it" into "ask Claude Code Code about it", because the
+/// alias "Claude" fires on the first word of a term that is already correct.
+/// A single left-to-right pass cannot do that: every character of the input is
+/// consumed by at most one match, and matched text is never rescanned.
+#[derive(Debug, Default)]
+pub struct CompiledDictionary {
+    /// Terms in the order the user created them. This is the order they reach
+    /// the decoder prompt in, so it must stay stable and must NOT be sorted by
+    /// length (see `prompt_terms`).
+    terms: Vec<String>,
+    /// The alternation over every alias AND every term. `None` when the
+    /// dictionary has nothing to match, so the hot path can skip all work.
+    matcher: Option<Regex>,
+    /// Lowercased pattern text to its replacement. `None` means "this pattern is
+    /// a term, emit the matched text unchanged".
+    lookup: HashMap<String, Option<String>>,
+}
+
+impl CompiledDictionary {
+    /// True when there is nothing to match, i.e. `apply_corrections` is identity.
+    pub fn is_empty(&self) -> bool {
+        self.matcher.is_none()
+    }
+
+    /// Terms in user creation order.
+    pub fn terms(&self) -> &[String] {
+        &self.terms
+    }
 }
 
 /// Whisper's prompt is capped at roughly 224 tokens. We budget in CHARACTERS
 /// rather than tokens (there is no tokenizer available at this layer), assuming
 /// a pessimistic ~3 characters per token for short, unusual, heavily-split
-/// vocabulary words. Anything past this budget is dropped rather than risking
-/// whisper.cpp truncating the prompt at an arbitrary point.
+/// vocabulary words. Anything past this budget is dropped rather than relying on
+/// whisper.cpp to cut the list somewhere arbitrary.
 pub const PROMPT_CHAR_BUDGET: usize = 500;
 
-/// Compile dictionary rows into match regexes.
+/// Compile dictionary rows into one matcher.
 ///
-/// Ordering matters: within an entry, aliases are sorted LONGEST FIRST so that a
-/// multi-word alias ("n eight n") wins over a shorter alias that is a prefix of
-/// it ("n eight"), which would otherwise consume part of the longer match.
+/// `entries` must arrive in user creation order (created_at ASC); that order is
+/// preserved for the decoder prompt.
 ///
-/// Each alias is regex-escaped (aliases are arbitrary user text and may contain
-/// `.`, `+`, `(` and friends) and wrapped in word boundaries, so an alias never
-/// fires inside a longer word. An alias that is empty, equal to the term, or
-/// whose escaped form fails to compile is skipped rather than poisoning the
-/// whole entry.
-pub fn compile_entries<I, S1, S2>(entries: I) -> Vec<CompiledEntry>
+/// Every alias AND every term becomes an alternative in a single regex. Terms
+/// are included so that already-correct text is RECOGNISED and passed through
+/// untouched, which is what makes the function idempotent by construction: a
+/// term can never be partially re-consumed by a shorter alias belonging to some
+/// other entry.
+///
+/// Alternatives are sorted longest-first by pattern length. The regex crate uses
+/// leftmost-first (preference order) alternation, so at any given position the
+/// longest listed pattern wins. That is what settles cross-entry precedence:
+/// with ("Node", alias "n eight") and ("n8n", alias "n eight n"), the input
+/// "n eight n" matches the 9-character alias, not the 7-character one, and
+/// yields "n8n" rather than "Node n". Sorting by TERM length, as an earlier
+/// revision did, gets this backwards because the term length says nothing about
+/// which alias will match the text.
+///
+/// Each pattern is regex-escaped (aliases are arbitrary user text and may
+/// contain `.`, `+`, `(` and friends) and word-bounded.
+pub fn compile_entries<I, S1, S2>(entries: I) -> CompiledDictionary
 where
     I: IntoIterator<Item = (S1, Vec<S2>)>,
     S1: AsRef<str>,
     S2: AsRef<str>,
 {
-    let mut compiled = Vec::new();
+    let mut terms: Vec<String> = Vec::new();
+    let mut alias_pairs: Vec<(String, String)> = Vec::new(); // (alias, term)
 
     for (term, aliases) in entries {
         let term = term.as_ref().trim().to_string();
@@ -63,102 +103,143 @@ where
             continue;
         }
 
-        let mut alias_list: Vec<String> = aliases
-            .into_iter()
-            .map(|a| a.as_ref().trim().to_string())
-            .filter(|a| !a.is_empty())
-            // An alias identical to the term is a no-op rewrite; dropping it
-            // keeps the term from being re-replaced onto itself.
-            .filter(|a| !a.eq_ignore_ascii_case(&term))
-            .collect();
+        for alias in aliases {
+            let alias = alias.as_ref().trim().to_string();
+            if alias.is_empty() {
+                continue;
+            }
+            alias_pairs.push((alias, term.clone()));
+        }
 
-        // Longest first, then alphabetical for a stable, deterministic order.
-        alias_list.sort_by(|a, b| b.chars().count().cmp(&a.chars().count()).then(a.cmp(b)));
-        alias_list.dedup();
-
-        let patterns: Vec<Regex> = alias_list
-            .iter()
-            .filter_map(|alias| build_alias_regex(alias))
-            .collect();
-
-        // An entry with no usable aliases is still kept: it contributes to the
-        // decoder prompt even though it has nothing to post-correct.
-        compiled.push(CompiledEntry { term, patterns });
+        terms.push(term);
     }
 
-    // Longest term first across entries too, so a term that contains another
-    // term's alias is settled predictably.
-    compiled.sort_by(|a, b| b.term.chars().count().cmp(&a.term.chars().count()));
-    compiled
+    // Terms are registered first and win any key collision, so a string that is
+    // both a term and some other entry's alias is preserved rather than
+    // rewritten. Case folding is UNICODE (`to_lowercase`), not ASCII: with the
+    // entry ("Café", alias "CAFÉ") an ASCII fold would treat É and é as
+    // different characters and register a self-referential rewrite.
+    let mut lookup: HashMap<String, Option<String>> = HashMap::new();
+    for term in &terms {
+        lookup.insert(term.to_lowercase(), None);
+    }
+    for (alias, term) in &alias_pairs {
+        let key = alias.to_lowercase();
+        // An alias that folds onto its own term is a no-op rewrite; an alias
+        // that folds onto ANY term is ambiguous and the term wins.
+        lookup.entry(key).or_insert_with(|| Some(term.clone()));
+    }
+
+    // Longest pattern first, then lexicographic for a deterministic build.
+    let mut patterns: Vec<&String> = lookup.keys().collect();
+    patterns.sort_by(|a, b| b.chars().count().cmp(&a.chars().count()).then(a.cmp(b)));
+
+    let matcher = build_matcher(&patterns);
+
+    CompiledDictionary {
+        terms,
+        matcher,
+        lookup,
+    }
 }
 
-/// Build the whole-word, case-insensitive regex for one alias.
+/// Build the single alternation regex over every pattern.
 ///
-/// A word boundary only asserts something useful next to a word character. An
-/// alias that starts or ends with punctuation (e.g. "+1" or "n8n.") would make
-/// the boundary assert the opposite of what is intended, so it is applied
-/// conditionally on each side.
-fn build_alias_regex(alias: &str) -> Option<Regex> {
-    let escaped = regex::escape(alias);
+/// Returns `None` when there is nothing to match, or when the combined pattern
+/// fails to compile (e.g. an implausibly large dictionary exceeding the regex
+/// size limit). A `None` matcher degrades to "no corrections", which is always
+/// safe: the dictionary is an enhancement, never a correctness requirement.
+fn build_matcher(patterns: &[&String]) -> Option<Regex> {
+    if patterns.is_empty() {
+        return None;
+    }
 
-    let starts_word = alias.chars().next().map_or(false, is_word_char);
-    let ends_word = alias.chars().last().map_or(false, is_word_char);
+    let alternation = patterns
+        .iter()
+        .map(|p| bounded_pattern(p))
+        .collect::<Vec<_>>()
+        .join("|");
 
-    let pattern = format!(
-        "{}{}{}",
-        if starts_word { r"\b" } else { "" },
-        escaped,
-        if ends_word { r"\b" } else { "" }
-    );
-
-    RegexBuilder::new(&pattern)
+    RegexBuilder::new(&alternation)
         .case_insensitive(true)
         .build()
         .ok()
+}
+
+/// Escape one pattern and wrap it in word boundaries.
+///
+/// A word boundary only asserts something useful next to a word character. A
+/// pattern that starts or ends with punctuation (e.g. "+1" or "C++") would make
+/// the boundary assert the opposite of what is intended, so it is applied
+/// conditionally on each side. The result is wrapped in a non-capturing group so
+/// it composes into the alternation safely.
+fn bounded_pattern(pattern: &str) -> String {
+    let escaped = regex::escape(pattern);
+    let starts_word = pattern.chars().next().is_some_and(is_word_char);
+    let ends_word = pattern.chars().last().is_some_and(is_word_char);
+
+    format!(
+        "(?:{}{}{})",
+        if starts_word { r"\b" } else { "" },
+        escaped,
+        if ends_word { r"\b" } else { "" }
+    )
 }
 
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-/// Rewrite every alias occurrence in `text` to its term. PURE: no I/O, no
-/// globals, the same input always gives the same output. This is what the
-/// transcription worker calls on every segment.
+/// Rewrite every alias occurrence in `text` to its term, in ONE left-to-right
+/// pass. PURE: no I/O, no globals, the same input always gives the same output.
+/// This is what the transcription workers call on every segment.
 ///
-/// An empty dictionary returns the input unchanged (identity), which is the
-/// common case and costs nothing.
-pub fn apply_corrections(text: &str, entries: &[CompiledEntry]) -> String {
-    if entries.is_empty() || text.is_empty() {
-        return text.to_string();
+/// Idempotent by construction: text that is already correct matches as a TERM,
+/// and a term match is emitted unchanged. An empty dictionary returns the input
+/// unchanged, which is the common case and costs nothing.
+pub fn apply_corrections(text: &str, dict: &CompiledDictionary) -> String {
+    let matcher = match &dict.matcher {
+        Some(m) => m,
+        None => return text.to_string(),
+    };
+    if text.is_empty() {
+        return String::new();
     }
 
-    let mut out = text.to_string();
-    for entry in entries {
-        for pattern in &entry.patterns {
-            // Literal replacement via NoExpand, so a term containing `$1` is
-            // inserted verbatim instead of being read as a capture reference.
-            if pattern.is_match(&out) {
-                out = pattern
-                    .replace_all(&out, regex::NoExpand(entry.term.as_str()))
-                    .into_owned();
+    // A closure replacer inserts its return value LITERALLY, so a term
+    // containing `$1` is never read as a capture reference.
+    matcher
+        .replace_all(text, |caps: &regex::Captures| {
+            let matched = caps.get(0).map_or("", |m| m.as_str());
+            match dict.lookup.get(&matched.to_lowercase()) {
+                // An alias: emit its term.
+                Some(Some(term)) => term.clone(),
+                // A term: already correct, leave the user's text exactly as is.
+                Some(None) => matched.to_string(),
+                // Not reachable (every alternative came from `lookup`), but never
+                // corrupt text on a lookup miss.
+                None => matched.to_string(),
             }
-        }
-    }
-    out
+        })
+        .into_owned()
 }
 
 /// Comma-separated term list for a decoder prompt, capped at `char_budget`.
 ///
+/// Terms are emitted in USER CREATION ORDER, not longest-first. Ordering by
+/// length would make short, high-value terms (exactly the ones that get
+/// mistranscribed, like "n8n") the first casualties of the cap.
+///
 /// Terms are emitted in order until the next one would not fit; the list is then
 /// closed off rather than cut mid-term, so the prompt always ends on a complete
 /// vocabulary word.
-pub fn prompt_terms(entries: &[CompiledEntry], char_budget: usize) -> String {
+pub fn prompt_terms(dict: &CompiledDictionary, char_budget: usize) -> String {
     let mut out = String::new();
-    for entry in entries {
+    for term in &dict.terms {
         let addition = if out.is_empty() {
-            entry.term.clone()
+            term.clone()
         } else {
-            format!(", {}", entry.term)
+            format!(", {}", term)
         };
         if out.chars().count() + addition.chars().count() > char_budget {
             break;
@@ -172,7 +253,7 @@ pub fn prompt_terms(entries: &[CompiledEntry], char_budget: usize) -> String {
 mod tests {
     use super::*;
 
-    fn dict(pairs: &[(&str, &[&str])]) -> Vec<CompiledEntry> {
+    fn dict(pairs: &[(&str, &[&str])]) -> CompiledDictionary {
         compile_entries(
             pairs
                 .iter()
@@ -181,10 +262,67 @@ mod tests {
         )
     }
 
+    // ─── Regression: the two defects that failed QA ──────────────────────────
+
+    #[test]
+    fn an_alias_that_is_a_prefix_of_its_own_term_does_not_duplicate_it() {
+        // QA blocker: ("Claude Code", alias "Claude") used to turn
+        // "ask Claude Code about it" into "ask Claude Code Code about it".
+        let d = dict(&[("Claude Code", &["Claude"])]);
+
+        assert_eq!(
+            apply_corrections("ask Claude Code about it", &d),
+            "ask Claude Code about it",
+            "already-correct text must survive untouched"
+        );
+        assert_eq!(
+            apply_corrections("ask Claude about it", &d),
+            "ask Claude Code about it",
+            "the bare alias must still be expanded"
+        );
+        // And expanding it once must be a fixed point.
+        let once = apply_corrections("ask Claude about it", &d);
+        assert_eq!(apply_corrections(&once, &d), once);
+    }
+
+    #[test]
+    fn cross_entry_precedence_follows_alias_length_not_term_length() {
+        // QA blocker: sorting entries by TERM length gave "Node n" here, because
+        // "Node" (4 chars) outranked "n8n" (3) even though the matching alias
+        // "n eight n" (9) is longer than "n eight" (7).
+        let d = dict(&[("Node", &["n eight"]), ("n8n", &["n eight n"])]);
+        assert_eq!(apply_corrections("we use n eight n daily", &d), "we use n8n daily");
+        // The shorter alias still works where it is genuinely the longest match.
+        assert_eq!(apply_corrections("we use n eight daily", &d), "we use Node daily");
+    }
+
+    #[test]
+    fn case_folding_is_unicode_not_ascii() {
+        // QA: ("Café", alias "CAFÉ"). An ASCII-only fold treats É and é as
+        // distinct, registering CAFÉ as an alias of a term it already equals.
+        let d = dict(&[("Café", &["CAFÉ"])]);
+
+        // The accented term is recognised as a TERM in any casing, so the user's
+        // own capitalisation is preserved rather than churned.
+        assert_eq!(apply_corrections("meet at the CAFÉ", &d), "meet at the CAFÉ");
+        assert_eq!(apply_corrections("meet at the Café", &d), "meet at the Café");
+        // Stable under repetition, which is the property the fold protects.
+        let once = apply_corrections("meet at the CAFÉ", &d);
+        assert_eq!(apply_corrections(&once, &d), once);
+    }
+
+    #[test]
+    fn an_accented_term_still_expands_a_genuine_alias() {
+        let d = dict(&[("Café", &["caffay"])]);
+        assert_eq!(apply_corrections("the caffay is open", &d), "the Café is open");
+    }
+
+    // ─── The original suite ─────────────────────────────────────────────────
+
     #[test]
     fn empty_dictionary_is_identity() {
         let text = "n eight n is a workflow tool";
-        assert_eq!(apply_corrections(text, &[]), text);
+        assert_eq!(apply_corrections(text, &dict(&[])), text);
     }
 
     #[test]
@@ -241,8 +379,6 @@ mod tests {
 
     #[test]
     fn the_term_itself_is_not_re_replaced() {
-        // An alias equal to the term (any casing) is dropped at compile time, so
-        // already-correct text passes through untouched and cannot loop.
         let d = dict(&[("Tandem", &["Tandem", "tandem", "tandum"])]);
         assert_eq!(apply_corrections("Tandem is Tandem", &d), "Tandem is Tandem");
         assert_eq!(apply_corrections("tandum here", &d), "Tandem here");
@@ -266,26 +402,8 @@ mod tests {
     #[test]
     fn entries_with_no_usable_aliases_are_kept_for_the_prompt() {
         let d = dict(&[("Excalidraw", &[]), ("", &["ignored"])]);
-        assert_eq!(d.len(), 1, "blank terms are dropped");
-        assert_eq!(d[0].term, "Excalidraw");
+        assert_eq!(d.terms(), &["Excalidraw".to_string()], "blank terms are dropped");
         assert_eq!(apply_corrections("nothing changes", &d), "nothing changes");
-    }
-
-    #[test]
-    fn prompt_terms_joins_and_respects_the_budget() {
-        let d = dict(&[("alpha", &[]), ("beta", &[]), ("gamma", &[])]);
-        let all = prompt_terms(&d, 100);
-        assert!(all.contains("alpha") && all.contains("beta") && all.contains("gamma"));
-        assert_eq!(all.matches(", ").count(), 2);
-
-        let capped = prompt_terms(&d, 7);
-        assert!(capped.chars().count() <= 7);
-        assert!(!capped.ends_with(','), "must not cut mid-list: {}", capped);
-    }
-
-    #[test]
-    fn prompt_terms_on_an_empty_dictionary_is_empty() {
-        assert_eq!(prompt_terms(&[], PROMPT_CHAR_BUDGET), "");
     }
 
     #[test]
@@ -297,5 +415,59 @@ mod tests {
         let once = apply_corrections("tandum runs n eight n", &d);
         assert_eq!(apply_corrections(&once, &d), once);
         assert_eq!(once, "Tandem runs n8n");
+    }
+
+    #[test]
+    fn every_correction_is_a_fixed_point_across_a_mixed_dictionary() {
+        // Broad idempotence guard: whatever the pass produces, running it again
+        // must change nothing, for overlapping and prefix-sharing entries alike.
+        let d = dict(&[
+            ("Claude Code", &["Claude", "cloud code"]),
+            ("n8n", &["n eight n", "innate"]),
+            ("Node", &["n eight"]),
+            ("Tandem", &["tandum"]),
+        ]);
+        for input in [
+            "Claude Code and Claude and cloud code",
+            "innate vs n eight n vs n eight",
+            "tandum tandum Tandem",
+            "nothing to correct here at all",
+        ] {
+            let once = apply_corrections(input, &d);
+            assert_eq!(apply_corrections(&once, &d), once, "not a fixed point: {}", input);
+        }
+    }
+
+    // ─── Prompt assembly ────────────────────────────────────────────────────
+
+    #[test]
+    fn prompt_terms_keeps_user_creation_order() {
+        // Explicitly NOT longest-first: a short term like "n8n" is exactly the
+        // kind that must not be dropped first when the budget bites.
+        let d = dict(&[("n8n", &[]), ("Excalidraw", &[]), ("Anthropic", &[])]);
+        assert_eq!(prompt_terms(&d, 100), "n8n, Excalidraw, Anthropic");
+    }
+
+    #[test]
+    fn prompt_terms_respects_the_budget_without_cutting_a_term() {
+        let d = dict(&[("alpha", &[]), ("beta", &[]), ("gamma", &[])]);
+        let all = prompt_terms(&d, 100);
+        assert_eq!(all, "alpha, beta, gamma");
+
+        let capped = prompt_terms(&d, 12);
+        assert_eq!(capped, "alpha, beta");
+        assert!(capped.chars().count() <= 12);
+        assert!(!capped.ends_with(','), "must not cut mid-list: {}", capped);
+    }
+
+    #[test]
+    fn prompt_terms_on_an_empty_dictionary_is_empty() {
+        assert_eq!(prompt_terms(&dict(&[]), PROMPT_CHAR_BUDGET), "");
+    }
+
+    #[test]
+    fn an_empty_dictionary_reports_itself_empty() {
+        assert!(dict(&[]).is_empty());
+        assert!(!dict(&[("n8n", &[])]).is_empty());
     }
 }

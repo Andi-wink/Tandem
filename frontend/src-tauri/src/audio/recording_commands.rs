@@ -507,6 +507,14 @@ fn spawn_realtime_bridge<R: Runtime>(
                     session_seq,
                 } => {
                     // NEW volatile-tail event (Phase 1 frontend layer drops stale seq).
+                    // F056: partials are rendered live in the transcript view, so
+                    // they get the same correction pass as commits. Without it the
+                    // user watches "n eight n" appear and then snap to "n8n" when
+                    // the commit lands, which reads as the app second-guessing
+                    // itself. `apply_corrections` is idempotent, so correcting the
+                    // partial and then the commit converges on the same text.
+                    let text = crate::dictionary::cache::correct(&text);
+
                     let _ = app.emit(
                         "transcript-partial",
                         serde_json::json!({

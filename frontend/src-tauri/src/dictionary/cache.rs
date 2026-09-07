@@ -11,7 +11,7 @@
 
 use std::sync::{Arc, OnceLock, RwLock};
 
-use super::{apply_corrections, compile_entries, prompt_terms, CompiledEntry, PROMPT_CHAR_BUDGET};
+use super::{apply_corrections, compile_entries, prompt_terms, CompiledDictionary, PROMPT_CHAR_BUDGET};
 use crate::database::models::CustomDictionaryEntry;
 use crate::database::repositories::dictionary::DictionaryRepository;
 use sqlx::SqlitePool;
@@ -19,7 +19,7 @@ use sqlx::SqlitePool;
 /// One published, immutable view of the enabled dictionary.
 #[derive(Debug, Default)]
 pub struct DictionarySnapshot {
-    pub entries: Vec<CompiledEntry>,
+    pub dictionary: CompiledDictionary,
     /// Pre-rendered comma-separated term list for decoder prompts, already
     /// capped at `PROMPT_CHAR_BUDGET`. Rendered once here so the whisper call
     /// does no string work per chunk.
@@ -47,10 +47,10 @@ pub fn snapshot() -> Arc<DictionarySnapshot> {
 /// that do not need the snapshot for anything else.
 pub fn correct(text: &str) -> String {
     let snap = snapshot();
-    if snap.entries.is_empty() {
+    if snap.dictionary.is_empty() {
         return text.to_string();
     }
-    apply_corrections(text, &snap.entries)
+    apply_corrections(text, &snap.dictionary)
 }
 
 /// Comma-separated term list to append to a decoder prompt. Empty when the
@@ -74,11 +74,11 @@ pub fn set_from_rows(rows: &[CustomDictionaryEntry]) {
         })
         .collect();
 
-    let entries = compile_entries(pairs);
-    let prompt = prompt_terms(&entries, PROMPT_CHAR_BUDGET);
+    let dictionary = compile_entries(pairs);
+    let prompt = prompt_terms(&dictionary, PROMPT_CHAR_BUDGET);
 
     let snapshot = Arc::new(DictionarySnapshot {
-        entries,
+        dictionary,
         prompt_terms: prompt,
     });
 

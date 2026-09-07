@@ -55,6 +55,16 @@ fn default_true() -> bool {
     true
 }
 
+/// True when a sqlx error is SQLite's UNIQUE-constraint failure. Matched on the
+/// database error code rather than the message text, which is not stable.
+fn is_unique_violation(err: &sqlx::Error) -> bool {
+    match err {
+        // SQLITE_CONSTRAINT_UNIQUE is 2067, SQLITE_CONSTRAINT_PRIMARYKEY is 1555.
+        sqlx::Error::Database(db) => matches!(db.code().as_deref(), Some("2067") | Some("1555")),
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DictionaryImportResult {
     pub imported: usize,
@@ -116,9 +126,40 @@ pub async fn upsert_dictionary_entry(
     let aliases_json = serde_json::to_string(&aliases)
         .map_err(|e| format!("Failed to encode aliases: {}", e))?;
 
-    let row = DictionaryRepository::upsert_entry(pool, id, &term, &aliases_json, enabled)
+    // Terms are unique case-insensitively (see the 20260907000001 migration).
+    // Resolve the target row by TERM before writing, so "New Term" with a term
+    // that already exists edits that entry instead of hitting the constraint:
+    // the user's intent when typing an existing word is to change it, not to
+    // learn that a row they cannot see is in the way.
+    let existing = DictionaryRepository::find_by_term(pool, &term)
         .await
-        .map_err(|e| format!("Failed to save dictionary entry: {}", e))?;
+        .map_err(|e| format!("Failed to check for an existing '{}': {}", term, e))?;
+
+    let target_id = match (&id, &existing) {
+        // Renaming an entry onto a term another row already owns. Merging would
+        // silently discard one of the two alias lists, so refuse and say which
+        // entry is in the way.
+        (Some(editing), Some(found)) if editing != &found.id => {
+            return Err(format!(
+                "\"{}\" is already in the dictionary. Edit that entry instead, or rename it first.",
+                found.term
+            ));
+        }
+        (Some(editing), _) => Some(editing.clone()),
+        (None, Some(found)) => Some(found.id.clone()),
+        (None, None) => None,
+    };
+
+    let row = DictionaryRepository::upsert_entry(pool, target_id, &term, &aliases_json, enabled)
+        .await
+        .map_err(|e| {
+            // Belt and braces: a concurrent insert can still lose the race above.
+            if is_unique_violation(&e) {
+                format!("\"{}\" is already in the dictionary.", term)
+            } else {
+                format!("Failed to save dictionary entry: {}", e)
+            }
+        })?;
 
     if let Err(e) = cache::refresh(pool).await {
         warn!("F056: dictionary cache refresh failed after upsert: {}", e);

@@ -23,12 +23,16 @@ impl DictionaryRepository {
         .await
     }
 
-    /// Only the rows that should influence transcription.
+    /// Only the rows that should influence transcription, in USER CREATION
+    /// ORDER. That order is load-bearing: it is the order the terms reach the
+    /// decoder prompt in, and the prompt is capped, so sorting alphabetically
+    /// here would make the surviving terms depend on their spelling. `rowid`
+    /// breaks ties between rows created in the same second.
     pub async fn list_enabled_entries(
         pool: &SqlitePool,
     ) -> std::result::Result<Vec<CustomDictionaryEntry>, sqlx::Error> {
         sqlx::query_as::<_, CustomDictionaryEntry>(
-            "SELECT * FROM custom_dictionary WHERE enabled = 1 ORDER BY term COLLATE NOCASE ASC",
+            "SELECT * FROM custom_dictionary WHERE enabled = 1 ORDER BY created_at ASC, rowid ASC",
         )
         .fetch_all(pool)
         .await
@@ -135,6 +139,52 @@ mod tests {
 
         DictionaryRepository::delete_entry(&pool, &created.id).await.unwrap();
         assert!(DictionaryRepository::list_entries(&pool).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_duplicate_term_is_rejected_case_insensitively() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        DictionaryRepository::upsert_entry(&pool, None, "n8n", r#"["n eight n"]"#, true)
+            .await
+            .unwrap();
+
+        // A fresh id with the same term in different casing must hit the unique
+        // index rather than quietly creating a second competing row.
+        let err = DictionaryRepository::upsert_entry(&pool, None, "N8N", r#"["innate"]"#, true)
+            .await
+            .expect_err("a duplicate term must be rejected");
+        match err {
+            sqlx::Error::Database(db) => {
+                assert_eq!(db.code().as_deref(), Some("2067"), "expected a UNIQUE violation");
+            }
+            other => panic!("expected a database error, got {:?}", other),
+        }
+
+        assert_eq!(DictionaryRepository::list_entries(&pool).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn enabled_entries_come_back_in_creation_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = create_test_pool(dir.path()).await;
+
+        // Inserted deliberately out of alphabetical order: the prompt cap makes
+        // this ordering load-bearing, so it must follow insertion, not spelling.
+        for term in ["zulu", "alpha", "mike"] {
+            DictionaryRepository::upsert_entry(&pool, None, term, "[]", true)
+                .await
+                .unwrap();
+        }
+
+        let terms: Vec<String> = DictionaryRepository::list_enabled_entries(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.term)
+            .collect();
+        assert_eq!(terms, vec!["zulu", "alpha", "mike"]);
     }
 
     #[tokio::test]
