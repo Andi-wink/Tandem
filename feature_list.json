@@ -3,7 +3,7 @@
   "description": "AI co-pilot for every call — work in tandem with AI to capture, collaborate, and act. Fork of Meetily (Zackriya-Solutions/meeting-minutes) with screenshots, clipboard integration, PII sanitization, and real-time AI collaboration",
   "base_branch": "main",
   "working_branch": "main",
-  "last_updated": "2026-07-23",
+  "last_updated": "2026-09-07",
   "features": [
     {
       "id": "F001",
@@ -2065,7 +2065,7 @@
       "priority": "medium",
       "status": "complete",
       "branch": "feature/custom-dictionary",
-      "commit": null,
+      "commit": "fa404a1",
       "steps": [
         "Add Custom Dictionary tab/section in Settings page with CRUD for word entries (term + optional common mistranscriptions)",
         "Store dictionary entries in Rust SQLite (new table: custom_dictionary with columns: id, term, aliases/patterns, created_at)",
