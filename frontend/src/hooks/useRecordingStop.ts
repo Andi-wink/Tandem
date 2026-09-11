@@ -20,6 +20,7 @@ import {
 } from '@/lib/autoSummary';
 import { readJots, clearJots, serializeJots, type Jot } from '@/lib/meetingJots';
 import { rescueJotsToDisk } from '@/lib/jotsRescue';
+import { setActiveSoloProject } from '@/services/screenshotService';
 import { runEnhanceNotes, hasEnhanceStarted, markEnhanceStarted } from '@/lib/enhanceNotes';
 import {
   shouldPersistOnStop,
@@ -312,6 +313,22 @@ export function useRecordingStop(
 
   // Main recording stop handler
   const handleRecordingStop = useCallback(async (isCallApi: boolean) => {
+    // Screenshot routing is a global in the Rust process: while Solo Mode has an active project,
+    // every capture is written into that project's session folder. It was previously cleared only by
+    // stopSoloSession, which is wired to the on-screen stop button alone, so stopping from the tray,
+    // the overlay, or the hotkey while off the home route left it set. A later recording then filed
+    // its screenshots into the previous session's folder, silently: screenshots.json is written to
+    // the correct meeting folder, so the manifest and the images end up in different places and the
+    // meeting shows none at all.
+    //
+    // This is the choke point every stop route reaches (button, tray event, hotkey, overlay), so
+    // clearing here covers all of them. It is intentionally the raw command rather than
+    // stopSoloSession: this hook has no Solo context, and only the Rust-side routing needs resetting.
+    // Fire and forget, since a failure here must never block the save.
+    void setActiveSoloProject(null).catch(err =>
+      console.warn('[RecordingStop] Failed to clear screenshot routing:', err),
+    );
+
     if (recordingStoppedDataRef.current) {
       await recordingStoppedDataRef.current;
     }

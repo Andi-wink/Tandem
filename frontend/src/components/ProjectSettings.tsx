@@ -20,7 +20,7 @@ import {
 const DEFAULT_SCAN_ROOT = 'D:\\Dev-projects';
 
 export function ProjectSettings() {
-  const { routingModel, setRoutingModel } = useSoloMode();
+  const { routingModel, setRoutingModel, routingEnabled, setRoutingEnabled } = useSoloMode();
   const [projects, setProjects] = useState<Project[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [scanResults, setScanResults] = useState<ScannedProject[] | null>(null);
@@ -198,28 +198,70 @@ export function ProjectSettings() {
         </p>
       </div>
 
-      {/* Routing Model */}
-      <div className="border border-border rounded-lg p-4 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Cpu size={16} className="text-muted-foreground" />
-          <div>
-            <p className="text-sm font-medium">Routing Model</p>
-            <p className="text-xs text-muted-foreground">Local LLM that detects project switches and tasks</p>
+      {/* Automatic routing: the master switch for the routing LLM, with the model picker nested
+          under it. The picker is meaningless while the LLM is off, so it disables with the toggle
+          rather than sitting there implying it still does something. */}
+      <div className="border border-border rounded-lg p-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Cpu size={16} className="text-muted-foreground" />
+            <div>
+              <p className="text-sm font-medium">Automatic routing</p>
+              <p className="text-xs text-muted-foreground">
+                Uses a local LLM to detect project switches and pick up tasks as you talk. Turn it off
+                to choose the project yourself in the HUD: no model is loaded and no VRAM is used.
+              </p>
+            </div>
           </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={routingEnabled}
+            aria-label="Automatic routing"
+            onClick={() => setRoutingEnabled(!routingEnabled)}
+            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 ${
+              routingEnabled ? 'bg-brand' : 'bg-muted'
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                routingEnabled ? 'translate-x-6' : 'translate-x-1'
+              }`}
+            />
+          </button>
         </div>
-        <select
-          value={routingModel}
-          onChange={e => setRoutingModel(e.target.value)}
-          className="px-3 py-1.5 rounded-md border border-border bg-background text-sm min-w-[180px]"
-        >
-          {ollamaModels.length > 0 ? (
-            ollamaModels.map(m => (
-              <option key={m} value={m}>{m}</option>
-            ))
-          ) : (
-            <option value={routingModel}>{routingModel} (Ollama not connected)</option>
-          )}
-        </select>
+
+        <div className={`flex items-center justify-between pt-3 border-t border-border transition-opacity ${routingEnabled ? '' : 'opacity-50'}`}>
+          <div>
+            <p className="text-sm font-medium">Routing model</p>
+            <p className="text-xs text-muted-foreground">
+              {routingEnabled
+                ? 'Ollama model used for that detection'
+                : 'Not in use while automatic routing is off'}
+            </p>
+          </div>
+          <select
+            value={routingModel}
+            onChange={e => setRoutingModel(e.target.value)}
+            disabled={!routingEnabled}
+            aria-label="Routing model"
+            className="px-3 py-1.5 rounded-md border border-border bg-background text-sm min-w-[180px] disabled:cursor-not-allowed"
+          >
+            {ollamaModels.length > 0 ? (
+              ollamaModels.map(m => (
+                <option key={m} value={m}>{m}</option>
+              ))
+            ) : (
+              <option value={routingModel}>{routingModel} (Ollama not connected)</option>
+            )}
+          </select>
+        </div>
+
+        {!routingEnabled && (
+          <p className="text-xs text-muted-foreground">
+            Saying &ldquo;switch to &lt;project&gt;&rdquo; still works: that match needs no model.
+          </p>
+        )}
       </div>
 
       {/* Floating HUD toggle */}

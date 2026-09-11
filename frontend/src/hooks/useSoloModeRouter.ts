@@ -21,6 +21,7 @@ import { useSoloMode } from '@/contexts/SoloModeContext';
 import { listProjects, ensureProjectForPath, ensureVirtualProject, normalizeProjectPath, Project } from '@/services/projectService';
 import { getGitBranch } from '@/services/claudeSessionService';
 import { analyzeTranscript, matchProjectByName, warmupModel, detectProjectSwitchFastPath } from '@/services/soloRoutingService';
+import type { RoutingDecision } from '@/types/solo';
 import {
   writeLiveTranscript,
   writeLiveScreenshots,
@@ -35,8 +36,10 @@ import {
   sessionScopeFolder,
   tandemDirFor,
   maybeArchiveSessionFolder,
+  appendAgentResponse,
 } from '@/services/handoffService';
 import { invoke } from '@tauri-apps/api/core';
+import { notifyAgentResponse } from '@/lib/agentNotification';
 import { useScreenshots } from '@/contexts/ScreenshotContext';
 import { useClipboard } from '@/contexts/ClipboardContext';
 
@@ -47,6 +50,14 @@ const RESPONSE_POLL_MS = 10_000;
 const PROJECT_REFRESH_MS = 60_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
 const INTENT_DEDUP_WINDOW_MS = 5 * 60_000; // 5 min
+/**
+ * Ceiling on the un-analyzed backlog kept for retry when the LLM is failing.
+ * The cursor only advances on a SUCCESSFUL decision (so a transient Ollama
+ * failure no longer discards that speech), which means a sustained outage would
+ * otherwise grow the prompt without bound. At ~5s of speech per segment this is
+ * roughly the last 10 minutes; older segments are dropped oldest-first.
+ */
+const MAX_RETRY_SEGMENTS = 120;
 
 function normalizeIntent(s: string): string {
   return s.trim().toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').slice(0, 120);
@@ -92,6 +103,7 @@ export function useSoloModeRouter() {
     isActive,
     activeProject,
     routingModel,
+    routingEnabled,
     projectHistory,
     sessionFolder,
     switchProject,
@@ -112,6 +124,9 @@ export function useSoloModeRouter() {
 
   const routingModelRef = useRef(routingModel);
   routingModelRef.current = routingModel;
+
+  const routingEnabledRef = useRef(routingEnabled);
+  routingEnabledRef.current = routingEnabled;
 
   const screenshotsRef = useRef(screenshots);
   screenshotsRef.current = screenshots;
@@ -145,6 +160,15 @@ export function useSoloModeRouter() {
     if (!isActive) {
       // Reset the per-meeting folder so the next Solo session recomputes it.
       meetingFolderRef.current = null;
+      // Every recording start clears the app-global transcript / screenshot /
+      // clipboard buffers (useRecordingStart), so these high-water marks MUST be
+      // reset with them. Left at the previous session's totals they made every
+      // slice() below empty, and the second solo session of an app run silently
+      // routed nothing at all — no intents, no notes, no screenshots, no error.
+      lastProcessedIndexRef.current = 0;
+      lastScreenshotCountRef.current = 0;
+      lastClipboardCountRef.current = 0;
+      lastTranscriptCountRef.current = 0;
       return;
     }
 
@@ -160,8 +184,12 @@ export function useSoloModeRouter() {
     fetchProjects();
     projectRefreshRef.current = setInterval(fetchProjects, PROJECT_REFRESH_MS);
 
-    // Pre-warm the routing model into VRAM so the first cycle doesn't cold-start
-    warmupModel(routingModelRef.current);
+    // Pre-warm the routing model into VRAM so the first cycle doesn't cold-start. Skipped when
+    // automatic routing is off: loading a 12B model costs seconds and gigabytes of VRAM, and
+    // nothing in this session would ever call it.
+    if (routingEnabledRef.current) {
+      warmupModel(routingModelRef.current);
+    }
 
     return () => {
       if (projectRefreshRef.current) clearInterval(projectRefreshRef.current);
@@ -297,18 +325,104 @@ export function useSoloModeRouter() {
     }
 
     const currentTranscripts = transcriptsRef.current;
+    // Drop the oldest speech first if a sustained LLM outage has grown the retry
+    // backlog past the ceiling, so the prompt stays bounded.
+    if (currentTranscripts.length - lastProcessedIndexRef.current > MAX_RETRY_SEGMENTS) {
+      const dropped = currentTranscripts.length - MAX_RETRY_SEGMENTS - lastProcessedIndexRef.current;
+      console.warn(`[SoloRouter] Retry backlog over ${MAX_RETRY_SEGMENTS} segments — dropping ${dropped} oldest`);
+      lastProcessedIndexRef.current = currentTranscripts.length - MAX_RETRY_SEGMENTS;
+    }
     const newSegments = currentTranscripts.slice(lastProcessedIndexRef.current);
     if (newSegments.length === 0) return;
     if (requireMinSegments && newSegments.length < MIN_NEW_SEGMENTS) return;
 
+    // LLM off: keep the deterministic half of routing and skip the expensive half. An explicit
+    // "switch to <project>" still lands, because that path is a plain string match over registered
+    // project names and costs nothing. What stops is intent/note extraction and LLM-inferred
+    // switches, which is exactly what "I will pick the project myself" means.
+    //
+    // The cursor advances unconditionally here. It is held back on the LLM path only so a transient
+    // Ollama failure can retry that window; with no LLM in play there is nothing to retry, and
+    // leaving it parked would replay the same segments through the fast path on every cycle.
+    if (!routingEnabledRef.current) {
+      const fastMatch = detectProjectSwitchFastPath(
+        newSegments.map(s => s.text).join(' '),
+        projects,
+      );
+      lastProcessedIndexRef.current = currentTranscripts.length;
+      if (fastMatch && fastMatch.id !== activeProjectRef.current?.id) {
+        console.log(`[SoloRouter] Fast-path switch → ${fastMatch.name} (routing LLM off)`);
+        await performProjectSwitch(fastMatch, currentTranscripts.length);
+      }
+      return;
+    }
+
     isRoutingRef.current = true;
     console.log(`[SoloRouter] Analyzing ${newSegments.length} new segments`);
-    lastProcessedIndexRef.current = currentTranscripts.length;
+    // NOTE: the cursor is deliberately NOT advanced here. It moves only after a
+    // successful decision (below), so a transient Ollama failure — cold start,
+    // model swap, VRAM eviction, timeout — retries this window on the next cycle
+    // instead of silently discarding 30-90s of speech and the tasks inside it.
+    const analyzedThrough = currentTranscripts.length;
 
     // Carries the project switched-to THIS cycle (fast-path or LLM) so later
     // appends in this cycle attribute to it, and so we never double-switch.
     let switchedTo: Project | null = null;
     let activeSessionFolder = sessionFolderRef.current;
+
+    /** File a decision's intents + notes under one project (5-min intent dedup). */
+    const fileIntentsAndNotes = async (
+      d: RoutingDecision,
+      target: Project,
+      folder: string | null,
+    ) => {
+      const now = Date.now();
+      recentIntentsRef.current = recentIntentsRef.current.filter(
+        e => now - e.ts < INTENT_DEDUP_WINDOW_MS,
+      );
+      for (const intent of d.intents) {
+        const hash = normalizeIntent(intent.description);
+        if (recentIntentsRef.current.some(e => e.hash === hash)) {
+          console.log('[SoloRouter] Skipping duplicate intent:', intent.description.slice(0, 60));
+          continue;
+        }
+        recentIntentsRef.current.push({ hash, ts: now });
+        try {
+          await appendFeedEntry(target.path, {
+            type: 'intent',
+            timestamp: new Date(),
+            body: intent.description,
+            meta: { confidence: intent.confidence.toFixed(2) },
+          }, folder);
+          lastIntentRef.current = { description: intent.description, projectPath: target.path, folder };
+          addTask({
+            id: `solo-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            description: intent.description,
+            projectName: target.name,
+            projectPath: target.path,
+            timestamp: Date.now(),
+            routed: true,
+          });
+          toast.success(`Intent → ${target.name}: ${intent.description.slice(0, 60)}`);
+        } catch (err) {
+          console.error('[SoloRouter] Failed to append intent:', err);
+        }
+      }
+
+      // Append notes (context only)
+      for (const note of d.notes) {
+        try {
+          await appendFeedEntry(target.path, {
+            type: 'note',
+            timestamp: new Date(),
+            body: note.description,
+            meta: { confidence: note.confidence.toFixed(2) },
+          }, folder);
+        } catch (err) {
+          console.error('[SoloRouter] Failed to append note:', err);
+        }
+      }
+    };
 
     try {
       // ── Fast-path switch (no LLM) ─────────────────────────────────────
@@ -320,14 +434,54 @@ export function useSoloModeRouter() {
         newSegments.map(s => s.text).join(' '),
         projects,
       );
-      if (fastMatch && fastMatch.id !== activeProjectRef.current?.id) {
+
+      // Everything spoken BEFORE the switch cue belongs to the project we were on
+      // when it was said. Analysing the whole window as one chunk filed "fix the
+      // login bug… anyway, switching to Hirepath" entirely into Hirepath. Locate
+      // the segment carrying the cue and split there. If the cue straddles a
+      // segment boundary the per-segment probe finds nothing and we fall back to
+      // the previous whole-window behaviour.
+      let preSegments: typeof newSegments = [];
+      let segmentsForDecision = newSegments;
+      const previousActive = activeProjectRef.current;
+      const previousFolder = sessionFolderRef.current;
+
+      if (fastMatch && fastMatch.id !== previousActive?.id) {
+        const switchAt = newSegments.findIndex(
+          s => detectProjectSwitchFastPath(s.text, projects)?.id === fastMatch.id,
+        );
+        if (switchAt > 0 && previousActive) {
+          preSegments = newSegments.slice(0, switchAt);
+          segmentsForDecision = newSegments.slice(switchAt);
+        }
+
         console.log(`[SoloRouter] Fast-path switch → ${fastMatch.name} (no LLM)`);
         activeSessionFolder = await performProjectSwitch(fastMatch, currentTranscripts.length);
         switchedTo = fastMatch;
+
+        // Second (cheap, switch-cycles-only) pass for the pre-switch speech, run
+        // against the OLD project so its intents/notes land in the old feed.
+        if (preSegments.length > 0 && previousActive) {
+          const preDecision = await analyzeTranscript(
+            preSegments,
+            projects,
+            previousActive,
+            routingModelRef.current,
+          );
+          if (preDecision) {
+            console.log(
+              `[SoloRouter] Pre-switch pass → ${previousActive.name}: ` +
+              `${preDecision.intents.length} intent(s), ${preDecision.notes.length} note(s)`,
+            );
+            // Intents/notes only: the switch, revoke and stop signals belong to
+            // the main pass, which sees the full window.
+            await fileIntentsAndNotes(preDecision, previousActive, previousFolder);
+          }
+        }
       }
 
       const decision = await analyzeTranscript(
-        newSegments,
+        segmentsForDecision,
         projects,
         activeProjectRef.current,
         routingModelRef.current,
@@ -344,6 +498,9 @@ export function useSoloModeRouter() {
         }
         return;
       }
+
+      // Decision in hand: this window is genuinely processed, so retire it.
+      lastProcessedIndexRef.current = analyzedThrough;
 
       consecutiveFailuresRef.current = 0;
       if (failureToastShownRef.current) {
@@ -404,53 +561,7 @@ export function useSoloModeRouter() {
           toast.info('Say which project you\'re working on first');
         }
       } else {
-        // Append intents (actionable) — with 5-min dedup
-        const now = Date.now();
-        recentIntentsRef.current = recentIntentsRef.current.filter(
-          e => now - e.ts < INTENT_DEDUP_WINDOW_MS,
-        );
-        for (const intent of decision.intents) {
-          const hash = normalizeIntent(intent.description);
-          if (recentIntentsRef.current.some(e => e.hash === hash)) {
-            console.log('[SoloRouter] Skipping duplicate intent:', intent.description.slice(0, 60));
-            continue;
-          }
-          recentIntentsRef.current.push({ hash, ts: now });
-          try {
-            await appendFeedEntry(currentActive.path, {
-              type: 'intent',
-              timestamp: new Date(),
-              body: intent.description,
-              meta: { confidence: intent.confidence.toFixed(2) },
-            }, activeSessionFolder);
-            lastIntentRef.current = { description: intent.description, projectPath: currentActive.path, folder: activeSessionFolder };
-            addTask({
-              id: `solo-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-              description: intent.description,
-              projectName: currentActive.name,
-              projectPath: currentActive.path,
-              timestamp: Date.now(),
-              routed: true,
-            });
-            toast.success(`Intent → ${currentActive.name}: ${intent.description.slice(0, 60)}`);
-          } catch (err) {
-            console.error('[SoloRouter] Failed to append intent:', err);
-          }
-        }
-
-        // Append notes (context only)
-        for (const note of decision.notes) {
-          try {
-            await appendFeedEntry(currentActive.path, {
-              type: 'note',
-              timestamp: new Date(),
-              body: note.description,
-              meta: { confidence: note.confidence.toFixed(2) },
-            }, activeSessionFolder);
-          } catch (err) {
-            console.error('[SoloRouter] Failed to append note:', err);
-          }
-        }
+        await fileIntentsAndNotes(decision, currentActive, activeSessionFolder);
       }
 
       if (decision.stop_detected) {
@@ -711,10 +822,44 @@ export function useSoloModeRouter() {
 
         try {
           const content = await invoke<string | null>('read_file_if_exists', { path: responsePath });
-          if (content) {
+          if (content && content.trim()) {
+            // ARCHIVE FIRST. `response.md` is a mailbox we clear so the next
+            // reply is unambiguous, and clearing it used to be the only thing
+            // that happened to the agent's work: a 200-char toast for 4s, then
+            // the file was blanked. Away from the screen, the reply was gone.
+            let archivePath: string | null = null;
+            try {
+              archivePath = await appendAgentResponse(
+                entry.project.path,
+                entry.project.name,
+                content,
+                folder,
+              );
+            } catch (err) {
+              // Archive failed — keep response.md intact rather than destroying
+              // the only copy, and try again on the next poll.
+              console.error('[SoloRouter] Failed to archive agent response:', err);
+              continue;
+            }
+
+            // Surface it where he actually is: an OS notification reaches him in
+            // the editor, the toast carries the preview and a way to open the
+            // full text.
+            notifyAgentResponse(entry.project.name, content);
+            const saved = archivePath;
             toast.info(`Response from ${entry.project.name}`, {
-              description: content.slice(0, 200),
+              description: content.trim().slice(0, 400),
+              duration: 30_000,
+              action: {
+                label: 'Open',
+                onClick: () => {
+                  invoke('show_in_folder', { path: saved }).catch(err =>
+                    console.warn('[SoloRouter] Failed to reveal responses.md:', err),
+                  );
+                },
+              },
             });
+
             await invoke('save_transcript', { filePath: responsePath, content: '' });
           }
         } catch {

@@ -670,6 +670,39 @@ export async function appendFeedEntry(
   await invoke('save_transcript', { filePath, content: next });
 }
 
+/** Absolute path of a project's rolling agent-response archive. */
+export function agentResponsesPath(projectDir: string, sessionFolder?: string | null): string {
+  const sep = projectDir.includes('\\') ? '\\' : '/';
+  return `${tandemDirFor(projectDir, sessionFolder)}${sep}responses.md`;
+}
+
+/**
+ * Append one agent reply to {tandemDir}/responses.md and return the file path.
+ *
+ * `response.md` is a MAILBOX: the agent writes into it and Tandem clears it so
+ * the next reply is unambiguous. Clearing it used to destroy the reply outright
+ * (it was only ever shown as a 200-character toast), which for a daily driver
+ * means the work product vanishes whenever the user is not watching the screen.
+ * Everything is archived here first, newest at the bottom, so nothing an agent
+ * produced is ever lost.
+ */
+export async function appendAgentResponse(
+  projectDir: string,
+  projectName: string,
+  content: string,
+  sessionFolder?: string | null,
+): Promise<string> {
+  const filePath = agentResponsesPath(projectDir, sessionFolder);
+  const stamp = new Date().toLocaleString();
+  const chunk = `## ${stamp} — ${projectName}\n\n${content.trim()}\n`;
+  const existing = await invoke<string | null>('read_file_if_exists', { path: filePath });
+  const next = existing && existing.length > 0
+    ? `${existing.trimEnd()}\n\n---\n\n${chunk}`
+    : `# Agent responses\n\n${chunk}`;
+  await invoke('save_transcript', { filePath, content: next });
+  return filePath;
+}
+
 /**
  * Initialize {tandemDir}/loop-state.json with a zeroed cursor.
  * Called when a Solo session starts for a project so Claude Code's /loop

@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { Summary, SummaryResponse, ScreenshotData, ClipboardData } from '@/types';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
@@ -18,6 +18,7 @@ import { useSummaryGeneration } from '@/hooks/meeting-details/useSummaryGenerati
 import { useTemplates } from '@/hooks/meeting-details/useTemplates';
 import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
+import { useHandoverDoc } from '@/hooks/useHandoverDoc';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useClaude } from '@/contexts/ClaudeContext';
 import { Bot, PenTool, Users, Loader2 } from 'lucide-react';
@@ -97,6 +98,31 @@ export default function PageContent({
 
   // Custom hooks
   const meetingData = useMeetingData({ meeting, summaryData, onMeetingUpdated });
+
+  // Handover document: the no-AI record of the call. Everything it needs is already loaded on this
+  // page (transcript with its typed notes, screenshots.json, clipboard.json), so it writes instantly.
+  const { generateHandover, isGenerating: isGeneratingHandover } = useHandoverDoc();
+  const handleGenerateHandover = useCallback(() => {
+    void generateHandover({
+      meetingId: meeting.id,
+      meetingName: meetingData.meetingTitle || meeting.title || 'Meeting',
+      folderPath: meeting.folder_path,
+      date: meeting.created_at,
+      transcripts: meetingData.transcripts,
+      screenshots,
+      clipboardItems,
+    });
+  }, [
+    generateHandover,
+    meeting.id,
+    meeting.title,
+    meeting.folder_path,
+    meeting.created_at,
+    meetingData.meetingTitle,
+    meetingData.transcripts,
+    screenshots,
+    clipboardItems,
+  ]);
   const templates = useTemplates();
 
   // Callback to register the modal open function
@@ -383,6 +409,8 @@ export default function PageContent({
           onTemplateSelect={templates.handleTemplateSelection}
           isModelConfigLoading={false}
           onOpenModelSettings={handleRegisterModalOpen}
+          onGenerateHandover={handleGenerateHandover}
+          isGeneratingHandover={isGeneratingHandover}
         />
 
         {/* AI Assistant toggle button */}

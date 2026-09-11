@@ -3,7 +3,7 @@
   "description": "AI co-pilot for every call — work in tandem with AI to capture, collaborate, and act. Fork of Meetily (Zackriya-Solutions/meeting-minutes) with screenshots, clipboard integration, PII sanitization, and real-time AI collaboration",
   "base_branch": "main",
   "working_branch": "main",
-  "last_updated": "2026-07-23",
+  "last_updated": "2026-08-29",
   "features": [
     {
       "id": "F001",
@@ -2280,6 +2280,33 @@
         "frontend/src/components/VirtualizedTranscriptView.tsx",
         "frontend/src/app/_components/TranscriptPanel.tsx",
         "frontend/src/services/handoffService.ts"
+      ]
+    },
+    {
+      "id": "F063",
+      "category": "functional",
+      "name": "Handover Document (no-AI post-recording export)",
+      "description": "After a recording, alongside \"Generate Summary\", the user can produce a HANDOVER.md: a verbatim, deterministic record of the call rather than an AI interpretation. It interleaves four streams on the recording clock: transcript segments, typed notes, screenshots (embedded inline as images with folder-relative paths) and clipboard captures (fenced so pasted code survives). Links the user typed or copied are lifted into a Links section at the top with their timestamps, because that is what people come back for; links merely spoken are excluded since transcription mangles them. Works in Solo mode specifically: Solo has no jot store and files typed lines straight into the transcript marked source=\"note\" (F062), so notes arrive as transcript segments and are split back out by that marker. Needs no model and no network, so it stays available when summary generation is blocked or no provider is configured.",
+      "priority": "medium",
+      "status": "complete",
+      "branch": "feature/solo-handover-doc",
+      "commit": "uncommitted",
+      "steps": [
+        "Pure generator in lib/handoverDoc.ts: buildHandoverTimeline (4 streams, stable tie-break by stream), extractLinks/collectLinks, relativeToFolder, generateHandoverMarkdown",
+        "useHandoverDoc hook: reads jots.json (the one stream nothing else loads), writes HANDOVER.md via save_transcript, toasts with an Open folder action",
+        "Surface it in SummaryGeneratorButtonGroup as a \"Handover doc\" button next to Generate Summary",
+        "Surface it in EmptyStateSummary as the second way out of the post-recording screen, enabled even with no model configured",
+        "Thread onGenerateHandover/isGeneratingHandover through SummaryPanel and meeting-details page-content"
+      ],
+      "files": [
+        "frontend/src/lib/handoverDoc.ts",
+        "frontend/src/lib/handoverDoc.test.ts",
+        "frontend/src/hooks/useHandoverDoc.ts",
+        "frontend/src/components/EmptyStateSummary.tsx",
+        "frontend/src/components/EmptyStateSummary.test.tsx",
+        "frontend/src/components/MeetingDetails/SummaryGeneratorButtonGroup.tsx",
+        "frontend/src/components/MeetingDetails/SummaryPanel.tsx",
+        "frontend/src/app/meeting-details/page-content.tsx"
       ]
     }
   ]

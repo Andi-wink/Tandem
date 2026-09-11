@@ -113,6 +113,23 @@ const TAURI_MOCK_SCRIPT = `
         case 'quick_capture_open':
         case 'set_quick_capture_enabled':
           return null;
+
+        // ---- New inquiry (create a client folder from an unrouted capture) ----
+        case 'create_inquiry': {
+          var base = (args && args.basePath) || '';
+          var iname = (args && args.name) || '';
+          // __INQUIRY_EXISTS__ lets a spec exercise the adopt-an-existing-folder branch.
+          var existed = !!window.__INQUIRY_EXISTS__;
+          return {
+            path: base + '/' + iname,
+            created: !existed,
+            written: existed ? [] : ['brief.md', 'CLAUDE.md'],
+          };
+        }
+        case 'undo_inquiry':
+          return true;
+        case 'open_in_antigravity':
+          return null;
         case 'get_recordings_base_dir':
           return 'C:\\\\Users\\\\test\\\\.meetily\\\\recordings';
         case 'relocate_meeting_folder':
