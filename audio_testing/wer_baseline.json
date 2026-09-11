@@ -1,15 +1,78 @@
 {
-  "pooled": 0.21543,
+  "pooled": 0.2283,
   "clips": {
-    "clip_02": 0.16379,
-    "clip_04": 0.175,
-    "clip_06": 0.06475,
+    "clip_02": 0.17241,
+    "clip_04": 0.225,
+    "clip_06": 0.05755,
     "clip_07": 0.53521,
     "clip_10": 0.03077
+  },
+  "totals": {
+    "S": 80,
+    "D": 38,
+    "I": 24,
+    "N": 622
+  },
+  "clip_sdi": {
+    "clip_02": {
+      "S": 9,
+      "D": 9,
+      "I": 2,
+      "N": 116
+    },
+    "clip_04": {
+      "S": 22,
+      "D": 2,
+      "I": 12,
+      "N": 160
+    },
+    "clip_06": {
+      "S": 4,
+      "D": 2,
+      "I": 2,
+      "N": 139
+    },
+    "clip_07": {
+      "S": 44,
+      "D": 25,
+      "I": 7,
+      "N": 142
+    },
+    "clip_10": {
+      "S": 1,
+      "D": 0,
+      "I": 1,
+      "N": 65
+    }
+  },
+  "by_lang": {
+    "en": {
+      "S": 36,
+      "D": 13,
+      "I": 17,
+      "N": 480,
+      "wer": 0.1375,
+      "clips": [
+        "clip_02",
+        "clip_04",
+        "clip_06",
+        "clip_10"
+      ]
+    },
+    "de": {
+      "S": 44,
+      "D": 25,
+      "I": 7,
+      "N": 142,
+      "wer": 0.53521,
+      "clips": [
+        "clip_07"
+      ]
+    }
   },
   "tolerances": {
     "pooled_pp": 0.015,
     "per_clip_pp": 0.05
   },
-  "note": "Pooled+per-clip WER vs ElevenLabs ground truth, shipped engine config. Regenerate with: python audio_testing/wer_gate.py --update-baseline"
+  "note": "Pooled+per-clip WER vs ElevenLabs ground truth, shipped engine config (FlushProfile::LOCAL 12s buffer + 1.0s left-context overlap + worker.rs dedup_overlap_prefix). S/D/I are recorded for diagnosis; only pooled and per-clip WER gate. Regenerate with: python audio_testing/wer_gate.py --update-baseline"
 }

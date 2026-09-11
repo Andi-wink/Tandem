@@ -4,12 +4,25 @@ Exact meeting-condition WER for Tandem's current engine (shipped config).
 Pipeline reproduced end-to-end:
   clip (16k mono)
     -> Silero VAD (real silero_vad.onnx, vad.rs config)                [silero_vad.py]
-    -> transcription-buffer assembly (12s min / 1.2s gap, pipeline.rs) [silero_vad.py]
+    -> transcription-buffer assembly (flush at FlushProfile::LOCAL's
+       192_000 samples, or at end of stream; pipeline.rs)              [silero_vad.py]
+    -> 1.0s left-context overlap prepended on every flush              [silero_vad.py]
+       (pipeline.rs flush_transcription_buffer, TRANSCRIPTION_OVERLAP_SAMPLES)
     -> Parakeet TDT v3 int8 per buffer (exact ONNX + decode)           [run_tandem_parakeet.py]
     -> post-process (de-stutter always; English domain correction only when the
        pinned language is English-ish, mirroring parakeet_engine.rs)  [run_tandem_parakeet.py]
-    -> concatenate buffer transcripts in order
+    -> clean_repetitive_text (worker.rs:601)                          [run_tandem_parakeet.py]
+    -> dedup_overlap_prefix against the previous emission's last 10 words
+       (worker.rs), then concatenate emissions in order
   vs ElevenLabs ground truth -> WER, pooled AND per language.
+
+KNOWN DIVERGENCE (not modelled, do not read the numbers as if it were):
+the shipped pipeline runs TWO independent streams, mic and system, each with its
+own VAD instance, transcription buffer, overlap tail (pipeline.rs:1192-1195) and
+dedup tail (worker.rs:159-160, selected at :276). The clips are cut from each
+meeting's mixed `audio.mp4`, so this harness runs ONE VAD and ONE dedup chain over
+both speakers. Cross-talk that the Rust keeps apart is merged here, which changes
+the buffer partition and collapses two dedup chains into one. See backlog P5d.
 
 Clip languages come from the `lang` field in clips_index.json (clip_07 = de).
 
@@ -30,17 +43,40 @@ import numpy as np
 from run_tandem_parakeet import (
     ParakeetModel, MODEL_DIR, CLIPS, CLIPS_DIR, REF_DIR,
     read_wav_16k_mono, normalize, wer_align, postprocess,
+    clean_repetitive_text,
 )
-from silero_vad import vad_segments_for_clip, assemble_buffers
-from run_ablation import VAD_SENSITIVE
+from silero_vad import (
+    vad_segments_for_clip, assemble_buffers, prepend_overlap,
+    TRANSCRIPTION_OVERLAP_SAMPLES, VAD_SHIPPED,
+)
 
 HERE = Path(__file__).parent
 OUT_DIR = HERE / "parakeet_out"
 CLIPS_INDEX = HERE / "clips_index.json"
 
-# Mirror the SHIPPED Rust engine config (post #1/#3/#4/#5 changes).
-SHIPPED_VAD = VAD_SENSITIVE          # vad.rs + pipeline.rs redemption
-SHIPPED_MIN_SAMPLES = 25 * 16000     # MIN_TRANSCRIPTION_SAMPLES (#5; 12s->25s, exp E6)
+# Mirror the SHIPPED Rust engine config.
+#
+# Until 2026-08-12 this pointed at run_ablation.VAD_SENSITIVE (pos .45 / neg .35
+# / pre 500 / post 300 / redemption 500 / min-speech 200), the pre-1d0c869
+# values. Commit 1d0c869 (2026-06-03) retuned vad.rs and pipeline.rs together
+# and touched nothing under audio_testing/, so the replica has been scoring a
+# VAD nobody runs for ten weeks. See results/p0b_shipped_config.md.
+SHIPPED_VAD = VAD_SHIPPED            # vad.rs + pipeline.rs redemption (800ms)
+# FlushProfile::LOCAL.min_samples (pipeline.rs). Parakeet falls through the
+# `_ =>` arm of FlushProfile::for_provider, so LOCAL is what ships.
+#
+# History (P0b, 2026-08-12): 12s was the original value; commit 3abe86e
+# (2026-06-01, exp E6) raised BOTH sides to 25s on a deliberate sweep; commit
+# 1d0c869 (2026-06-03) re-swept at the new VAD config, put the optimum back at
+# 12s and added the overlap below, but touched no file under audio_testing/.
+# So 25s here was a real experiment result that the Rust superseded two days
+# later and the replica never followed. See results/p0b_shipped_config.md.
+SHIPPED_MIN_SAMPLES = 192_000        # FlushProfile::LOCAL.min_samples (12s @ 16k)
+SHIPPED_OVERLAP_SAMPLES = TRANSCRIPTION_OVERLAP_SAMPLES  # 16000 = 1.0s left context
+
+# worker.rs OVERLAP_TAIL_WORDS: how many words of the previous emission are kept
+# as the dedup window for the overlap prepend.
+OVERLAP_TAIL_WORDS = 10
 
 DEFAULT_LANG = "en"
 # clips_index.json is gitignored (it embeds local recording paths), so a fresh
@@ -71,6 +107,98 @@ def clip_language(stem, langs=None):
     return (langs if langs is not None else clip_languages()).get(stem, DEFAULT_LANG)
 
 
+def dedup_overlap_prefix(prev_tail, current):
+    """Exact port of `dedup_overlap_prefix` in worker.rs.
+
+    Drops the longest prefix of `current` (up to OVERLAP_TAIL_WORDS words) that
+    matches a suffix of `prev_tail`, compared case-insensitively on whole words.
+    Returns `current` byte-for-byte unchanged when nothing matches, mirroring the
+    Rust's `current.to_string()` early-outs.
+
+    The match is EXACT per word: Parakeet re-decoding the replayed second does
+    not have to produce the same tokens, so this catches only some of the
+    duplication the overlap introduces. That residue is a real accuracy cost.
+    """
+    if not prev_tail:
+        return current
+    curr_words = current.split()
+    if not curr_words:
+        return ""
+    max_k = min(len(curr_words), len(prev_tail), OVERLAP_TAIL_WORDS)
+    overlap = 0
+    for k in range(max_k, 0, -1):
+        prev_slice = prev_tail[len(prev_tail) - k:]
+        if all(a.lower() == b.lower() for a, b in zip(prev_slice, curr_words[:k])):
+            overlap = k
+            break
+    if overlap == 0:
+        return current
+    return " ".join(curr_words[overlap:])
+
+
+def emit_transcripts(texts):
+    """Port of the per-emission dedup state machine in worker.rs's worker loop.
+
+    For each engine result, in order:
+      - a blank result is skipped entirely (the Rust's `!transcript.trim().is_empty()`
+        guard), so it neither dedups nor updates the tail;
+      - otherwise the overlap prefix is dropped, and the tail for the NEXT
+        emission is the last OVERLAP_TAIL_WORDS words of the DEDUPED text
+        (which can legitimately be empty if dedup consumed everything).
+
+    Single stream here: a scored clip is one mono file, i.e. one of the Rust's
+    two per-device tails.
+    """
+    prev_tail = []
+    out = []
+    for text in texts:
+        if not text.strip():
+            continue
+        deduped = dedup_overlap_prefix(prev_tail, text)
+        prev_tail = deduped.split()[-OVERLAP_TAIL_WORDS:]
+        out.append(deduped)
+    return out
+
+
+def buffers_to_hypothesis(model, buffers, language=None,
+                          overlap_samples=SHIPPED_OVERLAP_SAMPLES,
+                          repetition_filter=True):
+    """Flush buffers the way the shipped pipeline does and join the emissions.
+
+    buffers -> prepend_overlap (pipeline.rs) -> engine + postprocess
+            -> clean_repetitive_text (worker.rs:601)
+            -> emit_transcripts (worker.rs)  -> joined hypothesis.
+
+    `clean_repetitive_text` sits between the engine and the dedupe because that
+    is where worker.rs puts it: `transcribe_chunk_with_provider`'s Parakeet arm
+    runs it on `text.trim()` (worker.rs:601-606) and returns an empty string when
+    it filters everything, which the worker loop's `!transcript.trim().is_empty()`
+    guard (worker.rs:226) then skips without touching the dedup tail. That is
+    exactly `emit_transcripts`' blank handling, so the two compose correctly.
+    `repetition_filter=False` is the ablation switch, not a shipped mode.
+
+    Returns (hyp, stats). Kept separate from transcribe_clip so the overlap and
+    dedup semantics can be tested without a wav file or the real model.
+    """
+    chunks = prepend_overlap(buffers, overlap_samples)
+    raw = []
+    for c, _ in chunks:
+        text = postprocess(model.transcribe(np.asarray(c, dtype=np.float32))[0],
+                           language=language)
+        raw.append(clean_repetitive_text(text.strip()) if repetition_filter else text)
+    parts = emit_transcripts(raw)
+    hyp = " ".join(p.strip() for p in parts if p.strip())
+    raw_words = sum(len(p.split()) for p in raw if p.strip())
+    kept_words = sum(len(p.split()) for p in parts)
+    return hyp, dict(
+        n_buffers=len(buffers),
+        speech_s=sum(len(b) for b in buffers) / 16000.0,
+        decoded_s=sum(len(c) for c, _ in chunks) / 16000.0,
+        overlap_s=sum(o for _, o in chunks) / 16000.0,
+        dedup_removed_words=raw_words - kept_words,
+    )
+
+
 def transcribe_clip(model, stem, write_hyp=False, language=None):
     """Run one clip through the full shipped pipeline; return (hyp, stats).
 
@@ -81,15 +209,11 @@ def transcribe_clip(model, stem, write_hyp=False, language=None):
     samples = read_wav_16k_mono(CLIPS_DIR / f"{stem}.wav")
     segs = vad_segments_for_clip(samples, SHIPPED_VAD)
     buffers = assemble_buffers(segs, min_samples=SHIPPED_MIN_SAMPLES)
-    parts = [postprocess(model.transcribe(np.asarray(b, dtype=np.float32))[0],
-                         language=language)
-             for b in buffers]
-    hyp = " ".join(p.strip() for p in parts if p.strip())
+    hyp, stats = buffers_to_hypothesis(model, buffers, language=language)
     if write_hyp:
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         (OUT_DIR / f"{stem}.meeting.txt").write_text(hyp, encoding="utf-8")
-    return hyp, dict(n_segs=len(segs), n_buffers=len(buffers),
-                     speech_s=sum(len(b) for b in buffers) / 16000.0)
+    return hyp, dict(n_segs=len(segs), **stats)
 
 
 def evaluate(model=None, write_hyp=False, clip_list=None, pin_language=False):
@@ -166,23 +290,33 @@ def main():
 
     lines = ["# Tandem meeting-condition WER (exact pipeline, shipped config)\n",
              "**Engine:** Parakeet TDT 0.6b v3 int8. **Reference:** ElevenLabs Scribe v1.\n",
-             "**Config:** sensitive VAD (pos .45 / pre 500 / post 300 / redemption 500 / "
-             "min-speech 200) -> 12s buffer / 1.2s gap -> Parakeet -> de-stutter + domain.\n",
+             "**Config:** shipped VAD (pos .40 / neg .20 / pre 300 / post 200 / "
+             "redemption 800 / min-speech 100) -> drop segments <800 samples -> "
+             "12s buffer (`FlushProfile::LOCAL`, 192_000 samples) or end of stream "
+             "-> 1.0s left-context overlap prepended per flush -> Parakeet -> "
+             "de-stutter + domain -> `clean_repetitive_text` (worker.rs:601) -> "
+             "`dedup_overlap_prefix` vs the previous emission's last 10 words. "
+             "Single mono stream, where the Rust runs mic and system separately "
+             "(known divergence, backlog P5d).\n",
              f"**Language preference:** {mode}. De-stutter always runs; the English "
              "domain/phrase correction only runs when the pinned language is English-ish "
              "(mirrors `english_post_processing_applies` in parakeet_engine.rs).\n",
-             "\n| Clip | Lang | Ref words | WER | S/D/I | VAD segs | Buffers | Speech |",
-             "|------|------|-----------|-----|-------|----------|---------|--------|"]
+             "\n| Clip | Lang | Ref words | WER | S/D/I | VAD segs | Buffers | Speech | "
+             "Decoded | Overlap | Dedup'd |",
+             "|------|------|-----------|-----|-------|----------|---------|--------|"
+             "---------|---------|---------|"]
     for stem in stems:
         c = res["clips"][stem]
         print(f"=== {stem} [{c['lang']}] ===  WER={c['wer']*100:.1f}%  (S={c['S']} D={c['D']} "
-              f"I={c['I']} N={c['N']})  {c['n_buffers']} buffers, speech {c['speech_s']:.1f}s")
+              f"I={c['I']} N={c['N']})  {c['n_buffers']} buffers, speech {c['speech_s']:.1f}s, "
+              f"overlap {c['overlap_s']:.1f}s, dedup removed {c['dedup_removed_words']} words")
         lines.append(f"| {stem} | {c['lang']} | {c['N']} | **{c['wer']*100:.1f}%** | "
                      f"{c['S']}/{c['D']}/{c['I']} | {c['n_segs']} | {c['n_buffers']} | "
-                     f"{c['speech_s']:.1f}s |")
+                     f"{c['speech_s']:.1f}s | {c['decoded_s']:.1f}s | {c['overlap_s']:.1f}s | "
+                     f"{c['dedup_removed_words']} |")
     t = res["totals"]
     lines.append(f"| **POOLED** | all | {t['N']} | **{res['pooled']*100:.1f}%** | "
-                 f"{t['S']}/{t['D']}/{t['I']} | — | — | — |")
+                 f"{t['S']}/{t['D']}/{t['I']} | — | — | — | — | — | — |")
     lines.append("\n| Language | Clips | Ref words | WER | S/D/I |")
     lines.append("|----------|-------|-----------|-----|-------|")
     for lang in sorted(res["by_lang"]):

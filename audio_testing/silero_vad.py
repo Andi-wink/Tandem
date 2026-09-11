@@ -5,14 +5,20 @@ Faithful Python port of Tandem's live VAD path:
     -> frontend/src-tauri/src/audio/vad.rs  ContinuousVadProcessor
     -> frontend/src-tauri/src/audio/pipeline.rs transcription-buffer assembly
 
-The state machine below mirrors VadSession::process / process_internal line-for-line,
-with Tandem's config (vad.rs):
-  positive=0.50, negative=0.35, pre_pad=300ms, post_pad=200ms,
-  redemption=400ms (Windows), min_speech=250ms, 30ms frames @ 16kHz.
+The state machine below mirrors VadSession::process / process_internal line-for-line.
+The SHIPPED config (VAD_SHIPPED, vad.rs + pipeline.rs as of commit 1d0c869) is:
+  positive=0.40, negative=0.20, pre_pad=300ms, post_pad=200ms,
+  redemption=800ms (Windows/Linux; 900ms macOS), min_speech=100ms, 30ms frames @ 16kHz.
+VAD_CURRENT keeps the pre-1d0c869 values for the ablation/tuning scripts that
+compare against them. It is history, not what runs.
 
-Then segments are assembled into transcription buffers exactly like pipeline.rs:
-  accumulate VAD speech segments -> flush at >=1.5s (MIN_TRANSCRIPTION_SAMPLES=24000)
-  or after a >=1.2s silence gap (SILENCE_GAP_FLUSH_SECS).
+Then segments are assembled into transcription buffers like pipeline.rs:
+  drop segments <800 samples -> accumulate -> flush at FlushProfile::LOCAL.min_samples
+  (192_000 = 12s), or at end of stream
+  -> prepend the previous flush's last 1.0s as left context (prepend_overlap).
+
+There is deliberately NO silence-gap flush here; see `assemble_buffers` for why
+the Rust's wall-clock gap predicate cannot fire on an offline replay.
 """
 
 from pathlib import Path
@@ -154,23 +160,71 @@ class SileroVad:
 
 
 # ── transcription-buffer assembly (pipeline.rs) ──
-MIN_TRANSCRIPTION_SAMPLES = 24000   # 1.5s @ 16k
-SILENCE_GAP_FLUSH_MS = 1200         # SILENCE_GAP_FLUSH_SECS
+MIN_TRANSCRIPTION_SAMPLES = 192_000   # FlushProfile::LOCAL.min_samples, 12s @ 16k
+
+# Legacy audio-time gap used by the offline experiment scripts only (see
+# `assemble_buffers`). It is NOT a Rust constant and it is NOT what ships:
+# nothing in pipeline.rs compares VAD segment timestamps.
+LEGACY_AUDIO_GAP_FLUSH_MS = 1200
+
+
+# pipeline.rs process_stream_vad / flush_remaining_audio drop any completed VAD
+# segment shorter than this before it ever reaches a transcription buffer.
+MIN_VAD_SEGMENT_SAMPLES = 800
 
 
 def assemble_buffers(segments, min_samples=MIN_TRANSCRIPTION_SAMPLES,
-                     gap_ms=SILENCE_GAP_FLUSH_MS):
-    """Group VAD segments into the chunks Tandem actually sends to the engine.
+                     gap_ms=None,
+                     min_segment_samples=MIN_VAD_SEGMENT_SAMPLES):
+    """Group VAD segments into the chunks Tandem sends to the engine.
 
-    Mirrors pipeline.rs: append segment samples to a buffer; flush when the
-    buffer reaches min_samples, or when the (audio-time) gap to the next segment
-    exceeds the silence-flush window. #5 raises min_samples for more context.
+    Ports the two partition rules pipeline.rs can reach on an offline replay:
+    drop sub-`min_segment_samples` segments (pipeline.rs:1101 / :1239), append
+    segment samples to the buffer (:1111), flush at `min_samples`
+    (`FlushProfile::LOCAL.min_samples` = 192_000, pipeline.rs:48 reached via the
+    `_ =>` arm at :86 and tested at :1125), and flush whatever is left at end of
+    stream (`flush_remaining_audio`, :1261).
+
+    NO silence-gap flush, deliberately. pipeline.rs does have a third rule, but
+    it cannot fire here:
+
+      * The predicate is at pipeline.rs:1030-1048, inside the `Err(_)` arm of
+        `tokio::time::timeout(50ms, receiver.recv())` (:923). It requires the
+        audio channel to deliver NOTHING for 50ms, and then asks whether
+        `last_activity.elapsed() >= flush_profile.silence_gap_secs` (1.2s),
+        where `last_activity` is a wall-clock `Instant` stamped only when a VAD
+        segment is appended (:1112). Nothing in pipeline.rs compares VAD
+        segment timestamps to each other.
+      * Offline, audio is fed to the VAD as fast as the wav can be read, so the
+        equivalent channel never idles for 50ms and the wall clock between two
+        appends is decode time (milliseconds), never 1.2s. The predicate is
+        unreachable and `min_samples` + end-of-stream decide the partition.
+      * Live, the same holds for a healthy recording: cpal delivers callbacks
+        continuously (no explicit `BufferSize` is set anywhere in `capture/` or
+        `devices/`; WASAPI shared-mode default period is ~10ms) and two devices
+        feed one channel, so silence still delivers chunks. The gap flush fires
+        only when a capture stream actually stalls (device dropout, suspend).
+
+    So this is an approximation of a real-time predicate, not an identity. It
+    OVER-estimates buffer length (and therefore decode context) whenever a
+    capture stream really does stall mid-recording, and correspondingly
+    UNDER-estimates the number of flushes, hence the number of overlap replays
+    and dedupe events, in that same case. It is exact for any recording whose
+    capture streams never stall, which is the normal case and the only case an
+    offline replay can represent.
+
+    `gap_ms` is retained for the offline experiment scripts (experiments.py)
+    that swept an audio-time gap. Passing it selects that historical,
+    NON-SHIPPED partition rule; the default None is the shipped behaviour.
     """
     buffers = []
     buf = []
     last_end_ms = None
     for (start_ms, end_ms, samples) in segments:
-        if buf and last_end_ms is not None and (start_ms - last_end_ms) >= gap_ms:
+        if len(samples) < min_segment_samples:
+            continue
+        if gap_ms is not None and buf and last_end_ms is not None \
+                and (start_ms - last_end_ms) >= gap_ms:
             buffers.append(buf)
             buf = []
         buf.extend(samples)
@@ -183,9 +237,62 @@ def assemble_buffers(segments, min_samples=MIN_TRANSCRIPTION_SAMPLES,
     return buffers
 
 
-# Default config mirrors current vad.rs (Windows redemption 400ms).
+# ── left-context overlap on flush (pipeline.rs flush_transcription_buffer) ──
+# PipelineManager::TRANSCRIPTION_OVERLAP_SAMPLES = 16000 (1.0s @ 16k), added by
+# commit 1d0c869 (2026-06-03) and applied on EVERY flush regardless of profile.
+TRANSCRIPTION_OVERLAP_SAMPLES = 16000
+
+
+def prepend_overlap(buffers, overlap_samples=TRANSCRIPTION_OVERLAP_SAMPLES):
+    """Port of `flush_transcription_buffer`'s left-context overlap.
+
+    For each flushed buffer the Rust:
+      1. computes `new_tail` = last `overlap_samples` of THIS buffer, taken
+         BEFORE anything is prepended (or the whole buffer when it is not
+         longer than `overlap_samples`);
+      2. prepends the PREVIOUS flush's tail to the buffer, if there is one;
+      3. stores `new_tail` for the next flush.
+
+    Returns a list of `(chunk_samples, overlap_len)`, where `overlap_len` is the
+    number of leading samples that are replayed context (`AudioChunk.overlap_samples`).
+    The first chunk always has `overlap_len == 0` (no previous tail exists).
+
+    Step 1 running before step 2 is load-bearing: the tail must come from the raw
+    buffer, never from the already-overlapped chunk, otherwise a short buffer
+    would replay the previous buffer's audio a second time.
+    """
+    out = []
+    prev_tail = []
+    for data in buffers:
+        data = list(data)
+        if overlap_samples > 0 and len(data) > overlap_samples:
+            new_tail = data[-overlap_samples:]
+        else:
+            new_tail = list(data)
+        if overlap_samples > 0 and prev_tail:
+            chunk = prev_tail + data
+            overlap_len = len(prev_tail)
+        else:
+            chunk = data
+            overlap_len = 0
+        prev_tail = new_tail
+        out.append((chunk, overlap_len))
+    return out
+
+
+# HISTORICAL default: vad.rs as it stood before commit 1d0c869 (2026-06-03).
+# Kept because the ablation/tuning scripts compare against it; it is NOT what
+# ships. Use VAD_SHIPPED for anything that claims to measure the live pipeline.
 VAD_CURRENT = dict(positive=0.50, negative=0.35, pre_pad_ms=300, post_pad_ms=200,
                    redemption_ms=400, min_speech_ms=250)
+
+# The config the app actually runs, as of commit 1d0c869 (2026-06-03):
+#   vad.rs ContinuousVadProcessor::new  -> positive .40 / negative .20 /
+#                                          pre 300ms / post 200ms / min_speech 100ms
+#   pipeline.rs `redemption_time`       -> 800ms on Windows/Linux (900ms on macOS)
+# test_shipped_config.py re-reads all six numbers out of the Rust at test time.
+VAD_SHIPPED = dict(positive=0.40, negative=0.20, pre_pad_ms=300, post_pad_ms=200,
+                   redemption_ms=800, min_speech_ms=100)
 
 
 def vad_segments_for_clip(samples_16k, vad_cfg=None):

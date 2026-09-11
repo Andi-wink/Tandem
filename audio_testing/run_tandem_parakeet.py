@@ -281,17 +281,43 @@ def read_wav_16k_mono(path: Path) -> np.ndarray:
 
 # ──────────────── post-processing (mirrors Rust engine fixes) ────────────────
 
+# Must mirror `meaningless_patterns` in WhisperEngine::is_meaningless_output
+# (whisper_engine.rs:455-477) exactly and in the same order. The German half was
+# added to the Rust on 2026-08-11 and this list was not updated until P0b's fix
+# pass; test_shipped_config.py now re-reads the array out of the Rust.
 _MEANINGLESS = [
-    "thank you for watching", "thanks for watching", "like and subscribe",
-    "music playing", "applause", "laughter", "um um um", "uh uh uh", "ah ah ah",
+    "thank you for watching",
+    "thanks for watching",
+    "like and subscribe",
+    "music playing",
+    "applause",
+    "laughter",
+    "um um um",
+    "uh uh uh",
+    "ah ah ah",
+    # German equivalents
+    "untertitel im auftrag",
+    "untertitel von",
+    "untertitelung im auftrag",
+    "vielen dank fürs zuschauen",
+    "vielen dank für's zuschauen",
+    "danke fürs zuschauen",
+    "bis zum nächsten mal",
+    "abonniert den kanal",
+    "musik läuft",
+    "applaus",
+    "gelächter",
 ]
 
 
 def _is_meaningless(text: str) -> bool:
+    """Port of WhisperEngine::is_meaningless_output (whisper_engine.rs:446)."""
     tl = text.lower()
     if any(p in tl for p in _MEANINGLESS):
         return True
-    if len(set(text)) <= 3 and len(text) > 10:
+    # `text.len()` is BYTES in Rust (`&str`), not chars, so a German string is
+    # measured longer there than `len(text)` would be here.
+    if len(set(text)) <= 3 and len(text.encode("utf-8")) > 10:
         return True
     return False
 
@@ -338,7 +364,12 @@ def _rep_ratio(words):
 
 
 def clean_repetitive_text(text: str) -> str:
-    """Port of WhisperEngine::clean_repetitive_text (whisper_engine.rs:390)."""
+    """Port of WhisperEngine::clean_repetitive_text (whisper_engine.rs:390).
+
+    ON THE SHIPPED PATH: worker.rs:601 runs this over every Parakeet result,
+    after the engine's own post-processing and before `dedup_overlap_prefix`.
+    `run_tandem_meeting_wer.buffers_to_hypothesis` applies it at that same point.
+    """
     if not text:
         return ""
     if _is_meaningless(text):

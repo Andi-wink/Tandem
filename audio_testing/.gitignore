@@ -7,6 +7,7 @@ results/
 scribe_out/
 spike_out/
 realtime_out/
+voxtral_out/
 *.wav
 
 # new_clips_report.md lists real meeting folder names — keep local.

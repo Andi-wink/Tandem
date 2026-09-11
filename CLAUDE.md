@@ -625,3 +625,6 @@ Consultants and freelancers on client-facing calls — discovery calls, sales co
 4. **Progressive disclosure** — Show only what's needed for the current task. Recording view is sparse. Review view is rich. Settings are layered. The AI panel slides in on demand, not permanently competing for space.
 
 5. **Semantic over arbitrary** — Use design tokens (`bg-background`, `text-muted-foreground`) over raw values (`bg-gray-100`, `text-gray-500`). Use the type scale (`text-body`, `text-small`) over arbitrary sizes. This ensures consistency and makes theming maintainable.
+
+## Buy vs build
+Before proposing to build something custom, research off-the-shelf and GitHub options as a minimalist base (check licensing), and default to Andrew's already-installed stack (n8n in Docker, ProtonMail Bridge, Whispering, Supabase) rather than a new dependency. Surface the integrate-vs-build trade-off proactively (e.g. how much effort to use SharePoint / Google Sheets / an existing tool instead of building from scratch).

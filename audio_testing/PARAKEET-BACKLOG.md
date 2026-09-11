@@ -37,17 +37,26 @@ through [wer_gate.py](wer_gate.py) against [wer_baseline.json](wer_baseline.json
 - **The compiled domain wordlist is dead weight on this benchmark.** `apply_domain_corrections`
   fires on 0 of 16 buffers across all 5 scored clips. The only correction that fires anywhere is
   the phrase rule `N A N` -> `n8n` on clip_04 (worth +1.875 pp). Measure before extending it.
-- **THE HARNESS DOES NOT SCORE THE SHIPPED CONFIG** (found 2026-08-11, iteration 2, verified
-  independently). Commit `1d0c869` (2026-06-03) changed the Rust engine from 25s to 12s buffers and
-  added a 1 second left-context overlap on every flush, touching zero files under `audio_testing/`.
-  **The harness is the stale side, not the Rust.** Parakeet falls through the `_ =>` default arm at
-  [pipeline.rs:86](../frontend/src-tauri/src/audio/pipeline.rs#L86) to `FlushProfile::LOCAL`
-  (12s), and `dedup_overlap_prefix` at [worker.rs:280](../frontend/src-tauri/src/audio/transcription/worker.rs#L280)
-  does run for Parakeet. Scoring what actually ships gives pooled **22.830%** (S=80 D=38 I=24),
-  against the gate's 21.543% (D=62).
-  Pooled is only 1.29 pp optimistic, but **the error mix is badly wrong: the gate measures a 10.0%
-  deletion rate where the shipped pipeline has 6.1%**, so the gate overstates the deletion problem
-  by 39%. Iteration 2 spent itself sizing a problem bigger than the one that ships.
+- ~~**THE HARNESS DOES NOT SCORE THE SHIPPED CONFIG**~~ **FIXED 2026-08-12 (P0b).** Commit
+  `1d0c869` (2026-06-03) retuned `vad.rs`, dropped the buffer 25s -> 12s and added a 1 second
+  left-context overlap, touching zero files under `audio_testing/`. The harness was the stale
+  side on **all three**, not just the two P0b's bullets named. The replica now models the shipped
+  VAD, `FlushProfile::LOCAL` (12s), the overlap and `dedup_overlap_prefix`; the baseline is
+  **22.830%** (S=80 D=38 I=24), and `test_shipped_config.py` re-reads every constant out of the
+  Rust so this drift now fails a test. Full write-up:
+  [results/p0b_shipped_config.md](results/p0b_shipped_config.md).
+- **The gate's deletion rate was overstated by 39% for ten weeks.** Pooled was only 1.29 pp
+  optimistic (21.543 vs 22.830), but D was 62 where the shipped pipeline has 38. Every deletion
+  figure produced by iterations 1-2 is inflated, and **clip_07's real mix is S=44 D=25 I=7, not
+  S=37 D=37 I=2** — German is now substitution-dominant, not deletion-dominant. Anything below
+  that leans on the old German error profile needs redoing.
+- **The 1s overlap is net negative on this benchmark.** Against the 25s no-overlap control it
+  buys D 62->38 (-24) and pays S+I 72->104 (+32); the exact-match dedupe catches only 20 of the
+  44 insertions it creates. `1d0c869` measured it as a win (23.95 -> 23.31) but retuned the VAD
+  in the same sweep, so the two are confounded. An isolated re-sweep is unclaimed work.
+- **A fourth divergence is still open:** `worker.rs:601` runs `clean_repetitive_text` over the
+  Parakeet result before the dedupe and the replica does not. Measured cost of modelling it:
+  22.830% -> **23.473%** (D 38 -> 43). So the true shipped figure is ~23.47%. Left for P5b.
 - **Content loss is in the decode, but only by elimination.** VAD loses 2 words across the whole
   benchmark, and the buffer join is lossless (verified 107=107 on all 5 clips). Everything else is
   the decoder. But no mechanism has been established, and two proposed ones were falsified:
@@ -76,21 +85,13 @@ through [wer_gate.py](wer_gate.py) against [wer_baseline.json](wer_baseline.json
 
 ## Priority queue
 
-### P0b — Make the harness score the SHIPPED config (NEW, now blocks everything)
-Raised by iteration 2 QA and independently reproduced to the digit. Until this lands, every number
-this loop produces describes a pipeline that has not shipped since 2026-06-03, and the deletion
-rate it reports is 39% too high, which is exactly the quantity iteration 2 spent itself analysing.
-- Set the harness buffer to the shipped `FlushProfile::LOCAL` (12s / 192_000 samples), not 25s.
-- Model the 1 second left-context overlap prepended on every flush, **and** the
-  `dedup_overlap_prefix` pass in `worker.rs` that removes the duplicated prefix. Modelling the
-  overlap without the dedupe is what produced the misleading 25.884% figure; with it, 22.830%.
-- Note the dedupe is exact-match and catches only 20 of 44 insertions, so overlap is a real
-  accuracy cost, not free context. Report S/D/I, not just pooled.
-- Check whether `SHIPPED_MIN_SAMPLES = 25 * 16000` was a deliberate experiment result (the comment
-  says "#5; 12s->25s, exp E6") that the Rust then diverged from, or simply never updated. Say which
-  in the commit message.
-- **Then, and only then, re-baseline (P2).** Expect pooled ~22.8%, D to fall from 62 to 38, and
-  S+I to rise from 72 to 104.
+### P5c — Re-sweep the 1s overlap on its own (NEW, from P0b)
+`1d0c869` introduced the overlap and retuned the VAD in one commit, so its claimed 23.95 -> 23.31
+win cannot be attributed. Measured in isolation on the current benchmark the overlap is **net
+negative**: D -24, S+I +32, because Parakeet re-decodes the replayed second into different words
+that the exact-match dedupe cannot see. Either widen the dedupe (fuzzy / timestamp-based, as the
+`Provider` arm already gets via `transcribe_with_overlap`) or shorten the overlap. Ablation rows
+are in [results/p0b_shipped_config.md](results/p0b_shipped_config.md#L4).
 
 ### P0 — Teach the harness about language, and report per-language WER
 **Why first:** the Rust engine changed on 2026-08-11 to gate English-only domain correction on the
@@ -145,9 +146,12 @@ German decimal commas split numbers (`3,5` -> `3` `5`).
 - **Success:** clip_07 WER drops, English clips move by roughly nothing, and QA confirms no
   token-destroying fold.
 
-### P2 — Re-baseline and split the gate's tolerances by language
-Once P0+P1 land, the 21.54% pooled baseline is stale. Re-baseline, and give German its own
-tolerance so an English win cannot mask a German regression.
+### P2 — Split the gate's tolerances by language (re-baseline DONE)
+Re-baselining landed with P0b on 2026-08-12: `wer_baseline.json` is now **22.830%** and also
+records `totals`, `clip_sdi` and `by_lang` so the error mix is checkable, not just pooled WER.
+**Still open:** only pooled and per-clip WER *gate*. German needs its own tolerance so an English
+win cannot mask a German regression, and the S/D/I counts should gate too (pooled was only 1.29 pp
+off while D was wrong by 39%, which is exactly the failure a pooled-only gate cannot see).
 
 ### P3 — Quantify the ground-truth bias
 The loop is currently optimising toward Scribe. Measure how much of the gap is convention rather
@@ -173,11 +177,18 @@ false for this pipeline (clip_10 is D 1.5%, not 19.7%). English pooled is 12.08%
 I 13 over 480 words, which is not obviously boundary-shaped. Keep the item, but establish the
 signature first rather than assuming it. The German block-drop investigation is P1b.
 
-### P5b — Guard the Python/Rust replica against drift (NEW)
-Both skeptics flagged it and one found the drift had already happened. `test_language_gating.py`
-now covers the predicate, but nothing checks that the Python `postprocess` still mirrors
-`transcribe_audio`'s post-processing as a whole. Cheap options: a golden-output test, or a
-generated constants file. Without it the gate silently stops describing what ships.
+### P5b — Guard the Python/Rust replica against drift — **PARTLY DONE**
+P0b added [test_shipped_config.py](test_shipped_config.py): 8 parity tests that re-read the VAD
+thresholds, the flush cap, the overlap length, the tail-word window and the short-segment drop out
+of the Rust at test time, so the buffering/overlap side can no longer drift silently.
+**Still open, and now measured:**
+- `worker.rs:601` applies `clean_repetitive_text` to the Parakeet result before the dedupe; the
+  Python replica does not. Modelling it costs **+0.64 pp (22.830 -> 23.473, D 38 -> 43)**, so the
+  true shipped number is ~23.47%. Decide whether to model it (and re-baseline again) or to remove
+  it from the Rust, but do not leave it unmodelled and unmentioned.
+- Nothing yet checks that `postprocess` as a whole still mirrors `transcribe_audio` (the domain
+  wordlist, the phrase table, `collapse_runaways`' `min_run`). A golden-output test or a generated
+  constants file would close it.
 
 ### P6 — int8 vs fp32
 Is quantisation costing accuracy? Only worth doing if an fp32 export is available locally; do not
@@ -190,4 +201,17 @@ through a measurement we do not trust).
 
 ## Done
 
-_(nothing yet)_
+### P0b — Make the harness score the SHIPPED config (2026-08-12, iteration 3)
+The harness now models the shipped `vad.rs` thresholds + pipeline.rs redemption, the `<800`-sample
+segment drop, `FlushProfile::LOCAL` (12s / 192_000), the 1.0s left-context overlap, and worker.rs's
+`dedup_overlap_prefix`. Baseline **21.543% -> 22.830%** (S 57->80, D 62->38, I 15->24); per-clip and
+per-language S/D/I are now printed by the gate and stored in the baseline. 31 new tests, all four
+constituent changes mutation-verified to fail the suite when reverted.
+
+**Two corrections to the item as written:** (1) it named only the buffer and the overlap/dedupe,
+but the VAD drifted in the same commit and is worth 3.2pp — following the bullets literally gives
+26.045%, not 22.8%; (2) `SHIPPED_MIN_SAMPLES = 25 * 16000` **was** a deliberate result (`3abe86e`,
+2026-06-01, exp E6, a real 6-point sweep) that `1d0c869` superseded two days later on a re-sweep at
+the new VAD config, changing only the Rust. Honest history that went stale, not a guess.
+
+Write-up: [results/p0b_shipped_config.md](results/p0b_shipped_config.md).

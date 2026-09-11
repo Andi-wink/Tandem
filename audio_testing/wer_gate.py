@@ -28,6 +28,13 @@ shipped default does and what wer_baseline.json was measured under.
 NOTE: this scores the faithful Python replica of the Rust engine. It tracks the
 shipped code only while the two are kept in sync (see To-do.md for the planned
 Rust --transcribe-file entry point that would let the gate score the real binary).
+Since 2026-08-12 (backlog P0b) the replica models the config commit 1d0c869 put
+in place on 2026-06-03: the shipped vad.rs thresholds, FlushProfile::LOCAL's 12s
+buffer, the 1.0s left-context overlap, and worker.rs's dedup_overlap_prefix.
+`test_shipped_config.py` re-reads those constants out of the Rust on every test
+run, so this class of drift now fails a test instead of silently rebasing WER.
+Still NOT modelled: worker.rs applies clean_repetitive_text to the Parakeet
+result before the dedupe (measured at +0.64pp, D +5). That is backlog P5b.
 The benchmark is currently 5 clips (one German) and is statistically noisy; expand
 the clip set before wiring this into PR CI. See README_wer_gate.md.
 """
@@ -59,12 +66,27 @@ def _load_evaluator():
         return None
 
 
+def _sdi(d):
+    return {"S": d["S"], "D": d["D"], "I": d["I"], "N": d["N"]}
+
+
 def _write_baseline(res):
+    # `pooled` and `clips` keep their historical shape (float WER) so every
+    # existing reader keeps working. The error-mix keys are additive: pooled WER
+    # alone hid a 39%-overstated deletion rate for two months (backlog P0b), so
+    # the counts are recorded here too and printed by the gate on every run.
     payload = {
         "pooled": round(res["pooled"], 5),
         "clips": {k: round(v["wer"], 5) for k, v in res["clips"].items()},
+        "totals": _sdi(res["totals"]),
+        "clip_sdi": {k: _sdi(v) for k, v in res["clips"].items()},
+        "by_lang": {lg: dict(_sdi(g), wer=round(g["wer"], 5), clips=g["clips"])
+                    for lg, g in res.get("by_lang", {}).items()},
         "tolerances": {"pooled_pp": POOLED_TOL, "per_clip_pp": PER_CLIP_TOL},
-        "note": "Pooled+per-clip WER vs ElevenLabs ground truth, shipped engine config. "
+        "note": "Pooled+per-clip WER vs ElevenLabs ground truth, shipped engine config "
+                "(FlushProfile::LOCAL 12s buffer + 1.0s left-context overlap + "
+                "worker.rs dedup_overlap_prefix). S/D/I are recorded for diagnosis; "
+                "only pooled and per-clip WER gate. "
                 "Regenerate with: python audio_testing/wer_gate.py --update-baseline",
     }
     BASELINE.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -113,13 +135,19 @@ def main():
                             f"(+{d*100:.1f}pp > {clip_tol*100:.0f}pp)")
 
     # report
+    t = res["totals"]
+    bt = base.get("totals")
+    mix = (f"  S={t['S']} D={t['D']} I={t['I']} N={t['N']}"
+           + (f"  (baseline S={bt['S']} D={bt['D']} I={bt['I']})" if bt else ""))
     print(f"\nPooled WER: {pooled*100:.2f}%  (baseline {base['pooled']*100:.2f}%, "
           f"delta {pooled_delta*100:+.2f}pp)")
+    print(f"Error mix:{mix}")
     for stem, w, b, d in per_clip:
-        lang = res["clips"][stem].get("lang", "?")
+        c = res["clips"][stem]
+        lang = c.get("lang", "?")
         flag = "  <-- REGRESSION" if d > clip_tol else ("  (improved)" if d < -0.005 else "")
         print(f"  {stem} [{lang}]: {w*100:5.1f}%  (baseline {b*100:5.1f}%, "
-              f"{d*100:+.1f}pp){flag}")
+              f"{d*100:+.1f}pp)  S={c['S']} D={c['D']} I={c['I']} N={c['N']}{flag}")
 
     # Per-language WER. The baseline is pooled-only (P2 will split the tolerances),
     # so this is reported for diagnosis and does not gate.
