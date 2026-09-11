@@ -274,6 +274,60 @@ pub fn prompt_terms(dict: &CompiledDictionary, char_budget: usize) -> String {
     out
 }
 
+// ─── ElevenLabs Scribe keyterm prompting (F056) ──────────────────────────────
+//
+// Scribe takes the dictionary as decoder BIAS rather than as a prompt: a
+// `keyterms` list that nudges the model towards those spellings. Verified
+// against the live docs on 2026-09-11:
+//
+//   * "keyterms: list of string. A list of keyterms to bias the transcription
+//     towards" (api-reference/speech-to-text/convert), on the multipart body.
+//   * Supported models are "scribe_v2" (batch) and "scribe_v2_realtime"
+//     (realtime). scribe_v1 is NOT listed, so we never send it there.
+//   * Limits: batch max 1000 keyterms of max 50 characters and max 5 words;
+//     realtime max 50 keyterms of max 20 characters.
+//   * "Usage of this parameter will incur an additional 20% surcharge on the
+//     base transcription cost", so the list stays exactly as wide as the user's
+//     own dictionary, never padded.
+
+/// Batch (`scribe_v2`) ceiling on the number of keyterms per request.
+pub const KEYTERMS_MAX_BATCH: usize = 1000;
+/// Batch ceiling on the length of one keyterm, in characters.
+pub const KEYTERM_CHARS_MAX_BATCH: usize = 50;
+/// Realtime (`scribe_v2_realtime`) ceiling on the number of keyterms.
+pub const KEYTERMS_MAX_REALTIME: usize = 50;
+/// Realtime ceiling on the length of one keyterm, in characters.
+pub const KEYTERM_CHARS_MAX_REALTIME: usize = 20;
+/// Documented ceiling on the word count of one keyterm (stated for batch; we
+/// apply it to both routes because a longer phrase is a rejection risk either
+/// way and a phrase that long is not a vocabulary word).
+pub const KEYTERM_WORDS_MAX: usize = 5;
+
+/// Terms to send as Scribe `keyterms`, in USER CREATION ORDER.
+///
+/// Mirrors `prompt_terms`'s ordering rule for the same reason: the short,
+/// high-value terms a user adds first (like "n8n") must not be the first
+/// casualties of a cap.
+///
+/// Over-long terms are DROPPED, never truncated. A truncated keyterm is not a
+/// weaker bias, it is a bias towards a spelling the user never asked for, and
+/// the API rejects the whole request when any single term breaks the character
+/// limit (elevenlabs-python#819: "All keywords must be less than 50 characters",
+/// status `invalid_keyword_length`). Dropping keeps the remaining terms working.
+pub fn keyterms(dict: &CompiledDictionary, max_terms: usize, max_chars: usize) -> Vec<String> {
+    dict.terms
+        .iter()
+        .filter(|term| {
+            let len = term.chars().count();
+            len > 0
+                && len <= max_chars
+                && term.split_whitespace().count() <= KEYTERM_WORDS_MAX
+        })
+        .take(max_terms)
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,5 +568,76 @@ mod tests {
     fn an_empty_dictionary_reports_itself_empty() {
         assert!(dict(&[]).is_empty());
         assert!(!dict(&[("n8n", &[])]).is_empty());
+    }
+
+    // ─── Scribe keyterms ────────────────────────────────────────────────────
+
+    #[test]
+    fn keyterms_keep_user_creation_order() {
+        let d = dict(&[("n8n", &["n eight n"]), ("Excalidraw", &[]), ("Anthropic", &[])]);
+        assert_eq!(
+            keyterms(&d, KEYTERMS_MAX_BATCH, KEYTERM_CHARS_MAX_BATCH),
+            vec!["n8n", "Excalidraw", "Anthropic"]
+        );
+    }
+
+    #[test]
+    fn keyterms_cap_the_count_from_the_front() {
+        let d = dict(&[("alpha", &[]), ("beta", &[]), ("gamma", &[])]);
+        assert_eq!(keyterms(&d, 2, KEYTERM_CHARS_MAX_BATCH), vec!["alpha", "beta"]);
+        assert!(keyterms(&d, 0, KEYTERM_CHARS_MAX_BATCH).is_empty());
+    }
+
+    #[test]
+    fn an_over_long_keyterm_is_dropped_not_truncated() {
+        // 21 chars: inside the batch limit (50), over the realtime limit (20).
+        let long = "abcdefghijklmnopqrstu";
+        assert_eq!(long.chars().count(), 21);
+        let d = dict(&[("n8n", &[]), (long, &[]), ("Anthropic", &[])]);
+
+        // Realtime drops it and keeps the rest working.
+        assert_eq!(
+            keyterms(&d, KEYTERMS_MAX_REALTIME, KEYTERM_CHARS_MAX_REALTIME),
+            vec!["n8n", "Anthropic"]
+        );
+        // Batch tolerates it.
+        assert_eq!(
+            keyterms(&d, KEYTERMS_MAX_BATCH, KEYTERM_CHARS_MAX_BATCH),
+            vec!["n8n", long, "Anthropic"]
+        );
+        // Nothing is ever emitted truncated.
+        for t in keyterms(&d, KEYTERMS_MAX_REALTIME, KEYTERM_CHARS_MAX_REALTIME) {
+            assert!(d.terms().contains(&t), "{} is not a whole term", t);
+        }
+    }
+
+    #[test]
+    fn the_char_limit_counts_characters_not_bytes() {
+        // 20 accented chars = 40 UTF-8 bytes; it must survive a 20-char limit.
+        let term: String = "é".repeat(20);
+        assert_eq!(term.chars().count(), 20);
+        assert!(term.len() > 20, "precondition: multi-byte");
+        let d = dict(&[(term.as_str(), &[])]);
+        assert_eq!(
+            keyterms(&d, KEYTERMS_MAX_REALTIME, KEYTERM_CHARS_MAX_REALTIME),
+            vec![term]
+        );
+    }
+
+    #[test]
+    fn a_keyterm_over_the_word_limit_is_dropped() {
+        let d = dict(&[
+            ("one two three four five", &[]),
+            ("one two three four five six", &[]),
+        ]);
+        assert_eq!(
+            keyterms(&d, KEYTERMS_MAX_BATCH, KEYTERM_CHARS_MAX_BATCH),
+            vec!["one two three four five"]
+        );
+    }
+
+    #[test]
+    fn keyterms_on_an_empty_dictionary_are_empty() {
+        assert!(keyterms(&dict(&[]), KEYTERMS_MAX_BATCH, KEYTERM_CHARS_MAX_BATCH).is_empty());
     }
 }

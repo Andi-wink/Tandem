@@ -11,7 +11,11 @@
 
 use std::sync::{Arc, OnceLock, RwLock};
 
-use super::{apply_corrections, compile_entries, prompt_terms, CompiledDictionary, PROMPT_CHAR_BUDGET};
+use super::{
+    apply_corrections, compile_entries, keyterms, prompt_terms, CompiledDictionary,
+    KEYTERMS_MAX_BATCH, KEYTERMS_MAX_REALTIME, KEYTERM_CHARS_MAX_BATCH,
+    KEYTERM_CHARS_MAX_REALTIME, PROMPT_CHAR_BUDGET,
+};
 use crate::database::models::CustomDictionaryEntry;
 use crate::database::repositories::dictionary::DictionaryRepository;
 use sqlx::SqlitePool;
@@ -24,6 +28,13 @@ pub struct DictionarySnapshot {
     /// capped at `PROMPT_CHAR_BUDGET`. Rendered once here so the whisper call
     /// does no string work per chunk.
     pub prompt_terms: String,
+    /// Pre-built `keyterms` list for the ElevenLabs Scribe BATCH endpoint,
+    /// already capped to the documented 1000 terms / 50 chars.
+    pub keyterms_batch: Vec<String>,
+    /// Pre-built `keyterms` list for the Scribe REALTIME websocket, capped to
+    /// its tighter 50 terms / 20 chars. Kept separate rather than derived at
+    /// call time so neither transcription route does list work per chunk.
+    pub keyterms_realtime: Vec<String>,
 }
 
 static CACHE: OnceLock<RwLock<Arc<DictionarySnapshot>>> = OnceLock::new();
@@ -59,6 +70,18 @@ pub fn decoder_prompt_terms() -> String {
     snapshot().prompt_terms.clone()
 }
 
+/// `keyterms` for the ElevenLabs Scribe batch endpoint (`scribe_v2`). Empty
+/// when the dictionary is empty, in which case callers must omit the field.
+pub fn scribe_keyterms_batch() -> Vec<String> {
+    snapshot().keyterms_batch.clone()
+}
+
+/// `keyterms` for the Scribe realtime websocket (`scribe_v2_realtime`), under
+/// that route's tighter limits.
+pub fn scribe_keyterms_realtime() -> Vec<String> {
+    snapshot().keyterms_realtime.clone()
+}
+
 /// Replace the published snapshot with one compiled from `rows`.
 pub fn set_from_rows(rows: &[CustomDictionaryEntry]) {
     let pairs: Vec<(String, Vec<String>)> = rows
@@ -76,10 +99,15 @@ pub fn set_from_rows(rows: &[CustomDictionaryEntry]) {
 
     let dictionary = compile_entries(pairs);
     let prompt = prompt_terms(&dictionary, PROMPT_CHAR_BUDGET);
+    let keyterms_batch = keyterms(&dictionary, KEYTERMS_MAX_BATCH, KEYTERM_CHARS_MAX_BATCH);
+    let keyterms_realtime =
+        keyterms(&dictionary, KEYTERMS_MAX_REALTIME, KEYTERM_CHARS_MAX_REALTIME);
 
     let snapshot = Arc::new(DictionarySnapshot {
         dictionary,
         prompt_terms: prompt,
+        keyterms_batch,
+        keyterms_realtime,
     });
 
     match cell().write() {
@@ -126,9 +154,18 @@ mod tests {
         assert!(terms.contains("Excalidraw"), "got: {}", terms);
         assert!(!terms.contains("Tandem"), "got: {}", terms);
 
+        // Scribe keyterms follow the same enabled filter, in creation order.
+        // Asserted here rather than in a second #[test] because the snapshot is
+        // process-global: a parallel test mutating it would race this one.
+        assert_eq!(scribe_keyterms_batch(), vec!["n8n", "Excalidraw"]);
+        assert_eq!(scribe_keyterms_realtime(), vec!["n8n", "Excalidraw"]);
+
         // Reset so this test cannot leak into others in the same process.
         set_from_rows(&[]);
         assert_eq!(correct("we use n eight n"), "we use n eight n");
         assert_eq!(decoder_prompt_terms(), "");
+        assert!(scribe_keyterms_batch().is_empty());
+        assert!(scribe_keyterms_realtime().is_empty());
     }
+
 }
