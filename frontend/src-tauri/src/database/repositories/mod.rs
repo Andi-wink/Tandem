@@ -1,4 +1,5 @@
 pub mod consent;
+pub mod dictionary;
 pub mod meeting;
 pub mod project;
 pub mod setting;

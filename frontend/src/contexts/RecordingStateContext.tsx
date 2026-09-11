@@ -148,6 +148,10 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
    */
   useEffect(() => {
     console.log('[RecordingStateContext] Setting up event listeners');
+    // Guard against the async-setup race: if cleanup runs before setupListeners finishes
+    // awaiting a registration, `cancelled` short-circuits any remaining registrations and
+    // immediately unsubscribes the one that just resolved, so no listener leaks past unmount.
+    let cancelled = false;
     const unsubscribers: (() => void)[] = [];
 
     const setupListeners = async () => {
@@ -165,6 +169,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
           toast.success('Recording started', { duration: 2000 });
           startPolling();
         });
+        if (cancelled) { unlistenStarted(); return; }
         unsubscribers.push(unlistenStarted);
 
         // Recording stopped
@@ -194,6 +199,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
           });
           stopPolling();
         });
+        if (cancelled) { unlistenStopped(); return; }
         unsubscribers.push(unlistenStopped);
 
         // Recording paused
@@ -206,6 +212,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
           }));
           toast.info('Recording paused', { duration: 2000 });
         });
+        if (cancelled) { unlistenPaused(); return; }
         unsubscribers.push(unlistenPaused);
 
         // Recording resumed
@@ -218,7 +225,29 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
           }));
           toast.success('Recording resumed', { duration: 2000 });
         });
+        if (cancelled) { unlistenResumed(); return; }
         unsubscribers.push(unlistenResumed);
+
+        // Transcription degraded (live path fell back to batch, the realtime
+        // catch-up buffer hit its cap, or a batch chunk failed at the provider).
+        // The recording is fine and continues, so this is a warning rather than
+        // an error.
+        //
+        // De-duplication contract, enforced on BOTH sides:
+        //  - Rust: the batch worker throttles its per-failed-chunk emission to at
+        //    most one warning per recording, and truncates the provider text it
+        //    puts in the payload (audio/transcription/worker.rs).
+        //  - Here: the toast carries a stable id, so any warning that still
+        //    arrives (from another emitter, or a later recording in the same
+        //    session) REPLACES the visible toast instead of stacking a new one.
+        const unlistenTranscriptionWarning = await recordingService.onTranscriptionWarning(
+          (message) => {
+            console.warn('[RecordingStateContext] Transcription warning:', message);
+            toast.warning(message, { id: 'transcription-warning', duration: 8000 });
+          }
+        );
+        if (cancelled) { unlistenTranscriptionWarning(); return; }
+        unsubscribers.push(unlistenTranscriptionWarning);
 
         console.log('[RecordingStateContext] Event listeners set up successfully');
       } catch (error) {
@@ -230,6 +259,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
 
     return () => {
       console.log('[RecordingStateContext] Cleaning up event listeners');
+      cancelled = true;
       unsubscribers.forEach(unsub => unsub());
       stopPolling();
     };

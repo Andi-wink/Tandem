@@ -17,6 +17,9 @@ export interface Transcript {
   audio_end_time?: number;   // Seconds from recording start (e.g., 128.6)
   duration?: number;          // Segment duration in seconds (e.g., 3.3)
   source?: string;            // "Local" (mic) or "Remote" (system audio)
+  speaker?: string;           // DB `speaker` column: holds "Local"/"Remote" from the audio channel
+  // F022: Speaker diarization
+  speaker_label?: string;    // Pyannote label (e.g., "SPEAKER_00") or user-assigned name
 }
 
 export interface TranscriptUpdate {
@@ -31,6 +34,15 @@ export interface TranscriptUpdate {
   audio_start_time: number; // Seconds from recording start
   audio_end_time: number;   // Seconds from recording start
   duration: number;          // Segment duration in seconds
+}
+
+// Revisable partial transcript (Scribe Realtime WS). Volatile: never persisted,
+// never enters the committed transcript list. Superseded by a `transcript-update`
+// (committed) for the same source.
+export interface TranscriptPartial {
+  source: string;       // "Local" (mic) or "Remote" (system audio)
+  text: string;
+  session_seq: number;  // per-source monotonic sequence; used to drop stale/out-of-order partials
 }
 
 export interface Block {
@@ -108,6 +120,9 @@ export interface TranscriptSegmentData {
   endTime?: number; // audio_end_time in seconds
   text: string;
   confidence?: number;
+  source?: string;           // Audio-channel source: "Local"/"Remote" (from DB `speaker`)
+  // F022: Speaker diarization
+  speaker_label?: string;
 }
 
 // Screenshot capture types

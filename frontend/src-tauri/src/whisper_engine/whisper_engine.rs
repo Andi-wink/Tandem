@@ -49,6 +49,29 @@ pub struct WhisperEngine {
 }
 
 impl WhisperEngine {
+    /// The `initial_prompt` handed to whisper.cpp: the user's enabled
+    /// custom-dictionary terms (F056) followed by the language-aware base
+    /// vocabulary from `initial_prompt_for`.
+    ///
+    /// The user terms come FIRST on purpose. whisper.cpp caps the prompt at
+    /// roughly 224 tokens and keeps the LAST n_take tokens, counting back from
+    /// the END of prompt_past (whisper.cpp:5673), so it is the HEAD of the
+    /// prompt that gets dropped on overflow, not the tail. Putting the base
+    /// vocabulary last therefore guarantees the shipped terms survive, and any
+    /// overflow eats into the user list instead. The user list is separately
+    /// capped at a term boundary by `dictionary::PROMPT_CHAR_BUDGET`, and is
+    /// ordered oldest-created-first, so the terms a user added most recently
+    /// are the last to be dropped.
+    fn initial_prompt(language_code: Option<&str>) -> String {
+        let base = Self::initial_prompt_for(language_code);
+        let user_terms = crate::dictionary::cache::decoder_prompt_terms();
+        if user_terms.is_empty() {
+            base.to_string()
+        } else {
+            format!("{}, {}", user_terms, base)
+        }
+    }
+
     /// Detect available GPU acceleration capabilities
     fn detect_gpu_acceleration() -> bool {
         // On macOS, prefer Metal GPU acceleration
@@ -609,12 +632,9 @@ impl WhisperEngine {
 
         // Domain vocabulary hint — biases recognition toward project-specific terms that
         // Whisper commonly misrecognizes (e.g. "Claude Code" → "Claude Cowell", "n8n" → "innate").
-        //
-        // Whisper's initial prompt is a strong *language and style* conditioner, not just a
-        // vocabulary hint: feeding an all-English prompt ahead of German audio biases the decoder
-        // toward English and toward hallucinated English. Use a prompt written in the target
-        // language, keeping the domain terms (which stay English in German speech anyway).
-        params.set_initial_prompt(Self::initial_prompt_for(language_code));
+        // F056 appends the user's own custom-dictionary terms to this base list.
+        let vocabulary_prompt = Self::initial_prompt(language_code);
+        params.set_initial_prompt(&vocabulary_prompt);
 
         // PERFORMANCE: Disable ALL whisper.cpp internal printing
         // This reduces C library log spam significantly
@@ -745,8 +765,9 @@ impl WhisperEngine {
         params.set_no_timestamps(true);     // Prevent timestamp-based segment skipping
         params.set_token_timestamps(true);  // Keep for any timestamp-aware features
 
-        // Domain vocabulary hint (same as transcribe_audio_with_confidence)
-        params.set_initial_prompt(Self::initial_prompt_for(language_code));
+        // Domain vocabulary hint (same as transcribe_audio_with_confidence, F056 included)
+        let vocabulary_prompt = Self::initial_prompt(language_code);
+        params.set_initial_prompt(&vocabulary_prompt);
 
         params.set_print_special(false);
         params.set_print_progress(false);

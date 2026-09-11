@@ -51,24 +51,34 @@ interface SoloModeState {
   detectedTasks: SoloTask[];
   isProcessing: boolean;
   routingModel: string;
-  /** Per-session subfolder name (e.g. "MyMeeting_2026-05-08_14-30-15").
-   *  All Solo Mode artifacts for this session are written under
-   *  {projectPath}/.tandem/{sessionFolder}/ so the entire session can be
-   *  archived as a single folder. Computed lazily on first project switch
-   *  from the meeting title + start timestamp. Null until then. */
+  /** When false, the routing LLM is never called: no warmup, no analysis cycles.
+   *  Deterministic routing still works (the spoken "switch to X" fast path), and the
+   *  project is otherwise chosen by hand in the HUD. */
+  routingEnabled: boolean;
+  /** `.tandem`-relative filing subfolder for the CURRENTLY active project. All
+   *  Solo Mode artifacts are written under {projectPath}/.tandem/{sessionFolder}/.
+   *  Set per active project by the router (useSoloModeRouter.performProjectSwitch):
+   *   - plain folder project → "MyMeeting_2026-05-08_14-30-15" (meeting title +
+   *     start stamp, computed once per Solo session, shared across plain switches).
+   *   - F061 virtual sub-project → "sessions/HH.MM, DD.MM - <name>" (session start
+   *     time from the row's created_at) so each chat's artifacts stay isolated.
+   *     Null until the first project switch. */
   sessionFolder: string | null;
 }
 
 interface SoloModeContextType extends SoloModeState {
   startSoloSession: () => void;
   stopSoloSession: () => void;
-  switchProject: (project: Project, transcriptIndex: number) => void;
+  switchProject: (project: Project, transcriptIndex: number, branch?: string | null, displayName?: string | null, screenshotSubfolder?: string | null) => void;
   /** Clear the active project without ending the session (the Undo primitive when auto-routing
    *  filed a meeting but there was no previous active project to revert to). */
   clearActiveProject: () => void;
   addTask: (task: SoloTask) => void;
   setRoutingModel: (model: string) => void;
-  setSessionFolder: (folder: string) => void;
+  setRoutingEnabled: (enabled: boolean) => void;
+  /** Null re-scopes filing to the `.tandem` root — used when routing to a plain
+   *  project while holding a previous chat's session-scoped folder. */
+  setSessionFolder: (folder: string | null) => void;
   getActiveProjectHistory: () => ProjectHistoryEntry | null;
 }
 
@@ -97,6 +107,11 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     detectedTasks: [],
     isProcessing: false,
     sessionFolder: null,
+    // Default on: automatic routing is the feature's whole point for a new user. Only an
+    // explicit "0" turns it off, so a cleared or corrupt value fails back to working.
+    routingEnabled: typeof window === 'undefined'
+      ? true
+      : localStorage.getItem('tandem-solo-routing-enabled') !== '0',
     routingModel: (() => {
       if (typeof window === 'undefined') return DEFAULT_ROUTING_MODEL;
       const savedVersion = localStorage.getItem('tandem-solo-routing-model-version');
@@ -202,7 +217,7 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     setHudWindowVisible(false);
   }, []);
 
-  const switchProject = useCallback((project: Project, transcriptIndex: number) => {
+  const switchProject = useCallback((project: Project, transcriptIndex: number, branch?: string | null, displayName?: string | null, screenshotSubfolder?: string | null) => {
     console.log(`[SoloMode] Switching to project: ${project.name} at index ${transcriptIndex}`);
 
     // Close previous entry
@@ -220,6 +235,7 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
       startIndex: transcriptIndex,
       endIndex: null,
       startTime: Date.now(),
+      branch: branch ?? null,
     };
     history.push(newEntry);
     historyRef.current = history;
@@ -229,12 +245,19 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
       activeProject: project,
       projectHistory: history,
     }));
-    setActiveSoloProject(project.path).catch(err =>
+    // F061: for a virtual sub-project, screenshotSubfolder ("sessions/<slug>-<id>")
+    // routes captured screenshots into that session folder's screenshots/ dir;
+    // plain projects pass null and keep the shared .tandem/screenshots/.
+    setActiveSoloProject(project.path, screenshotSubfolder ?? null).catch(err =>
       console.warn('[SoloMode] Failed to set screenshot routing:', err),
     );
 
-    // Update the floating HUD with the new active project.
-    emitHudActiveProject(project.id, project.name);
+    // Update the floating HUD with the new active project. When the switch came
+    // from a live Claude session pick, prefer that session's name for the pill
+    // label; otherwise fall back to the project name. (Note: on a HUD reload the
+    // `solo-hud-ready` replay re-emits the project name, since the session name
+    // is not persisted in state — an accepted, minor degradation.)
+    emitHudActiveProject(project.id, displayName ?? project.name);
   }, []);
 
   const clearActiveProject = useCallback(() => {
@@ -265,7 +288,12 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     setState(prev => ({ ...prev, routingModel: model }));
   }, []);
 
-  const setSessionFolder = useCallback((folder: string) => {
+  const setRoutingEnabled = useCallback((enabled: boolean) => {
+    localStorage.setItem('tandem-solo-routing-enabled', enabled ? '1' : '0');
+    setState(prev => ({ ...prev, routingEnabled: enabled }));
+  }, []);
+
+  const setSessionFolder = useCallback((folder: string | null) => {
     setState(prev => ({ ...prev, sessionFolder: folder }));
   }, []);
 
@@ -284,9 +312,10 @@ export function SoloModeProvider({ children }: { children: React.ReactNode }) {
     clearActiveProject,
     addTask,
     setRoutingModel,
+    setRoutingEnabled,
     setSessionFolder,
     getActiveProjectHistory,
-  }), [state, startSoloSession, stopSoloSession, switchProject, clearActiveProject, addTask, setRoutingModel, setSessionFolder, getActiveProjectHistory]);
+  }), [state, startSoloSession, stopSoloSession, switchProject, clearActiveProject, addTask, setRoutingModel, setRoutingEnabled, setSessionFolder, getActiveProjectHistory]);
 
   return (
     <SoloModeContext.Provider value={contextValue}>

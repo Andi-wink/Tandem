@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import Analytics from '@/lib/analytics';
 import { isOllamaNotInstalledError } from '@/lib/utils';
 import { BuiltInModelInfo } from '@/lib/builtin-ai';
+import { resolveSpeaker, getLocalSpeakerName } from '@/lib/speakerNames';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
@@ -557,8 +558,15 @@ export function useSummaryGeneration({
       return `[${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}]`;
     };
 
+    // Prepend the resolved speaker name (pyannote label or audio channel) per segment so the
+    // summarizer sees "Andrew: ..." / "Client: ..." instead of a flat stream.
+    const localName = getLocalSpeakerName();
     const fullTranscript = allTranscripts
-      .map(t => `${formatTime(t.audio_start_time, t.timestamp)} ${t.text}`)
+      .map(t => {
+        const speaker = resolveSpeaker({ speaker_label: t.speaker_label, source: t.source ?? t.speaker }, localName);
+        const speakerPrefix = speaker ? `${speaker}: ` : '';
+        return `${formatTime(t.audio_start_time, t.timestamp)} ${speakerPrefix}${t.text}`;
+      })
       .join('\n');
 
     await processSummary({ transcriptText: fullTranscript, customPrompt });

@@ -40,7 +40,7 @@ export function TranscriptPanel({
   showModal
 }: TranscriptPanelProps) {
   // Contexts
-  const { transcripts, transcriptContainerRef, copyTranscript, updateTranscriptText } = useTranscripts();
+  const { transcripts, pendingBySource, transcriptContainerRef, copyTranscript, updateTranscriptText } = useTranscripts();
   const { transcriptModelConfig } = useConfig();
   const { isRecording, isPaused } = useRecordingState();
   const { checkPermissions, isChecking, hasSystemAudio, hasMicrophone } = usePermissionCheck();
@@ -70,8 +70,20 @@ export function TranscriptPanel({
       endTime: t.audio_end_time,
       text: t.text,
       confidence: t.confidence,
+      source: t.source ?? t.speaker,
+      speaker_label: t.speaker_label,
     })),
     [transcripts]
+  );
+
+  // Volatile "live" partial tails, one per source. Sorted for stable ordering
+  // (Local before Remote). Empty tails are filtered out by the view.
+  const pendingTails = useMemo(
+    () =>
+      Object.entries(pendingBySource)
+        .map(([source, text]) => ({ source, text }))
+        .sort((a, b) => a.source.localeCompare(b.source)),
+    [pendingBySource]
   );
 
   // Merge into timeline when screenshots or clipboard items exist
@@ -201,6 +213,7 @@ export function TranscriptPanel({
               onScreenshotClick={handleScreenshotClick}
               clipboardCount={clipboardItems.length}
               onSegmentEdit={handleSegmentEdit}
+              pendingTails={pendingTails}
             />
           </div>
         </div>

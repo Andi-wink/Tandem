@@ -2,6 +2,37 @@
 
 ## Open
 
+### Custom Transcription Dictionary (F056) BUILT, QA passed, on `feature/custom-dictionary` (pushed, 2026-09-07)
+Worktree `D:\Dev-projects\Tandem-f056`. Dictionary tab in Settings, SQLite table with a case-insensitive unique term index, one-pass regex correction on every live transcript path (batch worker, realtime partial and commit, canvas clip), user terms prepended to the Whisper initial prompt, JSON import/export. Gates: cargo test --lib dictionary 32/32, cargo check clean, tsc clean, Playwright render with mocked IPC in light and dark. Two adversarial QA passes, second one PASS. Not merged to main.
+- [ ] LIVE-RUNTIME needed: add "n8n" with alias "n eight n", record, say it, confirm the correction shows in the live partial and the saved transcript, and that the Whisper prompt change does not hurt WER (run [wer_gate.py](audio_testing/wer_gate.py)).
+- [ ] One-shot commands `whisper_transcribe_audio` and `parakeet_transcribe_audio` still return raw text (deliberate, out of scope). Route through `dictionary::cache::correct` if any UI starts using them for user-visible text.
+- [ ] SQLite NOCASE is ASCII-only, the Rust fold is Unicode: "Größe" and "GRÖSSE" can both be inserted and the term is then duplicated in the prompt. Harmless for matching.
+- [ ] Migration 20260907000001 dedupes existing duplicate terms by keeping the first row and dropping the others' aliases without merging. Only affects DBs that ran the pre-fix branch commits.
+- [x] Merged `feature/custom-dictionary` into main 2026-09-11, before the live check, on Andrew's call.
+
+**Scribe keyterms (added 2026-09-11).** The dictionary now also reaches ElevenLabs Scribe as decoder bias, not just Whisper's prompt. Batch sends each term as a repeated `keyterms` multipart field ([elevenlabs_provider.rs](frontend/src-tauri/src/audio/transcription/elevenlabs_provider.rs)), realtime appends repeated percent-encoded `keyterms=` query params to the WS URL ([elevenlabs_realtime.rs](frontend/src-tauri/src/audio/transcription/elevenlabs_realtime.rs)). Terms come from `dictionary::cache::scribe_keyterms_batch/realtime`, capped per the docs (batch 1000 terms / 50 chars, realtime 50 / 20, max 5 words either way); over-long terms are dropped, never truncated, because the API rejects the whole request on any single over-long keyterm.
+- [ ] LIVE-RUNTIME needed: the keyterms wire format is verified against the docs but not against the live API. Confirm a real `scribe_v2` batch call and a real `scribe_v2_realtime` session both accept the field (watch for HTTP 422 / `invalid_keyword_length`, and for the WS `session_started` event, which echoes `keyterms` back).
+- [ ] COST: keyterms carry "an additional 20% surcharge on the base transcription cost" per the ElevenLabs API reference, and over 100 keyterms forces a minimum 20-second billable duration per request. Worth surfacing in the Dictionary settings tab if a user's list ever gets long.
+- [ ] `scribe_v1` deliberately gets no keyterms (docs list only Scribe v2 and Scribe v2 Realtime as supporting it). Revisit if ElevenLabs extends it.
+
+### Solo daily-driver review — 10 areas, 4 signed off and built (2026-08-01), on `feature/solo-daily-driver`
+Three adversarial sub-agent reviews of solo mode as a daily driver produced 10 ranked improvement areas. Andrew signed off on 2, 3, 4 and a re-scoped 5; item 7 is pending an explanation. Shipped on `feature/solo-daily-driver` (stacked on `feature/hud-session-search`): routing no longer silently dies or drops speech (570e1bd), each chat files under its own project/folder (10b7fb1), agent replies are archived to `responses.md` + OS notification instead of being deleted (b04a67b), pause/resume on the HUD pill (9f4fa37).
+- [ ] LIVE-RUNTIME needed for all four: run a real two-session solo day and confirm routing still files in session 2, a Claude reply lands in `<tandem>/responses.md` with an OS notification, pause/resume from the pill matches the tray, and a chat pick on an already-registered folder creates its own project row.
+- [ ] Merge `feature/hud-session-search` + `feature/solo-daily-driver` into main, and put the `Tandem-main` worktree back on `main`.
+- [ ] #7 HUD/screenshot focus theft + mouse-only switching (explained to Andrew, awaiting sign-off): global shortcut to open/focus the picker, Enter picks the top match, restore the previous foreground window after collapse and after a screenshot crop.
+- [ ] #1 Nothing spawns an agent: a Tauri command to launch a headless agent per active project on switch, replacing the manual terminal + `/loop` per project.
+- [ ] #6 Latency floor ~45s (12s Parakeet flush + 30s routing interval + 60s loop poll): apply the tuned 4s/6s CLOUD flush profile to local engines, drop the routing interval, trigger on file-write instead of polling.
+- [ ] #8 Silent transcription death: `recording-error` has zero frontend listeners; a mid-recording model unload still counts the chunk as completed; a wrong (not missing) API key warns once.
+- [ ] #9 `feed.md` is a lock-free whole-file rewrite hit by three concurrent loops (lost entries, O(n^2) growth): add an append-mode Tauri command + a JS write mutex.
+- [ ] #10 "What happened on project X today" is unanswerable in-app: `created_at` is dropped from the meeting DTO, search is transcripts-only with a segment-counted LIMIT and a date-less ORDER BY, and quick-capture notes / `feed.md` / `action-items.md` have no reader.
+- [ ] Below the cut: voice commands only work while recording and hardcode `command: 'ask'`; Alt+Shift+N quick capture ignores the active solo project; "ignore that" revokes lose the race against an already-started agent; virtual chat rows are never filtered out of the routing prompt so it grows with every pick.
+
+### Solo mode: typed note added INTO the transcript (F062) — BUILT, gates green (2026-07-23), on `feature/solo-transcript-notes` (uncommitted)
+Andrew's intent (delivered): while recording, type a quick note or link and have it appear in the transcript itself as an entry alongside the spoken text, so it lands everywhere the transcript goes. Implemented as a compact keyboard-first input in the live recording view ([TranscriptNoteInput.tsx](frontend/src/components/TranscriptNoteInput.tsx), Enter adds, shown while recording/paused) that injects a transcript segment marked `source: "note"` into TranscriptContext via a new `addNote()`. Marker mechanism reuses the existing `source` field (persisted to the DB `speaker` column, no schema change), so the note flows with zero new plumbing into: the live view, the saved meeting transcript (stop-save reads the same state → api_save_transcript), [live-transcript.md](frontend/src/services/handoffService.ts) (rendered `Note: ...`), @code task files, and LLM summaries. Distinct indigo "Note" badge + verbatim text (no filler-word stripping, links survive) in both the live view and meeting-details via the shared [VirtualizedTranscriptView.tsx](frontend/src/components/VirtualizedTranscriptView.tsx). Pure logic (marker/timestamp/ordering) in [transcriptNotes.ts](frontend/src/lib/transcriptNotes.ts). Summary builder + anonymizer verified to not reference speaker/source, so notes read as plain text there (no crash). Gates: tsc clean, vitest 146/146 (14 new in [transcriptNotes.test.ts](frontend/src/lib/transcriptNotes.test.ts)), cargo check clean (no Rust touched). Not committed.
+- [ ] LIVE-RUNTIME needed: real recording → type a note + a URL mid-call → confirm the "Note" badge in the live view, the note persists into the saved meeting transcript on stop, appears as `Note: ...` in `.tandem/live-transcript.md`, survives a reload of meeting-details, and shows verbatim (URL intact) in the generated summary.
+- [ ] Note timestamp is derived on the frontend from the max `audio_end_time` of existing segments (transcription lags live audio, so this attaches the note just after the most recent speech) rather than the true wall-clock elapsed. `get_recording_elapsed_secs()` exists in Rust but is not exposed as a Tauri command; expose + use it if exact live-audio alignment is ever wanted.
+- [ ] Notes are input-only in the live view for now: no edit/delete of an added note before stop (spoken segments have inline double-click edit; notes could reuse it — they carry a real segment id). Add if requested.
+
 ### German client calls: consent gate + German accuracy (2026-08-11)
 Full analysis in `research/german-calls-2026-08-11.md` (gitignored, this repo is public). Verdict: **keep Tandem, do not buy a notetaker.** Every purchasable option fails an eliminator, bot-based tools are already lobby-trapped by default on German enterprise Teams (`ExternalBotAccessMode = RequireApprovalWhenDetected`), and local capture is the only architecture where "no audio leaves the device" can be substantiated rather than asserted. What Tandem lacks is a consent gate, a persisted language setting and honest deletion.
 
@@ -270,6 +301,40 @@ drop a 12-35s chunk — likely the user-perceived word drops). Research report:
   session warmup 2.6s (first utterance of a call feels slower than the rest);
   same-window multi-segment shadow edge (redemption 800ms > window 600ms makes
   it near-unreachable).
+- [x] **Realtime engine MERGED TO MAIN (2026-07-28, main @ 4ea6dae)** with the
+  commit-cadence strategy from the 2026-07-27 WER study: continuous feed +
+  dual-bound danger-band scheduler (interval 27s, cutoff 32s, receipt re-anchor
+  with 5s max lag; server auto-commit trigger measured ~35.5s, stall edge 34.5s).
+  Harness 4.58-5.29% pooled WER vs 6.31% per-VAD-segment. Hardened through five
+  adversarial QA rounds (3+2+2+1+1 skeptics; rounds 1-4 each FAILed and were
+  fixed: stop-path stall commit, timeline drift from ring shedding, scheduler
+  lapping/dead re-sync, watchdog silence flapping, debounce data loss, teardown
+  generation race). Live multi-cycle stress validation: harness commit d8c8dd3,
+  9-10 auto-commit cycles at 4x AND real pace, zero stalls/throttles. Still
+  opt-in via model `scribe_v2_realtime`; batch stays default until Phase 4.
+- [ ] **Phase 4 — manual live-mic runtime pass (NEEDS ANDREW at the machine)**,
+  now on main: (1) select ElevenLabs / "Scribe v2 Realtime" in transcription
+  settings; record a real call: partial tail appears in ~1-2s and locks into
+  committed lines every ~27-35s (this is by design now; partials carry the
+  live feel); Local/Remote attribution correct. (2) Kill the network mid-call
+  ~30s, restore: warning toast once, transcript continues (degraded batch), no
+  duplicated/lost text vs the saved audio. (3) Stop while speaking: closing
+  utterance appears exactly once (staged finalize or batch shadow flush).
+  (4) Check meeting-details ordering (utterance-split blocks interleave), summary,
+  live-transcript.md/@code see only committed text. (5) Long call >1h: watch for
+  stall-watchdog reconnects in logs. Then decide default-on vs opt-in.
+- [ ] Realtime follow-ups from QA round 5 (all MINOR, documented in code):
+  pre-existing transcript text at info! in worker.rs L220/L228 (violates the
+  debug!-only rule, also on main before this branch); realtime session leak on
+  one start-error path (pre-existing, recording_commands.rs ~L880); pack the
+  pause mirror's two atomics into one AtomicU64 (~1e-8 read race); add a
+  regression test that the predictive backstop keys off point_late not
+  point_early; untimed-commit tail (~2s) not rescued by VAD drain on a rare
+  path; no integration test constructs AudioPipeline::flush_remaining_audio.
+- [ ] Realtime residuals (accepted, documented): TTFP session warmup 2.6s;
+  first persisted text ~27-35s in (partials cover the gap); continuous feed
+  bills ~wall-clock x2 streams (~3-5x vs VAD-gated batch); tail-at-stop batch
+  fallback can fail after retries (warning shown, .wav survives).
 - [ ] VAD-level mid-segment partial emit: silero holds a monologue as one 13-35s
   segment; no buffer knob can subdivide it. Needed if we stay on batch HTTP.
 - [ ] Consider min 5s instead of 4s for the CLOUD profile (QA: 6.21% @ 9.1s median
@@ -318,6 +383,12 @@ Recovered the orphaned F022 work onto `feature/speaker-diarization` (rebased off
 - [ ] Channel-split (`--mode channels`) needs split-track clips `clips/<clip>_mic.wav` + `clips/<clip>_system.wav`. Record a few short calls with `TANDEM_SAVE_RAW_TRACKS=1` (the audio-aec worktree saves raw tracks) to unlock the production-target evaluation.
 - [ ] End-to-end product test: install deps, download model via Settings, diarize a real recording, verify speaker badges render (recovered UI compiles; not yet runtime-tested).
 - [ ] Cleanup: once recovery is confirmed good, delete the stale `D:/Dev-projects/Tandem-f022-orphan` directory (kept as the recovery source).
+
+### Handover Document (F063) - built on feature/solo-handover-doc, not yet run in the app
+Verbatim no-AI export offered next to "Generate Summary" after a recording. tsc clean, 482 vitest tests pass, output verified against a generated sample. Remaining:
+- [ ] Live app pass: record a short solo session (type a note with a link, take a screenshot, copy something), stop, click "Create handover document", confirm HANDOVER.md renders with the screenshot visible and the links section correct. Needs a CUDA rebuild in the [Tandem-handover](../Tandem-handover) worktree.
+- [ ] Decide whether this should merge with the existing F020 HANDOFF.md export ([handoffExport.ts](frontend/src/lib/handoffExport.ts)), which builds a similar timeline for Claude Code but adds AI conversation + task YAML and never includes notes or links. Two overlapping documents is a smell.
+- [ ] Naming collision to watch: "handover" already means a mid-call meeting switch in [handoffService.ts](frontend/src/services/handoffService.ts) (I5b), and "handoff" means the F020 export.
 
 ## Done
 - Security: the Anthropic/Claude API key no longer sits in plaintext in the `settings` table. It now lives in the OS credential store (Windows Credential Manager / macOS Keychain via the `keyring` crate); `save`/`get`/`delete` for the `claude` provider delegate to [secure_store.rs](frontend/src-tauri/src/database/secure_store.rs). On startup, any pre-existing plaintext `anthropicApiKey` is migrated into the secure store and the column is blanked ([manager.rs](frontend/src-tauri/src/database/manager.rs)). `cargo check --lib` clean; secure_store + settings repository tests pass. Other provider keys (Groq, OpenAI, etc.) remain in SQLite, matching CLAUDE.md.

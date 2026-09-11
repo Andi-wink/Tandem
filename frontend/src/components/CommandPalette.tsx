@@ -16,7 +16,7 @@ import { defaultFilter } from 'cmdk';
 import { toast } from 'sonner';
 import { usePathname, useRouter } from 'next/navigation';
 import {
-  FolderGit2, FolderKanban, Layers, Mic, Square, User, Users,
+  FolderGit2, FolderKanban, FolderPlus, Layers, Mic, Square, User, Users,
   PanelRightOpen, PenTool, Plus, History, FileText, CalendarDays, RefreshCw, NotebookText,
 } from 'lucide-react';
 import {
@@ -412,6 +412,21 @@ export function CommandPalette() {
                 <CommandItem value="switch route project" onSelect={() => setPage('project')}>
                   <FolderKanban />
                   <span>Switch / route project…</span>
+                </CommandItem>
+
+                {/* The second door to a new client folder, for when you did not capture at
+                    the moment the inquiry arrived. Opens the same bar; Tab to "+ New in X". */}
+                <CommandItem
+                  value="new inquiry client folder upwork prospect"
+                  onSelect={() => { void invoke('quick_capture_open'); setOpen(false); }}
+                >
+                  <FolderPlus />
+                  <div className="flex min-w-0 flex-col">
+                    <span className="truncate">New inquiry…</span>
+                    <span className="truncate text-xs text-muted-foreground">
+                      Create a client folder from the clipboard
+                    </span>
+                  </div>
                 </CommandItem>
 
                 {!isRecording && (

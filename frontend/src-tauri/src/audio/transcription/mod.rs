@@ -7,6 +7,7 @@ pub mod whisper_provider;
 pub mod parakeet_provider;
 pub mod mistral_provider;
 pub mod elevenlabs_provider;
+pub mod elevenlabs_realtime;
 pub mod engine;
 pub mod worker;
 
@@ -25,5 +26,12 @@ pub use engine::{
 pub use worker::{
     start_transcription_task,
     reset_speech_detected_flag,
+    next_sequence_id,
     TranscriptUpdate
+};
+pub use elevenlabs_realtime::{
+    is_realtime_model,
+    ElevenLabsRealtimeSession,
+    RealtimeEvent,
+    Route,
 };

@@ -39,11 +39,13 @@ pub mod api;
 pub mod audio;
 pub mod calendar_ics;
 pub mod canvas;
+pub mod claude_sessions;
 pub mod clipboard;
 pub mod console_utils;
 pub mod consent;
 pub mod quick_capture;
 pub mod database;
+pub mod dictionary;
 mod migration;
 pub mod notifications;
 pub mod ollama;
@@ -1497,8 +1499,15 @@ pub fn run() {
             api::api_get_custom_openai_config,
             api::api_test_custom_openai_connection,
             // Project management commands (Solo Mode)
+            // F056: custom transcription dictionary
+            dictionary::commands::list_dictionary_entries,
+            dictionary::commands::upsert_dictionary_entry,
+            dictionary::commands::delete_dictionary_entry,
+            dictionary::commands::import_dictionary,
+            dictionary::commands::export_dictionary,
             api::project_list,
             api::project_create,
+            api::project_create_virtual,
             api::project_update,
             api::project_delete,
             api::project_import_scanned,
@@ -1510,6 +1519,12 @@ pub fn run() {
             api::list_client_folders,
             // Deferred meeting-folder relocation (R3)
             relocate_meeting_folder,
+            // F061: session archival (virtual sub-projects)
+            api::list_dir_file_names,
+            api::archive_session_folder,
+            // F055: session-aware HUD + branch stamping
+            claude_sessions::get_git_branch,
+            claude_sessions::list_claude_session_candidates,
             // Summary commands
             summary::api_process_transcript,
             summary::api_get_summary,
@@ -1584,6 +1599,7 @@ pub fn run() {
             screenshot::commands::save_screenshots_json,
             screenshot::commands::load_screenshots_json,
             screenshot::commands::save_annotated_screenshot,
+            screenshot::commands::screenshot_embed_data_uri,
             screenshot::commands::set_active_solo_project,
             // Clipboard capture commands
             clipboard::commands::read_clipboard_content,
@@ -1628,6 +1644,10 @@ pub fn run() {
             quick_capture::commands::set_quick_capture_enabled,
             quick_capture::commands::save_quick_capture,
             quick_capture::commands::quick_capture_send_to_ai,
+            // New inquiry (create a client folder from an unrouted capture)
+            quick_capture::commands::create_inquiry,
+            quick_capture::commands::undo_inquiry,
+            quick_capture::commands::open_in_antigravity,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

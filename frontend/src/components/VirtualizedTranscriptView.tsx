@@ -9,6 +9,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { RecordingStatusBar } from "./RecordingStatusBar";
 import { motion, AnimatePresence } from "framer-motion";
 import { TranscriptSegmentData, ScreenshotData, ClipboardData, TimelineItem, TimelineFilter } from "@/types";
+import { getSpeakerColor, formatSpeakerLabel } from "@/lib/speakerColors";
+import { resolveSpeaker, getLocalSpeakerName } from "@/lib/speakerNames";
+import { isNoteSegment } from "@/lib/transcriptNotes";
+import { StickyNote } from "lucide-react";
+import { useLocalSpeakerName } from "@/hooks/useLocalSpeakerName";
 import { TimelineFilterBar } from "./TimelineFilterBar";
 import { ScreenshotThumbnail } from "./ScreenshotThumbnail";
 import { Clipboard } from "lucide-react";
@@ -53,7 +58,56 @@ export interface VirtualizedTranscriptViewProps {
 
     /** Callback when a segment's text is edited (double-click to edit) */
     onSegmentEdit?: (segmentId: string, newText: string) => void;
+
+    /**
+     * Volatile "live" partial tails, one per source ("Local" / "Remote").
+     * Rendered muted/italic below the committed segments, OUTSIDE the virtualized
+     * list so rapid partial updates never thrash the virtualizer. Superseded by the
+     * next committed segment for that source.
+     */
+    pendingTails?: Array<{ source: string; text: string }>;
 }
+
+/**
+ * A single volatile partial tail. Muted, italic, no timestamp chip, with a small
+ * pulsing "live" affordance (static under prefers-reduced-motion). Not selectable,
+ * not draggable, not persisted.
+ */
+const LiveTail = memo(function LiveTail({
+    source,
+    text,
+    showSource,
+}: {
+    source: string;
+    text: string;
+    showSource: boolean;
+}) {
+    const trimmed = text.trim();
+    if (trimmed === '') return null;
+
+    // aria-live off: partials update many times/sec via RAF and would flood a
+    // screen reader. The committed segments are the announced content.
+    return (
+        <div className="mb-3" data-testid={`live-tail-${source}`} aria-live="off">
+            <div className="flex items-start gap-2">
+                <span className="text-xs text-muted-foreground mt-1 flex-shrink-0 min-w-[50px] flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse motion-reduce:animate-none" aria-hidden="true" />
+                    <span className="uppercase tracking-wide text-[10px]">Live</span>
+                </span>
+                <div className="flex-1">
+                    {showSource && (
+                        <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70 mr-2 align-middle">
+                            {source}
+                        </span>
+                    )}
+                    <span className="text-base italic text-muted-foreground leading-relaxed select-text break-words">
+                        {text}
+                    </span>
+                </div>
+            </div>
+        </div>
+    );
+});
 
 // Threshold for enabling virtualization (below this, use simple rendering)
 const VIRTUALIZATION_THRESHOLD = 10;
@@ -83,12 +137,15 @@ function cleanStopWords(text: string): string {
 }
 
 function segmentToBasketItem(seg: TranscriptSegmentData): ContextBasketItem {
+    // Prepend the resolved speaker name so the AI sees "Andrew: ..." / "Client: ..."
+    const speaker = resolveSpeaker(seg, getLocalSpeakerName());
+    const content = speaker ? `${speaker}: ${seg.text}` : seg.text;
     return {
         id: `segment-${seg.id}`,
         type: 'transcript_chunk',
         label: formatRecordingTime(seg.timestamp),
-        preview: seg.text.slice(0, 80) + (seg.text.length > 80 ? '...' : ''),
-        fullContent: seg.text,
+        preview: content.slice(0, 80) + (content.length > 80 ? '...' : ''),
+        fullContent: content,
         timestamp: seg.timestamp,
     };
 }
@@ -156,6 +213,8 @@ const TranscriptSegment = memo(function TranscriptSegment({
     onEditSave,
     onEditCancel,
     onEditKeyDown,
+    speakerName,
+    isNote = false,
 }: {
     id: string;
     timestamp: number;
@@ -173,9 +232,14 @@ const TranscriptSegment = memo(function TranscriptSegment({
     onEditSave?: () => void;
     onEditCancel?: () => void;
     onEditKeyDown?: (e: React.KeyboardEvent) => void;
+    // Resolved speaker name (pyannote label or channel name), already precedence-resolved
+    speakerName?: string;
+    // True when this segment is a typed note (source === "note"): distinct badge, verbatim text
+    isNote?: boolean;
 }) {
     const { isDragging, dragHandlers } = useDraggableBasketItem(basketItem ?? null, selectedItems);
-    const displayText = cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
+    // Notes are shown verbatim (links must survive; no filler-word stripping, no [Silence]).
+    const displayText = isNote ? text : (cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text));
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
     // Auto-focus and auto-resize when editing starts
@@ -192,6 +256,22 @@ const TranscriptSegment = memo(function TranscriptSegment({
     return (
         <div id={`segment-${id}`} data-selectable-id={`segment-${id}`} className="mb-3" {...(isEditing ? {} : dragHandlers)}>
             <div className={`flex items-start gap-2 select-none transition-all ${isDragging ? 'opacity-60 ring-2 ring-blue-400 shadow-[0_0_12px_rgba(59,130,246,0.4)] scale-[0.97] rounded-lg' : ''} ${isSelected && !isEditing ? 'bg-blue-50 dark:bg-blue-900/30 ring-1 ring-blue-300 rounded-lg px-1' : ''} ${basketItem && !isEditing ? 'cursor-grab' : ''}`}>
+                {isNote ? (
+                    <span
+                        title="Note"
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold mt-1 flex-shrink-0 bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300"
+                    >
+                        <StickyNote className="w-3 h-3" aria-hidden="true" />
+                        Note
+                    </span>
+                ) : speakerName && (
+                    <span
+                        title={speakerName}
+                        className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold mt-1 flex-shrink-0 max-w-[12ch] truncate ${getSpeakerColor(speakerName)}`}
+                    >
+                        {formatSpeakerLabel(speakerName)}
+                    </span>
+                )}
                 <Tooltip>
                     <TooltipTrigger>
                         <span className="text-xs text-muted-foreground mt-1 flex-shrink-0 min-w-[50px]">
@@ -230,7 +310,9 @@ const TranscriptSegment = memo(function TranscriptSegment({
                         </div>
                     ) : (
                         <p
-                            className="text-base text-foreground leading-relaxed select-text cursor-text"
+                            className={`text-base leading-relaxed select-text cursor-text break-words ${isNote
+                                ? 'text-foreground border-l-2 border-indigo-300 dark:border-indigo-500/40 pl-2'
+                                : 'text-foreground'}`}
                             onDoubleClick={onEditStart}
                             onMouseDown={(e) => e.stopPropagation()}
                         >
@@ -265,8 +347,13 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     clipboardCount = 0,
     onClipboardItemClick,
     onSegmentEdit,
+    pendingTails,
 }) => {
     const { selectedIds, isSelected, replaceSelection, toggle, rangeTo } = useSelection();
+
+    // Local speaker name for channel-based labels ("Andrew" by default, "Client" for remote).
+    // Reactive so badges update immediately when the "Your Name" setting changes.
+    const localName = useLocalSpeakerName();
 
     // Inline editing state
     const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
@@ -607,6 +694,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         onEditSave={handleEditSave}
                                         onEditCancel={handleEditCancel}
                                         onEditKeyDown={handleEditKeyDown}
+                                        speakerName={resolveSpeaker(seg, localName)}
+                                        isNote={isNoteSegment(seg)}
                                     />
                                 </motion.div>
                             );
@@ -671,6 +760,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         onEditSave={handleEditSave}
                                         onEditCancel={handleEditCancel}
                                         onEditKeyDown={handleEditKeyDown}
+                                        speakerName={resolveSpeaker(segment, localName)}
+                                        isNote={isNoteSegment(segment)}
                                     />
                                 </div>
                             );
@@ -738,6 +829,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         onEditSave={handleEditSave}
                                         onEditCancel={handleEditCancel}
                                         onEditKeyDown={handleEditKeyDown}
+                                        speakerName={resolveSpeaker(segment, localName)}
+                                        isNote={isNoteSegment(segment)}
                                     />
                                 </motion.div>
                             );
@@ -773,6 +866,21 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                         </motion.div>
                     )}
                 </>
+            )}
+
+            {/* Volatile "live" partial tails — rendered OUTSIDE the virtualized list,
+                below all committed segments, so partial churn never re-measures rows. */}
+            {pendingTails && pendingTails.length > 0 && (
+                <div className="mt-1">
+                    {pendingTails.map((tail) => (
+                        <LiveTail
+                            key={`live-tail-${tail.source}`}
+                            source={tail.source}
+                            text={tail.text}
+                            showSource={pendingTails.length > 1}
+                        />
+                    ))}
+                </div>
             )}
             </div>
 

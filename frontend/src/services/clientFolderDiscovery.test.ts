@@ -3,7 +3,7 @@ import { discoveredAsProjectStubs, isDiscoveredStub, DISCOVERED_PREFIX } from '.
 import { Project } from '@/services/projectService';
 
 function proj(name: string, path: string): Project {
-  return { id: name.toLowerCase(), name, path, aliases: [], auto_discovered: false };
+  return { id: name.toLowerCase(), name, path, aliases: [], auto_discovered: false, session_id: null, created_at: '' };
 }
 
 describe('discoveredAsProjectStubs', () => {

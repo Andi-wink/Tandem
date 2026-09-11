@@ -142,6 +142,9 @@ pub struct MeetingTranscript {
     pub audio_end_time: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
+    // Audio-channel speaker source: "Local" (user's mic) or "Remote" (system audio / client)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
 }
 
 /// Meeting metadata without transcripts (for pagination)
@@ -1022,6 +1025,7 @@ pub async fn api_get_meeting_transcripts<R: Runtime>(
                     audio_start_time: t.audio_start_time,
                     audio_end_time: t.audio_end_time,
                     duration: t.duration,
+                    speaker: t.speaker.clone(),
                 })
                 .collect::<Vec<_>>();
 
@@ -1183,6 +1187,102 @@ fn rename_meeting_folder(old_folder_path: &str, new_title: &str) -> Option<Strin
             None
         }
     }
+}
+
+/// F061: list the file (non-directory) entry names directly inside `path`.
+/// Returns `None` if `path` does not exist or is not a directory, otherwise
+/// `Some(names)` (an empty vec for an empty directory). Used to test whether a
+/// virtual sub-project's `tasks/` folder still holds any handed-off task files:
+/// a missing folder means no task was ever handed off, an empty one means every
+/// handed-off task has been completed and deleted by Claude Code.
+#[tauri::command]
+pub async fn list_dir_file_names(path: String) -> Result<Option<Vec<String>>, String> {
+    let dir = std::path::Path::new(&path);
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+    let mut names = Vec::new();
+    let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        if entry.path().is_file() {
+            names.push(entry.file_name().to_string_lossy().to_string());
+        }
+    }
+    Ok(Some(names))
+}
+
+/// F061: resolve a non-colliding archive destination for `leaf` under `archive_dir`:
+/// `<archive_dir>/<leaf>`, else `<archive_dir>/<leaf>-2`, `-3`, ... until free.
+fn resolve_archive_target(archive_dir: &std::path::Path, leaf: &str) -> std::path::PathBuf {
+    let first = archive_dir.join(leaf);
+    if !first.exists() {
+        return first;
+    }
+    let mut n = 2;
+    loop {
+        let candidate = archive_dir.join(format!("{}-{}", leaf, n));
+        if !candidate.exists() {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// F061: core of `archive_session_folder`, split out so it can be unit-tested
+/// without a Tauri runtime. Moves `<project_dir>/.tandem/<session_folder>` to
+/// `<project_dir>/.tandem/archive/<leaf>` (leaf = last component of
+/// session_folder), suffixing `-N` on collision. Returns the final path on
+/// success, or `None` when the source is missing or the rename fails (folder
+/// open/locked on Windows) — the caller retries on the next trigger.
+fn do_archive_session(project_dir: &str, session_folder: &str) -> Option<String> {
+    let tandem = std::path::Path::new(project_dir).join(".tandem");
+    let src = tandem.join(session_folder);
+    if !src.is_dir() {
+        log_warn!(
+            "archive_session_folder: source missing, skipping: {}",
+            src.display()
+        );
+        return None;
+    }
+    let leaf = std::path::Path::new(session_folder)
+        .file_name()?
+        .to_string_lossy()
+        .to_string();
+    let archive_dir = tandem.join("archive");
+    if let Err(e) = std::fs::create_dir_all(&archive_dir) {
+        log_warn!("archive_session_folder: could not create archive dir: {}", e);
+        return None;
+    }
+    let dest = resolve_archive_target(&archive_dir, &leaf);
+    match std::fs::rename(&src, &dest) {
+        Ok(()) => {
+            log_info!(
+                "Archived session folder: {} -> {}",
+                src.display(),
+                dest.display()
+            );
+            Some(dest.to_string_lossy().to_string())
+        }
+        Err(e) => {
+            // Folder open/locked (Explorer, or Claude Code holding feed.md open):
+            // Windows rename fails with EBUSY / access-denied. Skip, retry later.
+            log_warn!("archive_session_folder: rename failed (will retry): {}", e);
+            None
+        }
+    }
+}
+
+/// F061: move a completed virtual sub-project session folder into the archive.
+/// Best-effort: never errors, never blocks the caller. Returns the archived path
+/// on success, or `None` when nothing was moved (missing source, or the folder
+/// was locked). The caller decides WHETHER to archive (tasks-done predicate); by
+/// the time this runs the folder must no longer be the active session.
+#[tauri::command]
+pub async fn archive_session_folder(
+    project_dir: String,
+    session_folder: String,
+) -> Result<Option<String>, String> {
+    Ok(do_archive_session(&project_dir, &session_folder))
 }
 
 #[tauri::command]
@@ -1816,7 +1916,30 @@ pub async fn project_create(
     aliases: String,
 ) -> Result<ProjectModel, String> {
     let pool = state.db_manager.pool();
-    ProjectRepository::create_project(pool, &name, &path, &aliases, false)
+    ProjectRepository::create_project(pool, &name, &path, &aliases, false, None)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// F061: create (or return the existing) virtual sub-project keyed by
+/// (path, session_id). A virtual sub-project shares a folder path with a plain
+/// project but is scoped to one Claude chat session; its artifacts live under
+/// `<path>/.tandem/sessions/<session_id>/`. Idempotent: a duplicate (path,
+/// session_id) returns the existing row rather than erroring on the unique index.
+#[tauri::command]
+pub async fn project_create_virtual(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    path: String,
+    session_id: String,
+) -> Result<ProjectModel, String> {
+    let pool = state.db_manager.pool();
+    if let Ok(Some(existing)) =
+        ProjectRepository::find_by_path_session(pool, &path, Some(&session_id)).await
+    {
+        return Ok(existing);
+    }
+    ProjectRepository::create_project(pool, &name, &path, "[]", true, Some(&session_id))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1859,7 +1982,7 @@ pub async fn project_import_scanned(
         if let Ok(Some(_)) = ProjectRepository::find_by_path(pool, &scanned.path).await {
             continue;
         }
-        match ProjectRepository::create_project(pool, &scanned.name, &scanned.path, "[]", true)
+        match ProjectRepository::create_project(pool, &scanned.name, &scanned.path, "[]", true, None)
             .await
         {
             Ok(project) => imported.push(project),
@@ -1939,5 +2062,73 @@ pub async fn project_pick_directory<R: Runtime>(
             Err(_) => Ok(None),
         },
         None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod archive_tests {
+    use super::{do_archive_session, resolve_archive_target};
+    use std::fs;
+
+    // ---- resolve_archive_target: collision suffixing ----
+
+    #[test]
+    fn archive_target_no_collision_uses_leaf() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        assert_eq!(resolve_archive_target(dir, "slug-8effa465"), dir.join("slug-8effa465"));
+    }
+
+    #[test]
+    fn archive_target_suffixes_on_collision() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        fs::create_dir_all(dir.join("slug-abc")).unwrap();
+        assert_eq!(resolve_archive_target(dir, "slug-abc"), dir.join("slug-abc-2"));
+        fs::create_dir_all(dir.join("slug-abc-2")).unwrap();
+        assert_eq!(resolve_archive_target(dir, "slug-abc"), dir.join("slug-abc-3"));
+    }
+
+    // ---- do_archive_session: the move ----
+
+    #[test]
+    fn archive_moves_session_folder_into_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path();
+        let sessions = project.join(".tandem").join("sessions").join("slug-8effa465");
+        fs::create_dir_all(sessions.join("tasks")).unwrap();
+        fs::write(sessions.join("feed.md"), "# Tandem Feed\n").unwrap();
+
+        let moved = do_archive_session(
+            project.to_str().unwrap(),
+            "sessions/slug-8effa465",
+        )
+        .expect("archive should move the folder");
+
+        let dest = project.join(".tandem").join("archive").join("slug-8effa465");
+        assert_eq!(moved, dest.to_string_lossy().to_string());
+        assert!(dest.join("feed.md").is_file(), "content moved with the folder");
+        assert!(!sessions.exists(), "source folder is gone after the move");
+    }
+
+    #[test]
+    fn archive_suffixes_when_target_already_archived() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path();
+        let tandem = project.join(".tandem");
+        fs::create_dir_all(tandem.join("sessions").join("slug-x").join("tasks")).unwrap();
+        // A prior archive of the same leaf already exists.
+        fs::create_dir_all(tandem.join("archive").join("slug-x")).unwrap();
+
+        let moved = do_archive_session(project.to_str().unwrap(), "sessions/slug-x").unwrap();
+        assert_eq!(moved, tandem.join("archive").join("slug-x-2").to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn archive_missing_source_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(
+            do_archive_session(tmp.path().to_str().unwrap(), "sessions/nope").is_none()
+        );
     }
 }

@@ -66,6 +66,7 @@ impl RecordingManager {
         system_device: Option<Arc<AudioDevice>>,
         auto_save: bool,
         flush_profile: super::pipeline::FlushProfile,
+        realtime_session: Option<Arc<super::transcription::ElevenLabsRealtimeSession>>,
     ) -> Result<mpsc::UnboundedReceiver<AudioChunk>> {
         info!("Starting recording manager (auto_save: {})", auto_save);
 
@@ -123,6 +124,7 @@ impl RecordingManager {
             sys_kind,
             raw_track_folder,
             flush_profile,
+            realtime_session,
         )?;
 
         // Give the pipeline a moment to fully initialize before starting streams
@@ -196,7 +198,7 @@ impl RecordingManager {
             // This defaults path has no transcript-config access, so use the
             // conservative LOCAL flush profile.
             self.start_recording(microphone_device, system_device, auto_save,
-                                 super::pipeline::FlushProfile::LOCAL).await
+                                 super::pipeline::FlushProfile::LOCAL, None).await
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -232,7 +234,7 @@ impl RecordingManager {
             }
 
             self.start_recording(microphone_device, system_device, auto_save,
-                                 super::pipeline::FlushProfile::LOCAL).await
+                                 super::pipeline::FlushProfile::LOCAL, None).await
         }
     }
 
@@ -293,6 +295,17 @@ impl RecordingManager {
 
         info!("✅ Recording streams stopped with immediate flush completed");
         Ok(())
+    }
+
+    /// Write any pending transcripts.json mirror to disk immediately.
+    ///
+    /// The mirror is debounced (a lazy write on the next segment), so the burst of
+    /// segments produced during the stop drain is still pending when teardown
+    /// starts. `stop_and_save` flushes too, but this lets the stop path put the
+    /// transcripts on disk BEFORE the long, fallible save so a timeout or error in
+    /// there cannot lose them.
+    pub fn flush_transcripts_now(&self) {
+        self.recording_saver.flush_transcripts_now();
     }
 
     /// Save recording after transcription is complete

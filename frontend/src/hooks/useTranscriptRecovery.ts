@@ -171,6 +171,8 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
         audio_start_time: (t as any).audio_start_time,
         audio_end_time: (t as any).audio_end_time,
         duration: (t as any).duration,
+        // Preserve the audio-channel source so recovered meetings keep speaker labels
+        source: (t as any).source,
       }));
 
       // 6. Save to backend database using existing save utilities

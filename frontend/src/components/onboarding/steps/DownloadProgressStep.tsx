@@ -180,7 +180,10 @@ export function DownloadProgressStep() {
 
   // Listen to Parakeet download progress
   useEffect(() => {
-    const unlistenProgress = listen<{
+    let cancelled = false;
+    const unlistens: Array<() => void> = [];
+
+    listen<{
       modelName: string;
       progress: number;
       downloaded_mb?: number;
@@ -203,9 +206,9 @@ export function DownloadProgressStep() {
           setParakeetDownloaded(true);
         }
       }
-    });
+    }).then((fn) => (cancelled ? fn() : unlistens.push(fn)));
 
-    const unlistenComplete = listen<{ modelName: string }>(
+    listen<{ modelName: string }>(
       'parakeet-model-download-complete',
       (event) => {
         if (event.payload.modelName === PARAKEET_MODEL) {
@@ -213,9 +216,9 @@ export function DownloadProgressStep() {
           setParakeetDownloaded(true);
         }
       }
-    );
+    ).then((fn) => (cancelled ? fn() : unlistens.push(fn)));
 
-    const unlistenError = listen<{ modelName: string; error: string }>(
+    listen<{ modelName: string; error: string }>(
       'parakeet-model-download-error',
       (event) => {
         if (event.payload.modelName === PARAKEET_MODEL) {
@@ -226,18 +229,20 @@ export function DownloadProgressStep() {
           }));
         }
       }
-    );
+    ).then((fn) => (cancelled ? fn() : unlistens.push(fn)));
 
     return () => {
-      unlistenProgress.then((fn) => fn());
-      unlistenComplete.then((fn) => fn());
-      unlistenError.then((fn) => fn());
+      cancelled = true;
+      unlistens.forEach((fn) => fn());
     };
   }, []);
 
   // Listen to Gemma download progress (always downloading for builtin-ai)
   useEffect(() => {
-    const unlisten = listen<{
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    listen<{
       model: string;
       progress: number;
       downloaded_mb?: number;
@@ -266,10 +271,11 @@ export function DownloadProgressStep() {
           setSummaryModelDownloaded(true);
         }
       }
-    });
+    }).then((fn) => (cancelled ? fn() : (unlisten = fn)));
 
     return () => {
-      unlisten.then((fn) => fn());
+      cancelled = true;
+      unlisten?.();
     };
   }, [selectedSummaryModel]);
 

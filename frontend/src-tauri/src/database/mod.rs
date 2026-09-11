@@ -2,6 +2,7 @@ pub mod commands;
 pub mod manager;
 pub mod models;
 pub mod repositories;
+pub mod secure_store;
 pub mod setup;
 
 #[cfg(test)]

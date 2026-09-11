@@ -105,7 +105,13 @@ export async function saveAnnotatedScreenshot(
 }
 
 /** Tell Rust which Solo Mode project is active so screenshot files land in
- *  `{path}/.tandem/screenshots/`. Pass null to clear (returns to meeting-folder routing). */
-export async function setActiveSoloProject(path: string | null): Promise<void> {
-  return invoke<void>('set_active_solo_project', { path });
+ *  `{path}/.tandem/screenshots/`. Pass null to clear (returns to meeting-folder routing).
+ *  F061: `sessionFolder` (e.g. "sessions/<slug>-<id>") routes a virtual sub-project's
+ *  screenshots into `{path}/.tandem/<sessionFolder>/screenshots/` instead; null keeps
+ *  the shared `.tandem/screenshots/`. */
+export async function setActiveSoloProject(
+  path: string | null,
+  sessionFolder: string | null = null,
+): Promise<void> {
+  return invoke<void>('set_active_solo_project', { path, sessionFolder });
 }

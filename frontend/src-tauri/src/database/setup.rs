@@ -35,6 +35,18 @@ pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), Strin
         crate::hydrate_language_preference(db_manager.pool()).await;
 
         app.manage(AppState { db_manager });
+
+        // F056: prime the custom-dictionary snapshot before any recording can
+        // start, so the first transcribed chunk of the session is already
+        // corrected. A failure here is logged, not fatal: the dictionary is an
+        // enhancement and the app must still start without it.
+        if let Some(state) = app.try_state::<AppState>() {
+            match crate::dictionary::cache::refresh(state.db_manager.pool()).await {
+                Ok(count) => info!("F056: loaded {} custom dictionary entries", count),
+                Err(e) => log::warn!("F056: failed to load custom dictionary: {}", e),
+            }
+        }
+
         info!("Database initialized successfully");
     }
 

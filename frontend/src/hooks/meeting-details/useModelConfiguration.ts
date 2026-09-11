@@ -97,10 +97,14 @@ export function useModelConfiguration({ serverAddress }: UseModelConfigurationPr
       return unlisten;
     };
 
+    let cancelled = false;
     let cleanup: (() => void) | undefined;
-    setupListener().then(fn => cleanup = fn);
+    setupListener().then(fn => {
+      if (cancelled) fn(); else cleanup = fn;
+    });
 
     return () => {
+      cancelled = true;
       cleanup?.();
     };
   }, []);

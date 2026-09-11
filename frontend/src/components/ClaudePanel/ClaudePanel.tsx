@@ -98,46 +98,43 @@ export function ClaudePanel() {
   const hasApiKey = !!apiKey;
   const isDragActive = useDragActive();
   const { clearSelection } = useSelection();
-  const dragListenersRef = useRef<{ move: (e: MouseEvent) => void; up: () => void } | null>(null);
+  // Mirrors isResizing for the pointer handlers, which need the current value synchronously (a state
+  // read inside a handler created on the previous render would be stale).
+  const isResizingRef = useRef(false);
 
   // ── Resize drag handler ──────────────────────────────────────────────────
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+  // Pointer Events with pointer capture, NOT document-level mouse listeners. Constraint: this panel
+  // hosts the canvas iframe (and sits right next to it), and mouse events that occur over an iframe
+  // are delivered to the iframe's own document, so a document mouseup listener never fires when the
+  // drag is released over the board: the drag would stay active forever. setPointerCapture retargets
+  // every subsequent pointer event to the handle regardless of what the pointer is over, so the
+  // release is always seen here.
+  const endResize = useCallback(() => {
+    if (!isResizingRef.current) return;
+    isResizingRef.current = false;
+    setIsResizing(false);
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  }, []);
+
+  const handleResizeStart = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
+    // Capture on the handle itself (the element carrying the move/up handlers).
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    isResizingRef.current = true;
     setIsResizing(true);
-
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      const newWidth = window.innerWidth - moveEvent.clientX;
-      setPanelWidth(newWidth); // clamping happens inside setPanelWidth
-    };
-
-    const onMouseUp = () => {
-      setIsResizing(false);
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      dragListenersRef.current = null;
-    };
-
-    dragListenersRef.current = { move: onMouseMove, up: onMouseUp };
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
+  }, []);
+
+  const handleResizeMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isResizingRef.current) return;
+    setPanelWidth(window.innerWidth - e.clientX); // clamping happens inside setPanelWidth
   }, [setPanelWidth]);
 
-  // Clean up drag listeners on unmount (if mid-drag when panel closes)
-  useEffect(() => {
-    return () => {
-      if (dragListenersRef.current) {
-        document.removeEventListener('mousemove', dragListenersRef.current.move);
-        document.removeEventListener('mouseup', dragListenersRef.current.up);
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-        dragListenersRef.current = null;
-      }
-    };
-  }, []);
+  // Restore body styles if the panel unmounts mid-drag. Pointer capture itself needs no cleanup: the
+  // browser releases it automatically when the capturing element is removed.
+  useEffect(() => endResize, [endResize]);
   const { setCurrentMeeting, setMeetings, meetings: sidebarMeetings } = useSidebar();
 
   // Title editing handlers
@@ -801,7 +798,11 @@ export function ClaudePanel() {
       >
         {/* Resize drag handle — left edge */}
         <div
-          onMouseDown={handleResizeStart}
+          onPointerDown={handleResizeStart}
+          onPointerMove={handleResizeMove}
+          onPointerUp={endResize}
+          onLostPointerCapture={endResize}
+          style={{ touchAction: 'none' }}
           className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize z-50 group hover:bg-brand/30 active:bg-brand/50 transition-colors"
           title="Drag to resize"
         >

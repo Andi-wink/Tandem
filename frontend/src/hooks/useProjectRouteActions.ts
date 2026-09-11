@@ -21,7 +21,7 @@ import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { listProjects, Project } from '@/services/projectService';
 import { matchProjectByName } from '@/services/soloRoutingService';
 import { recordProjectDirUse, forgetProjectDirUse, normalizeDir } from '@/lib/projectDirHistory';
-import { ensureTandemClaudeMd } from '@/services/handoffService';
+import { ensureTandemClaudeMd, sessionScopeFolder, SESSION_SCOPE_PREFIX } from '@/services/handoffService';
 import {
   setPendingRelocation,
   clearPendingRelocation,
@@ -51,7 +51,7 @@ function parentOf(p: string): string {
 
 export function useProjectRouteActions() {
   const { projectDir, meetingId, meetingTitle, openPanel } = useClaude();
-  const { activeProject, sessionFolder, switchProject, clearActiveProject } = useSoloMode();
+  const { activeProject, sessionFolder, switchProject, clearActiveProject, setSessionFolder } = useSoloMode();
   const { transcripts } = useTranscripts();
   const recordingState = useRecordingState();
   const { refetchMeetings } = useSidebar();
@@ -84,12 +84,29 @@ export function useProjectRouteActions() {
       const len = transcriptsRef.current.length;
       const projectTandem = tandemPathFor(project.path);
 
+      // Re-scope the session folder to the TARGET project before anything writes.
+      // `sessionFolder` state belongs to whatever was active a moment ago, so
+      // reusing it here filed project B's feed, live transcript and screenshot
+      // index under project A's chat folder (while the PNGs went to B, breaking
+      // the links). Mirrors performProjectSwitch's derivation:
+      //   - virtual sub-project → its own `sessions/<HH.MM, DD.MM - name>/`
+      //   - plain project → the shared per-meeting folder, unless the folder we
+      //     are holding is session-scoped (i.e. the previous project's chat), in
+      //     which case fall back to the `.tandem` root.
+      const targetFolder = project.session_id
+        ? sessionScopeFolder(project.session_id, project.name, project.created_at)
+        : sessionFolderRef.current?.startsWith(SESSION_SCOPE_PREFIX)
+          ? null
+          : sessionFolderRef.current;
+      setSessionFolder(targetFolder);
+      sessionFolderRef.current = targetFolder;
+
       // Apply: active project drives screenshot/whiteboard/feed routing; projectDir drives the AI
       // panel + live-transcript writer + @code handoff. Same meetingId preserves the conversation.
-      switchProject(project, len);
+      switchProject(project, len, undefined, undefined, project.session_id ? targetFolder : null);
       if (mId && mTitle) await openPanel(mId, mTitle, project.path, false);
       recordProjectDirUse(project.path, project.name, mTitle);
-      ensureTandemClaudeMd(project.path, sessionFolderRef.current).catch(() => {});
+      ensureTandemClaudeMd(project.path, targetFolder).catch(() => {});
 
       // ── R3: physically file the meeting folder into <project>/.tandem ──
       // Three cases:

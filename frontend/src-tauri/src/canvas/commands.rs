@@ -126,6 +126,10 @@ pub async fn canvas_transcribe_clip<R: Runtime>(
     }
     let engine = crate::audio::transcription::engine::get_or_init_transcription_engine(&app).await?;
     let text = engine.transcribe(samples, language).await?;
+    // F056: a spoken canvas command is dictated jargon more often than ordinary
+    // prose ("open the n8n board"), so it runs through the same custom-dictionary
+    // correction as the meeting transcript before the instruction is acted on.
+    let text = crate::dictionary::cache::correct(&text);
     info!("Canvas command clip transcribed: {} chars", text.trim().len());
     Ok(text.trim().to_string())
 }

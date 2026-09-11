@@ -35,6 +35,8 @@ pub struct Transcript {
     pub audio_start_time: Option<f64>,
     pub audio_end_time: Option<f64>,
     pub duration: Option<f64>,
+    // Audio-channel speaker source: "Local" (user's mic) or "Remote" (system audio / client)
+    pub speaker: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -114,6 +116,9 @@ pub struct ProjectModel {
     pub path: String,
     pub aliases: String,
     pub auto_discovered: i64,
+    /// F061: NULL for a plain folder project; the chat session id for a virtual
+    /// sub-project. Identity is (path, session_id).
+    pub session_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -141,4 +146,18 @@ pub struct TranscriptSetting {
     #[sqlx(rename = "mistralApiKey")]
     #[serde(rename = "mistralApiKey")]
     pub mistral_api_key: Option<String>,
+}
+
+/// F056: one custom-dictionary row. `aliases` is stored as a JSON array string
+/// (SQLite has no array type); the Rust side parses it into `Vec<String>` when
+/// compiling the correction regexes.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct CustomDictionaryEntry {
+    pub id: String,
+    pub term: String,
+    /// JSON array of alias strings, e.g. `["n eight n","innate"]`.
+    pub aliases: String,
+    pub enabled: i64,
+    pub created_at: String,
+    pub updated_at: String,
 }

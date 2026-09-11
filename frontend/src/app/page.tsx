@@ -23,6 +23,7 @@ import { useHandoffExport } from '@/hooks/useHandoffExport';
 import { useLiveTranscriptWriter } from '@/hooks/useLiveTranscriptWriter';
 import { HandoffDialog } from '@/components/HandoffDialog';
 import { indexedDBService } from '@/services/indexedDBService';
+import { setActiveSoloProject } from '@/services/screenshotService';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 import { useClaude } from '@/contexts/ClaudeContext';
@@ -351,20 +352,25 @@ export default function Home() {
   const handleBeforeRecord = async (startFn: () => void) => {
     // Solo mode: check model availability, skip project dir modal
     if (recordingState.recordingMode === 'solo') {
-      try {
-        const models = await invoke<Array<{ name: string }>>('get_ollama_models', { endpoint: null });
-        const modelName = soloMode.routingModel;
-        const hasModel = models.some(m => m.name === modelName || m.name.startsWith(modelName.split(':')[0]));
-        if (!hasModel) {
-          toast.warning(`Routing model "${modelName}" not found`, {
-            description: `Pull it with: ollama pull ${modelName}`,
-            duration: 8000,
+      // Only worth checking when something is actually going to call the model. With automatic
+      // routing off, warning that Ollama is unreachable would be noise about a dependency this
+      // session does not have.
+      if (soloMode.routingEnabled) {
+        try {
+          const models = await invoke<Array<{ name: string }>>('get_ollama_models', { endpoint: null });
+          const modelName = soloMode.routingModel;
+          const hasModel = models.some(m => m.name === modelName || m.name.startsWith(modelName.split(':')[0]));
+          if (!hasModel) {
+            toast.warning(`Routing model "${modelName}" not found`, {
+              description: `Pull it with: ollama pull ${modelName}`,
+              duration: 8000,
+            });
+          }
+        } catch {
+          toast.warning('Ollama not reachable, solo routing will be limited', {
+            description: 'Ensure Ollama is running for project routing.',
           });
         }
-      } catch {
-        toast.warning('Ollama not reachable — solo routing will be limited', {
-          description: 'Ensure Ollama is running for project routing.',
-        });
       }
 
       soloMode.startSoloSession();
@@ -408,6 +414,15 @@ export default function Home() {
       // All reads go through refs so this eslint-disabled effect never re-fires mid-call.
       const isSolo = recordingStateRef.current.recordingMode === 'solo';
       if (!isSolo) {
+        // Belt and braces against stale Solo screenshot routing. The Rust routing global is cleared on
+        // every stop path now, but a crash or a force-quit mid-session leaves it set, and the value
+        // survives for the life of the process. A meeting is never routed to a Solo session folder, so
+        // clearing unconditionally here means a meeting's screenshots can only ever land in its own
+        // folder, whatever happened in the session before it.
+        void setActiveSoloProject(null).catch(err =>
+          console.warn('[Recording] Failed to clear stale screenshot routing:', err),
+        );
+
         const seed = peekRecordingSeed();
         if (seed) {
           // Started from a calendar event (agenda/palette).
@@ -420,6 +435,9 @@ export default function Home() {
               path: seed.projectPath,
               aliases: [],
               auto_discovered: false,
+              // F061: calendar-seeded stub is a plain folder project (no chat session scope).
+              session_id: null,
+              created_at: '',
             };
             // R3 issue-2: the folder is created directly under <project>/.tandem via the Rust base
             // override, so we skip the deferred relocation here. But that override can SILENTLY fall

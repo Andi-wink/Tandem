@@ -509,7 +509,7 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat
 
 8. **AI Panel Branding**: Per Claude Agent SDK docs, third-party apps must NOT use "Claude Code" branding. All user-facing text says "AI Assistant". Internal code names (ClaudeContext, claudeService) are fine.
 
-9. **API Keys**: Anthropic API key stored in localStorage, passed per-request to backend, never stored server-side. Other API keys (Groq, OpenAI, etc.) stored in Rust SQLite.
+9. **API Keys**: The Anthropic/Claude API key is held in the OS credential store (Windows Credential Manager / macOS Keychain, via the `keyring` crate), encrypted at rest and never in plaintext SQLite. Access goes through `database::secure_store`; the `settings` repository delegates the `claude` provider there, and a startup migration moves any legacy plaintext `anthropicApiKey` out of SQLite and blanks the column. Other API keys (Groq, OpenAI, etc.) are still stored in the Rust SQLite `settings` table.
 
 10. **Two SQLite Databases**: The Rust frontend and Python backend each have their own SQLite. Don't mix up `sqlx` queries (Rust) with `aiosqlite` queries (Python). See architecture diagram.
 

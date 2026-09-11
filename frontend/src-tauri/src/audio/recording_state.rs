@@ -159,10 +159,10 @@ impl RecordingState {
     // Recording control
     pub fn start_recording(&self) -> Result<()> {
         self.is_recording.store(true, Ordering::SeqCst);
-        *self.recording_start.lock().unwrap() = Some(Instant::now());
+        *self.recording_start.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
         self.error_count.store(0, Ordering::SeqCst);
         self.recoverable_error_count.store(0, Ordering::SeqCst);
-        *self.last_error.lock().unwrap() = None;
+        *self.last_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
         Ok(())
     }
 
@@ -170,17 +170,17 @@ impl RecordingState {
         self.is_recording.store(false, Ordering::SeqCst);
         self.is_paused.store(false, Ordering::SeqCst);
         // Clear pause tracking when stopping
-        *self.pause_start.lock().unwrap() = None;
+        *self.pause_start.lock().unwrap_or_else(|e| e.into_inner()) = None;
         // CRITICAL: Clear audio sender to close the pipeline channel
         // This ensures the pipeline loop exits properly after processing all chunks
-        *self.audio_sender.lock().unwrap() = None;
+        *self.audio_sender.lock().unwrap_or_else(|e| e.into_inner()) = None;
         // F047: Clear KWS sender to stop wake word detection
-        *self.kws_sender.lock().unwrap() = None;
+        *self.kws_sender.lock().unwrap_or_else(|e| e.into_inner()) = None;
         // CRITICAL: Clear device references to release microphone/speaker
         // Without this, Arc<AudioDevice> references persist and keep the mic active
-        *self.microphone_device.lock().unwrap() = None;
-        *self.system_device.lock().unwrap() = None;
-        *self.disconnected_device.lock().unwrap() = None;
+        *self.microphone_device.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.system_device.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.disconnected_device.lock().unwrap_or_else(|e| e.into_inner()) = None;
         log::info!("Recording stopped, device references cleared");
     }
 
@@ -193,7 +193,7 @@ impl RecordingState {
         }
 
         self.is_paused.store(true, Ordering::SeqCst);
-        *self.pause_start.lock().unwrap() = Some(Instant::now());
+        *self.pause_start.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
         log::info!("Recording paused");
         Ok(())
     }
@@ -207,9 +207,9 @@ impl RecordingState {
         }
 
         // Calculate pause duration and add to total
-        if let Some(pause_start) = self.pause_start.lock().unwrap().take() {
+        if let Some(pause_start) = self.pause_start.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let pause_duration = pause_start.elapsed();
-            *self.total_pause_duration.lock().unwrap() += pause_duration;
+            *self.total_pause_duration.lock().unwrap_or_else(|e| e.into_inner()) += pause_duration;
             log::info!("Recording resumed after pause of {:.2}s", pause_duration.as_secs_f64());
         }
 
@@ -232,13 +232,13 @@ impl RecordingState {
     // Reconnection state management
     pub fn start_reconnecting(&self, device: Arc<AudioDevice>, device_type: DeviceType) {
         self.is_reconnecting.store(true, Ordering::SeqCst);
-        *self.disconnected_device.lock().unwrap() = Some((device, device_type));
+        *self.disconnected_device.lock().unwrap_or_else(|e| e.into_inner()) = Some((device, device_type));
         log::info!("Started reconnection attempt for device");
     }
 
     pub fn stop_reconnecting(&self) {
         self.is_reconnecting.store(false, Ordering::SeqCst);
-        *self.disconnected_device.lock().unwrap() = None;
+        *self.disconnected_device.lock().unwrap_or_else(|e| e.into_inner()) = None;
         log::info!("Stopped reconnection attempt");
     }
 
@@ -247,39 +247,39 @@ impl RecordingState {
     }
 
     pub fn get_disconnected_device(&self) -> Option<(Arc<AudioDevice>, DeviceType)> {
-        self.disconnected_device.lock().unwrap().clone()
+        self.disconnected_device.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     // Device management
     pub fn set_microphone_device(&self, device: Arc<AudioDevice>) {
-        *self.microphone_device.lock().unwrap() = Some(device);
+        *self.microphone_device.lock().unwrap_or_else(|e| e.into_inner()) = Some(device);
     }
 
     pub fn set_system_device(&self, device: Arc<AudioDevice>) {
-        *self.system_device.lock().unwrap() = Some(device);
+        *self.system_device.lock().unwrap_or_else(|e| e.into_inner()) = Some(device);
     }
 
     pub fn get_microphone_device(&self) -> Option<Arc<AudioDevice>> {
-        self.microphone_device.lock().unwrap().clone()
+        self.microphone_device.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn get_system_device(&self) -> Option<Arc<AudioDevice>> {
-        self.system_device.lock().unwrap().clone()
+        self.system_device.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     // Audio pipeline management
     pub fn set_audio_sender(&self, sender: mpsc::UnboundedSender<AudioChunk>) {
-        *self.audio_sender.lock().unwrap() = Some(sender);
+        *self.audio_sender.lock().unwrap_or_else(|e| e.into_inner()) = Some(sender);
     }
 
     /// F047: Set the KWS sender for wake word detection (mic-only audio tap)
     pub fn set_kws_sender(&self, sender: mpsc::UnboundedSender<AudioChunk>) {
-        *self.kws_sender.lock().unwrap() = Some(sender);
+        *self.kws_sender.lock().unwrap_or_else(|e| e.into_inner()) = Some(sender);
     }
 
     /// F047: Clear the KWS sender
     pub fn clear_kws_sender(&self) {
-        *self.kws_sender.lock().unwrap() = None;
+        *self.kws_sender.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     pub fn send_audio_chunk(&self, chunk: AudioChunk) -> Result<()> {
@@ -290,16 +290,16 @@ impl RecordingState {
 
         // F047: Tap mic-only audio for wake word detection
         if chunk.device_type == DeviceType::Microphone {
-            if let Some(kws_tx) = self.kws_sender.lock().unwrap().as_ref() {
+            if let Some(kws_tx) = self.kws_sender.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
                 let _ = kws_tx.send(chunk.clone()); // best-effort, don't block pipeline
             }
         }
 
-        if let Some(sender) = self.audio_sender.lock().unwrap().as_ref() {
+        if let Some(sender) = self.audio_sender.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             sender.send(chunk).map_err(|_| anyhow::anyhow!("Failed to send audio chunk"))?;
 
             // Update statistics
-            let mut stats = self.stats.lock().unwrap();
+            let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
             stats.chunks_processed += 1;
             stats.last_activity = Some(Instant::now());
             Ok(())
@@ -314,7 +314,7 @@ impl RecordingState {
     where
         F: Fn(&AudioError) + Send + Sync + 'static,
     {
-        *self.error_callback.lock().unwrap() = Some(Box::new(callback));
+        *self.error_callback.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(callback));
     }
 
     pub fn report_error(&self, error: AudioError) {
@@ -336,10 +336,10 @@ impl RecordingState {
             self.stop_recording();
         }
 
-        *self.last_error.lock().unwrap() = Some(error.clone());
+        *self.last_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.clone());
 
         // Call error callback if set
-        if let Some(callback) = self.error_callback.lock().unwrap().as_ref() {
+        if let Some(callback) = self.error_callback.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             callback(&error);
         }
 
@@ -359,11 +359,11 @@ impl RecordingState {
     }
 
     pub fn get_last_error(&self) -> Option<AudioError> {
-        self.last_error.lock().unwrap().clone()
+        self.last_error.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn has_fatal_error(&self) -> bool {
-        if let Some(error) = &*self.last_error.lock().unwrap() {
+        if let Some(error) = &*self.last_error.lock().unwrap_or_else(|e| e.into_inner()) {
             !error.is_recoverable() && self.error_count.load(Ordering::SeqCst) > 0
         } else {
             false
@@ -372,24 +372,24 @@ impl RecordingState {
 
     // Statistics
     pub fn get_stats(&self) -> RecordingStats {
-        self.stats.lock().unwrap().clone()
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn get_recording_duration(&self) -> Option<f64> {
         self.recording_start
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .map(|start| start.elapsed().as_secs_f64())
     }
 
     pub fn get_active_recording_duration(&self) -> Option<f64> {
-        self.recording_start.lock().unwrap().map(|start| {
+        self.recording_start.lock().unwrap_or_else(|e| e.into_inner()).map(|start| {
             let total_duration = start.elapsed().as_secs_f64();
             let pause_duration = self.get_total_pause_duration();
             let current_pause = if self.is_paused() {
                 self.pause_start
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .map(|p| p.elapsed().as_secs_f64())
                     .unwrap_or(0.0)
             } else {
@@ -400,14 +400,14 @@ impl RecordingState {
     }
 
     pub fn get_total_pause_duration(&self) -> f64 {
-        self.total_pause_duration.lock().unwrap().as_secs_f64()
+        self.total_pause_duration.lock().unwrap_or_else(|e| e.into_inner()).as_secs_f64()
     }
 
     pub fn get_current_pause_duration(&self) -> Option<f64> {
         if self.is_paused() {
             self.pause_start
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .map(|start| start.elapsed().as_secs_f64())
         } else {
             None
@@ -423,16 +423,16 @@ impl RecordingState {
     pub fn cleanup(&self) {
         self.stop_recording();
         self.stop_reconnecting();
-        *self.microphone_device.lock().unwrap() = None;
-        *self.system_device.lock().unwrap() = None;
-        *self.disconnected_device.lock().unwrap() = None;
-        *self.audio_sender.lock().unwrap() = None;
-        *self.last_error.lock().unwrap() = None;
-        *self.error_callback.lock().unwrap() = None;
-        *self.stats.lock().unwrap() = RecordingStats::default();
-        *self.recording_start.lock().unwrap() = None;
-        *self.pause_start.lock().unwrap() = None;
-        *self.total_pause_duration.lock().unwrap() = std::time::Duration::ZERO;
+        *self.microphone_device.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.system_device.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.disconnected_device.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.audio_sender.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.last_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.error_callback.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.stats.lock().unwrap_or_else(|e| e.into_inner()) = RecordingStats::default();
+        *self.recording_start.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.pause_start.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.total_pause_duration.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Duration::ZERO;
         self.error_count.store(0, Ordering::SeqCst);
         self.recoverable_error_count.store(0, Ordering::SeqCst);
 

@@ -15,6 +15,14 @@ use super::types::{CaptureMode, ScreenshotData};
 use crate::audio::recording_commands;
 
 const THUMBNAIL_MAX_WIDTH: u32 = 200;
+/// Quality budget for the small list thumbnails, where size matters more than fidelity.
+const THUMBNAIL_QUALITY: u8 = 40;
+/// Width cap for an image embedded in an exported document. Wide enough to read a screenshot of
+/// code or a dashboard on a printed page, small enough that a call with a dozen 4K captures does
+/// not produce a document too heavy to open.
+pub const EMBED_MAX_WIDTH: u32 = 1600;
+/// Quality budget for embedded images. Higher than a thumbnail because this one is actually read.
+const EMBED_QUALITY: u8 = 72;
 
 // ── Pre-capture storage for region screenshots ──────────────────────────────
 // The full-resolution RgbaImage is stored here after the hotkey fires.
@@ -381,6 +389,14 @@ fn save_screenshot(
 
 /// Generate a base64-encoded JPEG thumbnail with max width constraint.
 fn generate_thumbnail(image: &DynamicImage, max_width: u32) -> Result<String> {
+    encode_scaled_jpeg(image, max_width, THUMBNAIL_QUALITY)
+}
+
+/// Scale an image down to `max_width` (never up) and return it as a JPEG data URI.
+///
+/// Shared by the 200px list thumbnails and the far larger images embedded into an exported
+/// handover document, which differ only in size and quality budget.
+fn encode_scaled_jpeg(image: &DynamicImage, max_width: u32, quality: u8) -> Result<String> {
     let thumb = if image.width() > max_width {
         let scale = max_width as f64 / image.width() as f64;
         let new_height = (image.height() as f64 * scale) as u32;
@@ -391,7 +407,7 @@ fn generate_thumbnail(image: &DynamicImage, max_width: u32) -> Result<String> {
 
     let rgb = thumb.to_rgb8();
     let mut buf = Cursor::new(Vec::new());
-    let mut encoder = JpegEncoder::new_with_quality(&mut buf, 40);
+    let mut encoder = JpegEncoder::new_with_quality(&mut buf, quality);
     encoder
         .encode(
             rgb.as_raw(),
@@ -411,6 +427,16 @@ pub fn generate_thumbnail_from_path(file_path: &Path) -> Result<String> {
     let image = image::open(file_path)
         .with_context(|| format!("Failed to open image: {}", file_path.display()))?;
     generate_thumbnail(&image, THUMBNAIL_MAX_WIDTH)
+}
+
+/// Read an image from disk and return it as a JPEG data URI sized for embedding in a document.
+///
+/// Returns a self-contained string so an exported handover document carries its own images and
+/// stays readable after it is moved, copied or emailed, with no folder of assets alongside it.
+pub fn generate_embed_data_uri(file_path: &Path, max_width: u32) -> Result<String> {
+    let image = image::open(file_path)
+        .with_context(|| format!("Failed to open image: {}", file_path.display()))?;
+    encode_scaled_jpeg(&image, max_width, EMBED_QUALITY)
 }
 
 /// Save an annotated screenshot from a base64-encoded PNG data URI.
