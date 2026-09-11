@@ -147,3 +147,17 @@ pub struct TranscriptSetting {
     #[serde(rename = "mistralApiKey")]
     pub mistral_api_key: Option<String>,
 }
+
+/// F056: one custom-dictionary row. `aliases` is stored as a JSON array string
+/// (SQLite has no array type); the Rust side parses it into `Vec<String>` when
+/// compiling the correction regexes.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct CustomDictionaryEntry {
+    pub id: String,
+    pub term: String,
+    /// JSON array of alias strings, e.g. `["n eight n","innate"]`.
+    pub aliases: String,
+    pub enabled: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}

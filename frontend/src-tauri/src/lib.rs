@@ -44,6 +44,7 @@ pub mod clipboard;
 pub mod console_utils;
 pub mod quick_capture;
 pub mod database;
+pub mod dictionary;
 mod migration;
 pub mod notifications;
 pub mod ollama;
@@ -1268,6 +1269,12 @@ pub fn run() {
             api::api_get_custom_openai_config,
             api::api_test_custom_openai_connection,
             // Project management commands (Solo Mode)
+            // F056: custom transcription dictionary
+            dictionary::commands::list_dictionary_entries,
+            dictionary::commands::upsert_dictionary_entry,
+            dictionary::commands::delete_dictionary_entry,
+            dictionary::commands::import_dictionary,
+            dictionary::commands::export_dictionary,
             api::project_list,
             api::project_create,
             api::project_create_virtual,

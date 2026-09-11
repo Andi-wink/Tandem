@@ -507,6 +507,14 @@ fn spawn_realtime_bridge<R: Runtime>(
                     session_seq,
                 } => {
                     // NEW volatile-tail event (Phase 1 frontend layer drops stale seq).
+                    // F056: partials are rendered live in the transcript view, so
+                    // they get the same correction pass as commits. Without it the
+                    // user watches "n eight n" appear and then snap to "n8n" when
+                    // the commit lands, which reads as the app second-guessing
+                    // itself. `apply_corrections` is idempotent, so correcting the
+                    // partial and then the commit converges on the same text.
+                    let text = crate::dictionary::cache::correct(&text);
+
                     let _ = app.emit(
                         "transcript-partial",
                         serde_json::json!({
@@ -533,6 +541,12 @@ fn spawn_realtime_bridge<R: Runtime>(
                     // identical clock value. Derive the recording's wall-clock
                     // start from the monotonic start Instant and add the segment's
                     // audio offset. Falls back to now() before/after a recording.
+                    // F056: the custom dictionary is provider-agnostic, so the
+                    // realtime (Scribe WebSocket) commit path gets the same
+                    // deterministic correction pass as the batch worker before
+                    // the segment is emitted and persisted.
+                    let text = crate::dictionary::cache::correct(&text);
+
                     let update = TranscriptUpdate {
                         text,
                         timestamp: wall_clock_for_audio_time(audio_start_time),

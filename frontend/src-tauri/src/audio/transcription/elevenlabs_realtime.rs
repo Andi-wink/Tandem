@@ -1568,7 +1568,23 @@ pub struct ElevenLabsRealtimeSession {
 
 impl ElevenLabsRealtimeSession {
     /// Build the config query string for a session (manual commit + timestamps).
+    ///
+    /// F056: the custom dictionary rides along as `keyterms`. The realtime route
+    /// has no init message for it, so per the docs keyterms "pass as query
+    /// parameters" using REPEATED fields (`keyterms=A&keyterms=B`), with
+    /// `scribe_v2_realtime` capped at 50 terms of 20 characters each. The cache
+    /// has already applied those caps; the values are percent-encoded here
+    /// because a keyterm may legitimately contain spaces.
     pub fn build_url(api_language_code: Option<&str>) -> String {
+        Self::build_url_with_keyterms(
+            api_language_code,
+            &crate::dictionary::cache::scribe_keyterms_realtime(),
+        )
+    }
+
+    /// `build_url` with the keyterms injected, so tests do not need the global
+    /// dictionary snapshot.
+    pub fn build_url_with_keyterms(api_language_code: Option<&str>, keyterms: &[String]) -> String {
         let mut url = format!(
             "{}?model_id={}&audio_format=pcm_16000&commit_strategy=manual&include_timestamps=true&include_language_detection=true",
             WS_BASE_URL, REALTIME_MODEL_ID
@@ -1577,6 +1593,16 @@ impl ElevenLabsRealtimeSession {
             if !code.is_empty() {
                 url.push_str("&language_code=");
                 url.push_str(code);
+            }
+        }
+        if !keyterms.is_empty() {
+            debug!(
+                "Realtime: sending {} dictionary keyterm(s) for decoder bias",
+                keyterms.len()
+            );
+            for term in keyterms {
+                url.push_str("&keyterms=");
+                url.extend(url::form_urlencoded::byte_serialize(term.as_bytes()));
             }
         }
         url
@@ -2709,6 +2735,28 @@ mod tests {
     }
 
     // ---- model selection --------------------------------------------------
+
+    #[test]
+    fn keyterms_ride_the_ws_url_as_repeated_encoded_query_params() {
+        let terms = vec!["n8n".to_string(), "Claude Code".to_string()];
+        let url = ElevenLabsRealtimeSession::build_url_with_keyterms(Some("eng"), &terms);
+
+        // Repeated field, not a JSON array or a comma-joined value.
+        assert!(url.contains("&keyterms=n8n"), "{}", url);
+        // A space must be percent-encoded, never left raw in the URL.
+        assert!(url.contains("&keyterms=Claude+Code"), "{}", url);
+        assert!(!url.contains("Claude Code"), "raw space in URL: {}", url);
+        assert_eq!(url.matches("keyterms=").count(), 2, "{}", url);
+        // The existing config params survive.
+        assert!(url.contains("model_id=scribe_v2_realtime"), "{}", url);
+        assert!(url.contains("language_code=eng"), "{}", url);
+    }
+
+    #[test]
+    fn an_empty_dictionary_adds_no_keyterms_param() {
+        let url = ElevenLabsRealtimeSession::build_url_with_keyterms(None, &[]);
+        assert!(!url.contains("keyterms"), "{}", url);
+    }
 
     #[test]
     fn realtime_model_selection_is_case_insensitive() {

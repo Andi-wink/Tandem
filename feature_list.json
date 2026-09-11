@@ -3,7 +3,7 @@
   "description": "AI co-pilot for every call — work in tandem with AI to capture, collaborate, and act. Fork of Meetily (Zackriya-Solutions/meeting-minutes) with screenshots, clipboard integration, PII sanitization, and real-time AI collaboration",
   "base_branch": "main",
   "working_branch": "main",
-  "last_updated": "2026-08-29",
+  "last_updated": "2026-09-11",
   "features": [
     {
       "id": "F001",
@@ -2063,9 +2063,9 @@
       "name": "Custom Transcription Dictionary",
       "description": "User-editable dictionary of commonly mistranscribed words/phrases (e.g. n8n, domain-specific jargon) to improve Whisper transcription accuracy. Two-pronged approach: (1) inject terms into Whisper initial_prompt to bias decoding, (2) post-transcription regex find-and-replace for deterministic corrections.",
       "priority": "medium",
-      "status": "planned",
-      "branch": null,
-      "commit": null,
+      "status": "complete",
+      "branch": "feature/custom-dictionary",
+      "commit": "033775e",
       "steps": [
         "Add Custom Dictionary tab/section in Settings page with CRUD for word entries (term + optional common mistranscriptions)",
         "Store dictionary entries in Rust SQLite (new table: custom_dictionary with columns: id, term, aliases/patterns, created_at)",
@@ -2073,7 +2073,7 @@
         "After Whisper returns text, apply regex replacements from dictionary entries (case-insensitive pattern matching)",
         "Add import/export for dictionary (JSON format) so users can share domain-specific dictionaries"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F056",

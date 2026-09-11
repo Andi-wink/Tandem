@@ -13,6 +13,16 @@ use serde::Deserialize;
 
 const ELEVENLABS_STT_URL: &str = "https://api.elevenlabs.io/v1/speech-to-text";
 
+/// True when `model` accepts the `keyterms` decoder-bias field.
+///
+/// Per the ElevenLabs docs (verified 2026-09-11), keyterm prompting is
+/// supported by "Scribe v2 (batch processing)" and "Scribe v2 Realtime
+/// (streaming via WebSocket)". `scribe_v1` is not listed, and sending an
+/// unsupported field risks a 422 on the whole request, so v1 gets nothing.
+fn model_supports_keyterms(model: &str) -> bool {
+    model.trim().to_ascii_lowercase().starts_with("scribe_v2")
+}
+
 /// Sample rate the worker resamples to before calling `transcribe()`.
 /// Must match the conversion in `worker::transcribe_chunk_with_provider`.
 const TRANSCRIBE_SAMPLE_RATE: u32 = 16_000;
@@ -169,6 +179,32 @@ impl ElevenLabsProvider {
                 .part("file", file_part);
             if let Some(code) = lang_code.clone() {
                 form = form.text("language_code", code);
+            }
+
+            // F056: bias the decoder towards the user's custom dictionary.
+            //
+            // Each keyterm is its OWN repeated `keyterms` form field. It must
+            // not be one field holding a JSON array: the server validates the
+            // whole field value against the 50-character limit and rejects the
+            // request with `invalid_keyword_length` ("All keywords must be less
+            // than 50 characters"), which is exactly the regression the official
+            // Python SDK shipped in v2.59.0 (elevenlabs-python#819).
+            //
+            // The list is already capped and filtered by the dictionary cache,
+            // and is empty when the user has no dictionary, in which case the
+            // field is omitted entirely. Note the field carries a 20% surcharge
+            // on the base transcription cost, so we never send filler.
+            if model_supports_keyterms(&self.model) {
+                let keyterms = crate::dictionary::cache::scribe_keyterms_batch();
+                if !keyterms.is_empty() {
+                    debug!(
+                        "ElevenLabs Scribe: sending {} dictionary keyterm(s) for decoder bias",
+                        keyterms.len()
+                    );
+                    for term in keyterms {
+                        form = form.text("keyterms", term);
+                    }
+                }
             }
 
             // POST to Scribe. Auth uses the xi-api-key header (NOT Bearer).
@@ -553,6 +589,17 @@ mod tests {
         );
         // Total file size = 44 header + data
         assert_eq!(wav.len(), 44 + samples.len() * 2);
+    }
+
+    #[test]
+    fn only_scribe_v2_models_take_keyterms() {
+        // Keyterm prompting is documented for scribe_v2 and scribe_v2_realtime.
+        assert!(model_supports_keyterms("scribe_v2"));
+        assert!(model_supports_keyterms("scribe_v2_realtime"));
+        assert!(model_supports_keyterms("  SCRIBE_V2  "));
+        // scribe_v1 is not listed as supporting it.
+        assert!(!model_supports_keyterms("scribe_v1"));
+        assert!(!model_supports_keyterms(""));
     }
 
     #[test]

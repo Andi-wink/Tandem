@@ -303,6 +303,30 @@ pub fn start_transcription_task<R: Runtime>(
                                             crate::audio::recording_state::DeviceType::System => "Remote",
                                         };
 
+                                        // F056: deterministic post-correction.
+                                        // Applied BEFORE the dedup below and
+                                        // before the tail is recorded, so both
+                                        // sides of the overlap comparison are
+                                        // always corrected text. Correcting
+                                        // after the dedup would compare a
+                                        // corrected tail against a raw prefix
+                                        // ("n8n" vs "n eight n") and the
+                                        // overlap would stop being detected.
+                                        // `apply_corrections` is idempotent, so
+                                        // a tail that was already corrected on
+                                        // its own emission is unchanged here.
+                                        let transcript = {
+                                            let snap = crate::dictionary::cache::snapshot();
+                                            if snap.dictionary.is_empty() {
+                                                transcript
+                                            } else {
+                                                crate::dictionary::apply_corrections(
+                                                    &transcript,
+                                                    &snap.dictionary,
+                                                )
+                                            }
+                                        };
+
                                         // Dedup the overlap prefix (see prev_*_tail
                                         // declaration above). For the matching stream,
                                         // drop any leading words that already appeared

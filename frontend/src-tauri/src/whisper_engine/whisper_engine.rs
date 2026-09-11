@@ -49,6 +49,33 @@ pub struct WhisperEngine {
 }
 
 impl WhisperEngine {
+    /// Base domain vocabulary that ships with the app. Kept hardcoded because it
+    /// covers the terms Tandem itself talks about on every call, regardless of
+    /// what the user has configured.
+    const BASE_VOCABULARY_PROMPT: &'static str =
+        "Claude Code, n8n, Tandem, Excalidraw, Meetily, Anthropic, API, JSON, webhook, workflow";
+
+    /// The `initial_prompt` handed to whisper.cpp: the user's enabled
+    /// custom-dictionary terms (F056) followed by the base vocabulary above.
+    ///
+    /// The user terms come FIRST on purpose. whisper.cpp caps the prompt at
+    /// roughly 224 tokens and keeps the LAST n_take tokens, counting back from
+    /// the END of prompt_past (whisper.cpp:5673), so it is the HEAD of the
+    /// prompt that gets dropped on overflow, not the tail. Putting the base
+    /// vocabulary last therefore guarantees the shipped terms survive, and any
+    /// overflow eats into the user list instead. The user list is separately
+    /// capped at a term boundary by `dictionary::PROMPT_CHAR_BUDGET`, and is
+    /// ordered oldest-created-first, so the terms a user added most recently
+    /// are the last to be dropped.
+    fn initial_prompt() -> String {
+        let user_terms = crate::dictionary::cache::decoder_prompt_terms();
+        if user_terms.is_empty() {
+            Self::BASE_VOCABULARY_PROMPT.to_string()
+        } else {
+            format!("{}, {}", user_terms, Self::BASE_VOCABULARY_PROMPT)
+        }
+    }
+
     /// Detect available GPU acceleration capabilities
     fn detect_gpu_acceleration() -> bool {
         // On macOS, prefer Metal GPU acceleration
@@ -570,10 +597,10 @@ impl WhisperEngine {
         params.set_token_timestamps(true);  // Keep for any timestamp-aware features
 
         // Domain vocabulary hint — biases recognition toward project-specific terms that
-        // Whisper commonly misrecognizes (e.g. "Claude Code" → "Claude Cowell", "n8n" → "innate")
-        params.set_initial_prompt(
-            "Claude Code, n8n, Tandem, Excalidraw, Meetily, Anthropic, API, JSON, webhook, workflow"
-        );
+        // Whisper commonly misrecognizes (e.g. "Claude Code" → "Claude Cowell", "n8n" → "innate").
+        // F056 appends the user's own custom-dictionary terms to this base list.
+        let vocabulary_prompt = Self::initial_prompt();
+        params.set_initial_prompt(&vocabulary_prompt);
 
         // PERFORMANCE: Disable ALL whisper.cpp internal printing
         // This reduces C library log spam significantly
@@ -704,10 +731,9 @@ impl WhisperEngine {
         params.set_no_timestamps(true);     // Prevent timestamp-based segment skipping
         params.set_token_timestamps(true);  // Keep for any timestamp-aware features
 
-        // Domain vocabulary hint (same as transcribe_audio_with_confidence)
-        params.set_initial_prompt(
-            "Claude Code, n8n, Tandem, Excalidraw, Meetily, Anthropic, API, JSON, webhook, workflow"
-        );
+        // Domain vocabulary hint (same as transcribe_audio_with_confidence, F056 included)
+        let vocabulary_prompt = Self::initial_prompt();
+        params.set_initial_prompt(&vocabulary_prompt);
 
         params.set_print_special(false);
         params.set_print_progress(false);
