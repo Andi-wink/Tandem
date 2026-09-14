@@ -10,8 +10,9 @@
  *
  * Structure is flattened rather than trusted: any remaining heading becomes bold text so it can't
  * outrank the handover's own headings, code fences are stripped so an unterminated one can't swallow
- * the rest of the document, and a line that is only `---` or `***` is escaped so it can't render as
- * a thematic break (which in markdown would also turn the line above it into a heading).
+ * the rest of the document, and a line that is only punctuation is escaped so it can't render as a
+ * thematic break (`---`, `***`, `___`) or as a setext underline (`=` or `-` at any count, which
+ * promotes the line above it to a heading).
  *
  * Pure and framework-free, so both the markdown and the HTML export share one normalisation.
  */
@@ -21,6 +22,12 @@ const PLACEHOLDER = /^_\(no text or HTML content on the board\)_$/;
 const FENCE = /^\s*(```|~~~)/;
 const HEADING = /^\s{0,3}(#{1,6})\s+(.*)$/;
 const THEMATIC_BREAK = /^\s{0,3}((-\s*){3,}|(\*\s*){3,}|(_\s*){3,})$/;
+/**
+ * A setext underline: a line of only `=` or only `-` promotes the line ABOVE it to a heading, at any
+ * count, so a single `=` under a board line would silently turn it into an H1 in the handover.
+ * Escaped for the same reason as a thematic break. This subsumes the `---` case of the rule above.
+ */
+const SETEXT_UNDERLINE = /^\s{0,3}(=+|-+)\s*$/;
 
 export function normalizeBoardText(raw: string): string {
   if (!raw) return '';
@@ -46,7 +53,7 @@ export function normalizeBoardText(raw: string): string {
       continue;
     }
 
-    if (THEMATIC_BREAK.test(line)) {
+    if (THEMATIC_BREAK.test(line) || SETEXT_UNDERLINE.test(line)) {
       out.push(`\\${line.trim()}`);
       continue;
     }

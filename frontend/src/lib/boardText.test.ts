@@ -58,6 +58,18 @@ describe('normalizeBoardText', () => {
     expect(normalizeBoardText('# Whiteboard\n\n***')).toBe('\\***');
   });
 
+  it('escapes a setext underline so the line above it cannot become a heading', () => {
+    // Any count of = or - underlines a heading in markdown, so all four of these must stay plain.
+    expect(normalizeBoardText('# Whiteboard\n\nBig Title\n=\nbody')).toBe('Big Title\n\\=\nbody');
+    expect(normalizeBoardText('# Whiteboard\n\nBig Title\n===\nbody')).toBe('Big Title\n\\===\nbody');
+    expect(normalizeBoardText('# Whiteboard\n\nBig Title\n-\nbody')).toBe('Big Title\n\\-\nbody');
+    expect(normalizeBoardText('# Whiteboard\n\nBig Title\n--\nbody')).toBe('Big Title\n\\--\nbody');
+  });
+
+  it('escapes a setext underline that carries trailing spaces', () => {
+    expect(normalizeBoardText('# Whiteboard\n\nBig Title\n==   \nbody')).toBe('Big Title\n\\==\nbody');
+  });
+
   it('keeps a "Whiteboard" heading that is genuinely part of the board content', () => {
     expect(normalizeBoardText('# Whiteboard\n\n## Text\n\nplan\n\n# Whiteboard\n\nthe board itself')).toBe(
       'plan\n\n**Whiteboard**\n\nthe board itself',

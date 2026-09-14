@@ -36,7 +36,7 @@ const joinPath = (folder: string, file: string) =>
   `${folder.replace(/[\\/]+$/, '')}${folder.includes('\\') ? '\\' : '/'}${file}`;
 
 /** Write a board's three artifacts ({stem}.tldr.json / .md / .png) into a directory. */
-export async function writeBoardArtifacts(dir: string, stem: string, result: CanvasSaveResult): Promise<void> {
+async function writeBoardArtifacts(dir: string, stem: string, result: CanvasSaveResult): Promise<void> {
   await invoke('save_transcript', { filePath: joinPath(dir, `${stem}.tldr.json`), content: JSON.stringify(result.snapshot) });
   if (result.markdown) {
     await invoke('save_transcript', { filePath: joinPath(dir, `${stem}.md`), content: result.markdown }).catch((e) =>
