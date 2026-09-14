@@ -2,6 +2,11 @@
 
 ## Open
 
+### Whiteboard in the handover document (F063 extension) BUILT on `feature/handover-canvas` (2026-09-14)
+Worktree `D:\Dev-projects\Tandem-handover-canvas`. The handover document now carries the board drawn during the call: a `## Whiteboard` section after the timeline with the shape count, the PNG (relative in [HANDOVER.md](frontend/src/lib/handoverDoc.ts), inlined as a data URI in [HANDOVER.html](frontend/src/lib/handoverHtml.ts)) and the flattened board text. `countShapes` in [whiteboardSnapshot.ts](frontend/src/lib/whiteboardSnapshot.ts) keeps empty boards out, and [useWhiteboardPersistence](frontend/src/hooks/useWhiteboardPersistence.ts) stops writing blank boards in the first place. Gates: `pnpm tsc --noEmit` clean, `pnpm test` 513/513 across 40 files.
+- [ ] LIVE-RUNTIME needed: draw on the canvas during a real meeting, stop the recording, click "Generate handover", then confirm `whiteboard.png` is in the meeting folder and the Whiteboard section renders in BOTH `HANDOVER.md` (relative image) and `HANDOVER.html` (inlined image), with the shape count matching what was drawn.
+- [ ] LIVE-RUNTIME needed: generate a handover for a meeting where nothing was drawn and confirm no Whiteboard section, no whiteboard in the Captured counts line, and no blank `whiteboard.*` files left in the meeting folder or the client library.
+
 ### Custom Transcription Dictionary (F056) BUILT, QA passed, on `feature/custom-dictionary` (pushed, 2026-09-07)
 Worktree `D:\Dev-projects\Tandem-f056`. Dictionary tab in Settings, SQLite table with a case-insensitive unique term index, one-pass regex correction on every live transcript path (batch worker, realtime partial and commit, canvas clip), user terms prepended to the Whisper initial prompt, JSON import/export. Gates: cargo test --lib dictionary 32/32, cargo check clean, tsc clean, Playwright render with mocked IPC in light and dark. Two adversarial QA passes, second one PASS. Not merged to main.
 - [ ] LIVE-RUNTIME needed: add "n8n" with alias "n eight n", record, say it, confirm the correction shows in the live partial and the saved transcript, and that the Whisper prompt change does not hurt WER (run [wer_gate.py](audio_testing/wer_gate.py)).

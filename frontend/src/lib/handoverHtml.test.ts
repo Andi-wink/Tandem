@@ -104,6 +104,53 @@ describe('generateHandoverHtml', () => {
     expect(html).toContain('<h1>&lt;b&gt;x&lt;/b&gt;</h1>');
   });
 
+  it('inlines the whiteboard PNG as a data URI after the timeline', () => {
+    const boardPath = `${FOLDER}\\whiteboard.png`;
+    const boardUri = 'data:image/jpeg;base64,BBBB';
+    const timeline = buildHandoverTimeline([speech('we sketched it out', 0)], [], [], []);
+    const html = generateHandoverHtml(
+      {
+        meetingName: 'Board call',
+        date: '2026-08-29T09:00:00Z',
+        durationSeconds: 60,
+        timeline,
+        links: [],
+        folderPath: FOLDER,
+        whiteboard: { pngPath: boardPath, shapeCount: 4, text: 'pricing' },
+      },
+      new Map([[boardPath, boardUri]]),
+    );
+    expect(html).toContain('<h2>Whiteboard</h2>');
+    expect(html).toContain('4 shapes drawn during the meeting');
+    expect(html).toContain(`src="${boardUri}"`);
+    expect(html).toContain('<h3>Text on the board</h3>');
+    expect(html).toContain('<pre>pricing</pre>');
+    expect(html.indexOf('<h2>Timeline</h2>')).toBeLessThan(html.indexOf('<h2>Whiteboard</h2>'));
+    expect(html.indexOf('<h2>Whiteboard</h2>')).toBeLessThan(html.indexOf('<footer>'));
+  });
+
+  it('flags a whiteboard image it could not embed rather than dropping the section', () => {
+    const boardPath = `${FOLDER}\\whiteboard.png`;
+    const html = generateHandoverHtml(
+      {
+        meetingName: 'Board call',
+        date: '2026-08-29T09:00:00Z',
+        durationSeconds: null,
+        timeline: [],
+        links: [],
+        whiteboard: { pngPath: boardPath, shapeCount: 2 },
+      },
+      new Map(),
+    );
+    expect(html).toContain('<h2>Whiteboard</h2>');
+    expect(html).toContain('Whiteboard image could not be embedded');
+    expect(html).not.toContain('<h3>Text on the board</h3>');
+  });
+
+  it('has no whiteboard section when the meeting had no board', () => {
+    expect(build()).not.toContain('Whiteboard');
+  });
+
   it('says so plainly when a call captured nothing', () => {
     const html = generateHandoverHtml(
       { meetingName: 'Empty', date: '2026-08-29T09:00:00Z', durationSeconds: null, timeline: [], links: [] },

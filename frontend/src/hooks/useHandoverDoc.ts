@@ -18,8 +18,17 @@ import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { Transcript, ScreenshotData, ClipboardData } from '@/types';
 import type { Jot, JotsFile } from '@/lib/meetingJots';
-import { buildHandoverTimeline, collectLinks, generateHandoverMarkdown, type HandoverItem } from '@/lib/handoverDoc';
+import {
+  buildHandoverTimeline,
+  collectLinks,
+  generateHandoverMarkdown,
+  type HandoverItem,
+  type HandoverWhiteboard,
+} from '@/lib/handoverDoc';
 import { generateHandoverHtml } from '@/lib/handoverHtml';
+import { useCanvas } from '@/contexts/CanvasContext';
+import { writeBoardArtifacts, WHITEBOARD_FILE } from '@/hooks/useWhiteboardPersistence';
+import { countShapes } from '@/lib/whiteboardSnapshot';
 
 export const HANDOVER_FILENAME = 'HANDOVER.md';
 export const HANDOVER_HTML_FILENAME = 'HANDOVER.html';
@@ -59,6 +68,11 @@ function durationFromTranscripts(transcripts: Transcript[]): number | null {
 
 export function useHandoverDoc(): UseHandoverDocReturn {
   const [isGenerating, setIsGenerating] = useState(false);
+  // The board is read from disk, but it is only written on canvas close / recording stop / quit. If
+  // the canvas is still open when the user generates the handover, the newest strokes are only in the
+  // iframe, so we ask it to save first. When the canvas isn't mounted (the usual meeting-details case)
+  // this reports not-ready and we simply use what is already on disk.
+  const { canvasReady, boardReadOnly, saveSnapshot } = useCanvas();
 
   const generateHandover = useCallback(
     async ({
@@ -79,7 +93,20 @@ export function useHandoverDoc(): UseHandoverDocReturn {
 
       setIsGenerating(true);
       try {
+        // Best effort, never blocking: a board that can't be reached just leaves the on-disk copy.
+        if (canvasReady && !boardReadOnly) {
+          try {
+            const result = await saveSnapshot();
+            if (result?.snapshot && countShapes(result.snapshot) > 0) {
+              await writeBoardArtifacts(folderPath, 'whiteboard', result);
+            }
+          } catch (err) {
+            console.debug('[handover] Could not refresh the whiteboard before export:', err);
+          }
+        }
+
         const jots = await readJots(folderPath);
+        const whiteboard = await readWhiteboard(folderPath);
         const timeline = buildHandoverTimeline(transcripts, screenshots, clipboardItems, jots);
         const data = {
           meetingName,
@@ -88,6 +115,7 @@ export function useHandoverDoc(): UseHandoverDocReturn {
           timeline,
           links: collectLinks(timeline),
           folderPath,
+          whiteboard: whiteboard?.whiteboard,
         };
 
         // Markdown references its images relatively, so it renders wherever it sits next to the
@@ -100,6 +128,9 @@ export function useHandoverDoc(): UseHandoverDocReturn {
         // already written above.
         try {
           const images = await embedImages(timeline);
+          // The board PNG was already read while deciding whether the board exists at all, so it is
+          // reused here rather than embedded a second time.
+          if (whiteboard) images.set(whiteboard.whiteboard.pngPath, whiteboard.dataUri);
           await invoke('save_transcript', {
             filePath: joinPath(folderPath, HANDOVER_HTML_FILENAME),
             content: generateHandoverHtml(data, images),
@@ -117,7 +148,8 @@ export function useHandoverDoc(): UseHandoverDocReturn {
         toast.success('Handover document saved', {
           description:
             `${counts.speech} transcript segments, ${counts.note} notes, ${counts.screenshot} screenshots, ` +
-            `${counts.clipboard} clipboard items. Saved as ${HANDOVER_FILENAME} and ` +
+            `${counts.clipboard} clipboard items${whiteboard ? ', 1 whiteboard' : ''}. ` +
+            `Saved as ${HANDOVER_FILENAME} and ` +
             `${HANDOVER_HTML_FILENAME} (open the HTML and print to PDF).`,
           action: {
             label: 'Open folder',
@@ -141,7 +173,7 @@ export function useHandoverDoc(): UseHandoverDocReturn {
         setIsGenerating(false);
       }
     },
-    [],
+    [canvasReady, boardReadOnly, saveSnapshot],
   );
 
   return { generateHandover, isGenerating };
@@ -176,6 +208,40 @@ async function embedImages(timeline: HandoverItem[]): Promise<Map<string, string
   );
 
   return new Map(entries.filter((e): e is [string, string] => e !== null));
+}
+
+/**
+ * Read the meeting's saved whiteboard, and decide whether it is worth putting in the document.
+ *
+ * Two things must both hold: the snapshot contains at least one shape (the board is written on every
+ * canvas close, so an untouched board still has a file), and the PNG render is actually readable
+ * (a section promising a picture that can't be shown is worse than no section). The data URI is
+ * returned alongside so the HTML export doesn't have to re-read the same image.
+ */
+async function readWhiteboard(
+  folderPath: string,
+): Promise<{ whiteboard: HandoverWhiteboard; dataUri: string } | null> {
+  try {
+    const raw = await invoke<string | null>('read_file_if_exists', {
+      path: joinPath(folderPath, WHITEBOARD_FILE),
+    });
+    if (!raw) return null;
+
+    const shapeCount = countShapes(JSON.parse(raw));
+    if (shapeCount === 0) return null;
+
+    const pngPath = joinPath(folderPath, 'whiteboard.png');
+    const dataUri = await invoke<string>('screenshot_embed_data_uri', { filePath: pngPath });
+
+    const text = await invoke<string | null>('read_file_if_exists', {
+      path: joinPath(folderPath, 'whiteboard.md'),
+    }).catch(() => null);
+
+    return { whiteboard: { pngPath, shapeCount, text: text ?? undefined }, dataUri };
+  } catch (err) {
+    console.debug('[handover] No usable whiteboard for this meeting:', err);
+    return null;
+  }
 }
 
 /**
