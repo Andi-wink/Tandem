@@ -147,6 +147,25 @@ describe('generateHandoverHtml', () => {
     expect(html).not.toContain('<h3>Text on the board</h3>');
   });
 
+  it('keeps the whiteboard section, with the missing-image fallback, when there is no PNG path', () => {
+    const html = generateHandoverHtml(
+      {
+        meetingName: 'Board call',
+        date: '2026-08-29T09:00:00Z',
+        durationSeconds: null,
+        timeline: [],
+        links: [],
+        whiteboard: { shapeCount: 5, text: 'pricing' },
+      },
+      new Map(),
+    );
+    expect(html).toContain('<h2>Whiteboard</h2>');
+    expect(html).toContain('5 shapes drawn during the meeting');
+    expect(html).toContain('Whiteboard image could not be embedded</div>');
+    expect(html).not.toContain('alt="Whiteboard"');
+    expect(html).toContain('<h3>Text on the board</h3>');
+  });
+
   it('has no whiteboard section when the meeting had no board', () => {
     expect(build()).not.toContain('Whiteboard');
   });

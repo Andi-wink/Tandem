@@ -294,6 +294,16 @@ describe('generateHandoverMarkdown', () => {
     expect(md).not.toContain('### Text on the board');
   });
 
+  it('keeps the whiteboard section when the board image is unavailable', () => {
+    const md = doc({ whiteboard: { shapeCount: 5, text: 'pricing' } });
+    expect(md).toContain('## Whiteboard');
+    expect(md).toContain('5 shapes drawn during the meeting');
+    expect(md).toContain('*Board image not available.*');
+    expect(md).not.toContain('![Whiteboard]');
+    expect(md).toContain('### Text on the board');
+    expect(md).toContain('1 clipboard item, 1 whiteboard');
+  });
+
   it('has no whiteboard section, and no whiteboard count, when nothing was drawn', () => {
     const md = doc();
     expect(md).not.toContain('## Whiteboard');

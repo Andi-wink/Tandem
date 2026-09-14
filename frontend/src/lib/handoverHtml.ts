@@ -226,11 +226,12 @@ export function generateHandoverHtml(data: HandoverData, images: Map<string, str
   if (data.whiteboard) {
     parts.push('<h2>Whiteboard</h2>');
     parts.push(`<p class="board-count">${plural(data.whiteboard.shapeCount, 'shape')} drawn during the meeting</p>`);
-    const src = images.get(data.whiteboard.pngPath);
+    const src = data.whiteboard.pngPath ? images.get(data.whiteboard.pngPath) : undefined;
+    const where = data.whiteboard.pngPath ? ` (${escapeHtml(data.whiteboard.pngPath)})` : '';
     parts.push(
       src
         ? `<figure><img alt="Whiteboard" src="${src}"></figure>`
-        : `<div class="missing">Whiteboard image could not be embedded (${escapeHtml(data.whiteboard.pngPath)})</div>`,
+        : `<div class="missing">Whiteboard image could not be embedded${where}</div>`,
     );
     const text = (data.whiteboard.text ?? '').trim();
     if (text) {

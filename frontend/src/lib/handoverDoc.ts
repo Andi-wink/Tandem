@@ -55,14 +55,22 @@ export interface HandoverLink {
  * The whiteboard drawn during the call, when there was one.
  *
  * Absent (undefined) whenever nothing was drawn: the board is saved on every canvas close, so a blank
- * board can still exist on disk and must not produce an empty section. The caller decides that using
- * countShapes (lib/whiteboardSnapshot) plus the PNG actually being readable.
+ * board can still exist on disk and must not produce an empty section. The caller decides that with
+ * countShapes (lib/whiteboardSnapshot).
+ *
+ * A board whose PNG render is missing or unreadable still belongs in the document: the shape count
+ * and the text on it are the evidence that a board existed, and silently dropping the section would
+ * misrepresent the call. Such a board arrives with no `pngPath`, and each renderer says so in place
+ * of the image.
  */
 export interface HandoverWhiteboard {
-  /** Absolute path to the rendered board PNG, rewritten relative to the meeting folder on render. */
-  pngPath: string;
+  /**
+   * Absolute path to the rendered board PNG, rewritten relative to the meeting folder on render.
+   * Undefined when the render could not be read, in which case the section says so instead.
+   */
+  pngPath?: string;
   shapeCount: number;
-  /** Flattened text of the board (whiteboard.md), when the board carries any. */
+  /** Flattened text of the board (whiteboard.md), normalised by lib/boardText. Empty when none. */
   text?: string;
 }
 
@@ -340,7 +348,11 @@ export function generateHandoverMarkdown(data: HandoverData): string {
     lines.push('');
     lines.push(`${plural(data.whiteboard.shapeCount, 'shape')} drawn during the meeting`);
     lines.push('');
-    lines.push(`![Whiteboard](${relativeToFolder(data.whiteboard.pngPath, data.folderPath)})`);
+    lines.push(
+      data.whiteboard.pngPath
+        ? `![Whiteboard](${relativeToFolder(data.whiteboard.pngPath, data.folderPath)})`
+        : '*Board image not available.*',
+    );
     lines.push('');
     const text = (data.whiteboard.text ?? '').trim();
     if (text) {

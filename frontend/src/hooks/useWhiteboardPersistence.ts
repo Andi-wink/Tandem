@@ -29,7 +29,11 @@ import { countShapes } from '@/lib/whiteboardSnapshot';
 export const WHITEBOARD_FILE = 'whiteboard.tldr.json';
 
 const inTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-const joinPath = (folder: string, file: string) => `${folder}${folder.includes('\\') ? '\\' : '/'}${file}`;
+// Trailing separators are stripped, so a folder handed to us with one can't produce a doubled
+// separator in the path. Matches joinPath in useHandoverDoc, so both halves of the feature address
+// exactly the same files.
+const joinPath = (folder: string, file: string) =>
+  `${folder.replace(/[\\/]+$/, '')}${folder.includes('\\') ? '\\' : '/'}${file}`;
 
 /** Write a board's three artifacts ({stem}.tldr.json / .md / .png) into a directory. */
 export async function writeBoardArtifacts(dir: string, stem: string, result: CanvasSaveResult): Promise<void> {
@@ -46,13 +50,22 @@ export async function writeBoardArtifacts(dir: string, stem: string, result: Can
   }
 }
 
-/** Has this meeting already got a saved board on disk? Errors read as "no", which is the safe default. */
+/**
+ * Has this meeting already got a saved board on disk?
+ *
+ * A read error reads as "yes". This answer only gates SKIPPING the save of an empty board, so being
+ * wrong towards "no" would silently discard a user's deliberate erase of a real board, while being
+ * wrong towards "yes" merely writes an empty board file, which the next save overwrites.
+ *
+ * A missing or empty file is a genuine "no": there is no prior board whose erase needs preserving.
+ */
 async function hasExistingBoard(folder: string): Promise<boolean> {
   try {
     const raw = await invoke<string | null>('read_file_if_exists', { path: joinPath(folder, WHITEBOARD_FILE) });
     return !!raw;
-  } catch {
-    return false;
+  } catch (e) {
+    logger.warn('[Whiteboard] could not check for an existing board; assuming there is one', e);
+    return true;
   }
 }
 
