@@ -2290,7 +2290,7 @@
       "priority": "medium",
       "status": "complete",
       "branch": "feature/handover-canvas",
-      "commit": "edd483c",
+      "commit": "3a90a64",
       "steps": [
         "Pure generator in lib/handoverDoc.ts: buildHandoverTimeline (4 streams, stable tie-break by stream), extractLinks/collectLinks, relativeToFolder, generateHandoverMarkdown",
         "useHandoverDoc hook: reads jots.json (the one stream nothing else loads), writes HANDOVER.md via save_transcript, toasts with an Open folder action",
