@@ -51,6 +51,29 @@ export interface HandoverLink {
   elapsedSecs: number;
 }
 
+/**
+ * The whiteboard drawn during the call, when there was one.
+ *
+ * Absent (undefined) whenever nothing was drawn: the board is saved on every canvas close, so a blank
+ * board can still exist on disk and must not produce an empty section. The caller decides that with
+ * countShapes (lib/whiteboardSnapshot).
+ *
+ * A board whose PNG render is missing or unreadable still belongs in the document: the shape count
+ * and the text on it are the evidence that a board existed, and silently dropping the section would
+ * misrepresent the call. Such a board arrives with no `pngPath`, and each renderer says so in place
+ * of the image.
+ */
+export interface HandoverWhiteboard {
+  /**
+   * Absolute path to the rendered board PNG, rewritten relative to the meeting folder on render.
+   * Undefined when the render could not be read, in which case the section says so instead.
+   */
+  pngPath?: string;
+  shapeCount: number;
+  /** Flattened text of the board (whiteboard.md), normalised by lib/boardText. Empty when none. */
+  text?: string;
+}
+
 export interface HandoverData {
   meetingName: string;
   /** ISO date string or anything Date can parse. */
@@ -60,6 +83,8 @@ export interface HandoverData {
   links: HandoverLink[];
   /** Meeting folder. Screenshot paths inside it are rewritten relative so the images render. */
   folderPath?: string;
+  /** The board drawn on this call. Omitted when nothing was drawn. */
+  whiteboard?: HandoverWhiteboard;
 }
 
 // ─── Time formatting ─────────────────────────────────────────────────────────
@@ -246,10 +271,12 @@ export function generateHandoverMarkdown(data: HandoverData): string {
   }
 
   const counts = countByType(data.timeline);
-  lines.push(
+  // The whiteboard is not a timeline stream (it has no single moment — it is drawn on across the
+  // call), so it joins the counts line only when there is one.
+  const captured =
     `**Captured:** ${plural(counts.speech, 'transcript segment')}, ${plural(counts.note, 'note')}, ` +
-    `${plural(counts.screenshot, 'screenshot')}, ${plural(counts.clipboard, 'clipboard item')}`,
-  );
+    `${plural(counts.screenshot, 'screenshot')}, ${plural(counts.clipboard, 'clipboard item')}`;
+  lines.push(data.whiteboard ? `${captured}, ${plural(1, 'whiteboard')}` : captured);
   lines.push('');
 
   // Links first: this is the section people come back for.
@@ -312,6 +339,27 @@ export function generateHandoverMarkdown(data: HandoverData): string {
         }
         break;
       }
+    }
+  }
+
+  // The board sits after the timeline: it is the state the call ended in, not a moment within it.
+  if (data.whiteboard) {
+    lines.push('## Whiteboard');
+    lines.push('');
+    lines.push(`${plural(data.whiteboard.shapeCount, 'shape')} drawn during the meeting`);
+    lines.push('');
+    lines.push(
+      data.whiteboard.pngPath
+        ? `![Whiteboard](${relativeToFolder(data.whiteboard.pngPath, data.folderPath)})`
+        : '*Board image not available.*',
+    );
+    lines.push('');
+    const text = (data.whiteboard.text ?? '').trim();
+    if (text) {
+      lines.push('### Text on the board');
+      lines.push('');
+      lines.push(text);
+      lines.push('');
     }
   }
 

@@ -24,11 +24,16 @@ import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateCon
 import { storageService } from '@/services/storageService';
 import { indexedDBService } from '@/services/indexedDBService';
 import { logger } from '@/lib/logger';
+import { countShapes } from '@/lib/whiteboardSnapshot';
 
 export const WHITEBOARD_FILE = 'whiteboard.tldr.json';
 
 const inTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-const joinPath = (folder: string, file: string) => `${folder}${folder.includes('\\') ? '\\' : '/'}${file}`;
+// Trailing separators are stripped, so a folder handed to us with one can't produce a doubled
+// separator in the path. Matches joinPath in useHandoverDoc, so both halves of the feature address
+// exactly the same files.
+const joinPath = (folder: string, file: string) =>
+  `${folder.replace(/[\\/]+$/, '')}${folder.includes('\\') ? '\\' : '/'}${file}`;
 
 /** Write a board's three artifacts ({stem}.tldr.json / .md / .png) into a directory. */
 async function writeBoardArtifacts(dir: string, stem: string, result: CanvasSaveResult): Promise<void> {
@@ -42,6 +47,25 @@ async function writeBoardArtifacts(dir: string, stem: string, result: CanvasSave
     await invoke('save_base64_file', { path: joinPath(dir, `${stem}.png`), base64: result.png }).catch((e) =>
       logger.warn('[Whiteboard] png save failed', e),
     );
+  }
+}
+
+/**
+ * Has this meeting already got a saved board on disk?
+ *
+ * A read error reads as "yes". This answer only gates SKIPPING the save of an empty board, so being
+ * wrong towards "no" would silently discard a user's deliberate erase of a real board, while being
+ * wrong towards "yes" merely writes an empty board file, which the next save overwrites.
+ *
+ * A missing or empty file is a genuine "no": there is no prior board whose erase needs preserving.
+ */
+async function hasExistingBoard(folder: string): Promise<boolean> {
+  try {
+    const raw = await invoke<string | null>('read_file_if_exists', { path: joinPath(folder, WHITEBOARD_FILE) });
+    return !!raw;
+  } catch (e) {
+    logger.warn('[Whiteboard] could not check for an existing board; assuming there is one', e);
+    return true;
   }
 }
 
@@ -90,6 +114,10 @@ export function useWhiteboardPersistence() {
         try {
           const result = await saveSnapshot();
           if (!result?.snapshot) return; // board unreachable — don't clobber a good save with an empty one
+          // Nothing was ever drawn: don't litter the meeting folder (and the client library) with
+          // blank boards, which would then show up as an empty Whiteboard section in the handover.
+          // A board that HAS artifacts keeps saving even when emptied, so erasing it is persisted.
+          if (countShapes(result.snapshot) === 0 && !(await hasExistingBoard(folder))) return;
           // 1) Per-meeting save (unchanged): <folder>/whiteboard.{tldr.json,md,png}.
           await writeBoardArtifacts(folder, 'whiteboard', result);
           // 2) Per-client library mirror (Solo project = client) — what the "Previous boards" picker
